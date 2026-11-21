@@ -59,4 +59,4 @@ Phone joins a public Wi-Fi (client isolation — PC↔phone impossible there) **
 ## Next
 1. Owner re-tests voice after dashboard routing and verifies reconnect does not replay commands.
 2. Slice 5: download finalized recordings over LAN with SHA-256 verification.
-3. Future dashboard-side MCP command service. See [handoff](ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff).
+3. Dashboard-side MCP command service `voice_bridge.py` (hackathon repo root): built and tested on the simulated arm. See [handoff](ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) and [evidence](evidence/slice-05-arm-voice-bridge-2026-11-21.md).

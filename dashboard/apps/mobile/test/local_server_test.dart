@@ -148,7 +148,7 @@ void main() {
     expect(r.headers.contentType!.mimeType, 'text/html');
     expect(
       r.headers.value('content-security-policy'),
-      "default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'",
+      "default-src 'self'; connect-src 'self' wss: http://127.0.0.1:* http://localhost:*; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'",
     );
     expect(r.headers.value('cache-control'), 'no-store');
     expect(r.headers.value('x-content-type-options'), 'nosniff');

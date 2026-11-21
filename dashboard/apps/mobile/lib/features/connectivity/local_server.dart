@@ -14,8 +14,9 @@ typedef SnapshotBuilder = Map<String, Object?> Function();
 const defaultPort = 8443;
 const _cookieName = 'lvc_session';
 const _pendingName = 'lvc_pending';
+// connect-src loopback: the paired browser may reach the arm command service (voice_bridge.py) on its own PC.
 const _csp =
-    "default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; "
+    "default-src 'self'; connect-src 'self' wss: http://127.0.0.1:* http://localhost:*; img-src 'self' data:; "
     "style-src 'self'; script-src 'self'; frame-ancestors 'none'";
 const _mime = {
   'html': 'text/html; charset=utf-8',

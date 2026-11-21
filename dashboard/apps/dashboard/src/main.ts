@@ -1,5 +1,6 @@
 import { qrCanvas } from "./qr.js";
-import { popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, planVoiceCommand, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
+import { armBridgeUrl, forwardToArm } from "./arm.js";
+import { armRequest, popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, planVoiceCommand, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
@@ -176,7 +177,18 @@ function onVoiceEvent(type: string, payload: unknown) {
         live = applyVoiceEvent(live, "voice.command", result);
         setPopup(popupReduce(popup, "voice.command", result));
       };
-      if (!action) reply(true, null);
+      const armReq = action ? null : armRequest(type, payload, state.sessionId);
+      const bridge = armReq ? armBridgeUrl() : null;
+      if (armReq && bridge) {
+        // Not a recording command: the PC-side arm command service interprets it (MCP stays there).
+        void forwardToArm(bridge, armReq).then((r) => {
+          if (!r || Object.hasOwn(live.commands, utterance_id)) return;
+          const result = { utterance_id, ...r };
+          live = applyVoiceEvent(live, "voice.command", result);
+          setPopup(popupReduce(popup, "voice.command", result));
+          updateDash();
+        });
+      } else if (!action) reply(true, null);
       else if (!pending.has(action.request_id)) sendCommand(action.type, {}, "rec", action.request_id, reply);
     }
   }

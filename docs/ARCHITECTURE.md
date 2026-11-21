@@ -8,17 +8,17 @@ The imported [Local Vision project](../dashboard/README.md) provides the Android
 flowchart LR
     Phone["Flutter app · camera, mic, offline speech, recorder"]
     Browser["Paired dashboard · transcript and recording intent"]
-    Client["Future dashboard-side command service · MCP client"]
+    Client["voice_bridge.py · dashboard-side command service, MCP client"]
     MCP["Existing camera-arm MCP server"]
     Arm["Existing capture_server.py · motion checks and control"]
     Phone -- "Vision-only video and final transcript text" --> Browser
     Browser -- "Authenticated recording start/stop" --> Phone
-    Browser -. "Future: eligible live transcript" .-> Client
-    Client -. "Future: MCP requests" .-> MCP
+    Browser -- "Eligible live transcript (loopback HTTP)" --> Client
+    Client -- "MCP: stop, go_to_view, get_status, list_views" --> MCP
     MCP --> Arm
 ```
 
-The browser implements the recording grammar today. Complex transcripts appear in history while the dashboard-to-MCP bridge is pending. Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
+The browser implements the recording grammar. Other live finals go to `voice_bridge.py` on the PC that runs the browser (`http://127.0.0.1:8210`), which maps a small local grammar to camera-arm MCP tools and shows the result beside the transcript; see [the handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
 
 ---
 
@@ -34,7 +34,7 @@ The following 21 November planning notes describe the former Safari gateway and 
 | MCP server camera-arm | built, tested against the web server on the simulated arm; not yet with the real arm | `mcp_server.py`, plus `GET /api/still.jpg` in `capture_server.py` | [MCP.md](MCP.md) |
 | Phone capture and vision-only WebRTC | implemented on Android | `dashboard/apps/mobile` | [Local Vision status](../dashboard/docs/STATUS.md) |
 | Voice capture and transcription | runs on Android | `dashboard/apps/mobile` | [voice pipeline](../dashboard/docs/adr/0004-voice-pipeline.md) |
-| Dashboard | browser implements recording intent; future complex command service | `dashboard/apps/dashboard` | [handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) |
+| Dashboard | browser implements recording intent; arm requests go through `voice_bridge.py` to MCP (tested on the simulated arm) | `dashboard/apps/dashboard`, `voice_bridge.py` | [handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) |
 | elrobot-ik (stage 2) | not started | – | this page |
 | Framing preview (stage 2) | built, tested on the simulated arm; preview only, never moves; estimates not yet checked on the real arm | `framing.py`, `POST /api/frame` (dry_run), MCP `preview_frame`, `best_view` | [FRAMING.md](FRAMING.md) |
 

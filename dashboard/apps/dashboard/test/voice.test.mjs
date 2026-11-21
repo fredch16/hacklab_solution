@@ -111,3 +111,33 @@ test("a live recording transcript must agree with the acoustic transcription", (
   assert.equal(V.planVoiceCommand("session.snapshot", p), null);
   assert.equal(V.planVoiceCommand(type, { ...p, end_reason: "max_duration" }), null);
 });
+
+test("arm request: only completed live finals with text and a session", () => {
+  const f = { utterance_id: "u9", text: " go to top ", end_reason: "silence" };
+  assert.deepEqual(V.armRequest("voice.transcript.final", f, "sess-1"), { session_id: "sess-1", utterance_id: "u9", text: "go to top" });
+  assert.equal(V.armRequest("voice.transcript.partial", f, "sess-1"), null);
+  assert.equal(V.armRequest("voice.transcript.final", f, null), null);
+  assert.equal(V.armRequest("voice.transcript.final", { ...f, end_reason: "max_duration" }, "s"), null);
+  assert.equal(V.armRequest("voice.transcript.final", { ...f, text: "  " }, "s"), null);
+  assert.equal(V.armRequest("voice.transcript.final", { ...f, utterance_id: "../x" }, "s"), null);
+  // recording finals are taken by planVoiceCommand first; this test only pins the shape
+  assert.equal(V.planVoiceCommand("voice.transcript.final", f), null);
+});
+
+test("arm results: badge, popup and transport failure", () => {
+  const ok = V.armResult({ ok: true, command: "arm.go_to_view", error: null, message: "Moving to top" });
+  assert.deepEqual(ok, { command: "arm.go_to_view", ok: true, error: null, message: "Moving to top" });
+  assert.equal(V.commandBadge(ok), "↻ Moving to top");
+  const refused = V.armResult({ ok: false, command: "arm.go_to_view", error: "VIEW_NOT_CHECKED", message: "left isn't checked" });
+  assert.equal(V.commandBadge(refused), "✕ left isn't checked");
+  const down = V.armResult(null);
+  assert.match(V.commandBadge(down), /^✕ Arm command service not reachable/);
+  assert.equal(V.commandBadge(V.armResult({ ok: true, command: "none", error: null, message: null })), null);
+  let l = V.applyVoiceEvent(V.initialLive(), "voice.command", { utterance_id: "u9", ...ok });
+  assert.equal(l.commands.u9.message, "Moving to top");
+  let p = V.popupReduce(null, "voice.wake_detected", { utterance_id: "u9" });
+  p = V.popupReduce(p, "voice.transcript.final", { utterance_id: "u9", text: "go to top", end_reason: "silence" });
+  assert.deepEqual(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u9", ...ok })).result, { kind: "neutral", text: "Moving to top" });
+  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u9", ...down })).result.kind, "bad");
+  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u9", command: "none", ok: true })).result.text, "No matching command");
+});

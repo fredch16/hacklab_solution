@@ -2,7 +2,7 @@
 
 `mcp_server.py` gives Claude the tools to point the camera. It moves nothing itself: every move goes through the web server `capture_server.py` (`POST /api/goto`), so the motion layer's routes and guards apply ([MOTION.md](MOTION.md)), and STOP on the `/control` page also stops a move Claude started. Claude can only pick saved views; there are no free joint or Cartesian moves. Moves return at once, `get_status` tells how they went. The scene (objects Claude has seen in camera images) is stored here in `scene.json`. Design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-For the mobile voice integration, see [the dashboard-side handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). The standalone browser dashboard currently issues phone recording requests. A future dashboard-side command service will connect to this MCP server for complex tasks.
+For the mobile voice integration, see [the dashboard-side handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). The browser dashboard handles recording requests itself and forwards other spoken requests to `voice_bridge.py`, the dashboard-side command service, which is a Streamable HTTP client of this server (stop, go to a checked view, status, list views).
 
 ## Setup
 

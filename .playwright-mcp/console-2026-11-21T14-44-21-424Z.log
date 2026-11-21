@@ -1,0 +1,11 @@
+[   17188ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ https://10.181.249.119:8443/favicon.ico:1
+[  580395ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[  581412ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:94
+[  581418ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[  583424ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:94
+[  583548ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[  587554ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:94
+[  587561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[  595668ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:94
+[  595673ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[  611391ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: HTTP Authentication failed; no valid credentials available @ https://10.181.249.119:8443/main.js:94

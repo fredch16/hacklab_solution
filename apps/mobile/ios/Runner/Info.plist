@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Local Vision uses the camera to capture video on this phone. Video stays on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Local Vision uses the microphone for on-device voice features. Audio is processed on this phone only.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Local Vision serves a dashboard to a browser on your local network.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

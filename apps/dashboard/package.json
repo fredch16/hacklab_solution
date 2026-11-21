@@ -1,0 +1,14 @@
+{
+  "name": "local-vision-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "dev": "node dev/server.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

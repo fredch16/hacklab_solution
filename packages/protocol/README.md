@@ -17,9 +17,18 @@ Both `apps/mobile` (server) and `apps/dashboard` (browser client) implement exac
 - Revoke from phone: token invalidated, WebSocket closed with `4003` reason `revoked`. Expiry: close `4002` reason `expired`. Session end: `4004` reason `session_ended`.
 - **Origin check:** every `POST` and the WS upgrade must carry `Origin` equal to `https://<Host header>`; otherwise `403 {"error":"ORIGIN_REJECTED"}`.
 
-## Pairing code
+## QR pairing (primary) — browser shows QR, phone scans and approves
 
-- Phone user taps **Pair a browser** → 6-digit numeric code (`Random.secure`, zero-padded), valid **120 s**, single use. Generating a new code invalidates the previous one. Phone UI makes clear that pairing replaces the current viewer.
+1. Browser (unpaired) calls `POST /api/v1/pair/request` (Origin checked, empty body). Server creates a pending request: `request_id` = 16 random bytes base64url (shown in QR) and a separate `secret` = 32 random bytes base64url set as cookie `lvc_pending` (`HttpOnly; Secure; SameSite=Strict; Path=/api/v1/pair; Max-Age=120`). Response `200 {"request_id":"…","qr":"lvc-pair:1:<request_id>","expires_utc":"…"}`. Pending requests live **120 s**; at most **3** exist at once (oldest evicted); max **10 creations per minute** per remote IP → `429 {"error":"RATE_LIMITED"}`. Requires an active session (server only runs then).
+2. Browser renders `qr` as a QR code (bundled encoder, no CDN), with countdown, and polls `GET /api/v1/pair/request/status` every 1 s with its `lvc_pending` cookie → `{"state":"pending|approved|denied|expired"}`. Missing/unknown cookie → `{"state":"expired"}`. On `expired` the browser automatically requests a new QR.
+3. Phone **Link → Scan to pair** opens the camera scanner only while that screen is open (camera released on exit). A scanned string that is not `lvc-pair:1:<id>` or an unknown/expired id → clear error on phone. Valid → confirm sheet "Pair this browser? Request from <remote IPv4> · replaces current viewer if any" with **Approve / Deny**.
+4. On Approve the request becomes `approved`. The **next status poll carrying the matching `lvc_pending` secret** receives `{"state":"approved"}` together with `Set-Cookie: lvc_session=…` (same rules as code pairing, replaces existing viewer → 4001) and `lvc_pending` cleared. Knowing `request_id` alone (e.g. photographing the QR) is not enough to obtain the session. Single use.
+5. In-app API: `PairingService.createPairRequest(remoteIp)`, `.pairRequestStatus(secret)`, `.approveRequest(requestId)`, `.denyRequest(requestId)`, `.lookupRequest(requestId)` (for the confirm sheet).
+
+## Pairing code (fallback)
+
+- Browser shows it behind a small "Can't scan? Use a code" link. Phone: **Link → Use a code instead**.
+- Phone user taps **Pair with code** → 6-digit numeric code (`Random.secure`, zero-padded), valid **120 s**, single use. Generating a new code invalidates the previous one. Phone UI makes clear that pairing replaces the current viewer.
 - Max **5 wrong attempts** per code → code invalidated (phone shows "Too many attempts — generate a new code").
 - Code comparison is constant-time.
 
@@ -58,7 +67,7 @@ Every field is present; unknown/unavailable values are `null` (never fake zeros)
   "camera": {"state": "not_started"},          // Slice 0 always not_started
   "recording": {"state": "not_started"},       // Slice 0 always not_started
   "voice": {"state": "not_started"},           // Slice 0 always not_started
-  "battery": {"level_percent": 86, "charging": false},            // either may be null
+  "battery": {"level_percent": 86, "charging": false, "plugged": false},  // any may be null; plugged = external power connected; charging = actively charging
   "thermal": {"status": "none"},               // none|light|moderate|severe|critical|emergency|shutdown|null
   "storage": {"free_bytes": 92000000000, "total_bytes": 256000000000},
   "network": {"addresses": ["10.19.20.246"], "port": 8443, "tls": "self_signed", "cert_sha256": "AB:CD:..."},

@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "dev.localvision.local_vision"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37 // permission_handler_android requires >= 37; targetSdk stays flutter default (36)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>View Capture</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel-2: #20242d; --line: #2c313c;
+    --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --ok: #3ecf8e; --warn: #f5a524; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  select, input, button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:disabled { opacity: .5; cursor: wait; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  #joints { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; flex-basis: 100%; overflow-wrap: anywhere; }
+  main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); gap: 20px; padding: 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 12px 16px; } }
+  .live { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
+  .live img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .live .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .4s; }
+  .live .badge { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  .step .count { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .step h2 { margin: 4px 0 2px; font-size: 26px; }
+  .step p { margin: 0 0 14px; color: var(--muted); }
+  .step .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .step .actions .primary { flex: 1; padding: 12px; font-size: 16px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .msg { margin-top: 10px; min-height: 20px; font-size: 13px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 22px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; }
+  .card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card .thumb { aspect-ratio: 16 / 9; background: var(--panel-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .meta { padding: 6px 8px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .card .name { font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.saved { background: var(--ok); }
+  .custom { display: flex; gap: 8px; margin-top: 10px; }
+  .custom input { flex: 1; min-width: 0; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>View Capture</h1>
+  <label>Follower arm <select id="bus"></select></label>
+  <label>Camera <select id="camera"></select></label>
+  <div id="joints">connecting…</div>
+</header>
+
+<main>
+  <section>
+    <div class="live">
+      <img id="live" src="/stream" alt="Live camera">
+      <div class="flash" id="flash"></div>
+      <div class="badge" id="badge">live</div>
+    </div>
+    <p class="hint">Move the leader arm until the picture looks right, then press <b>Save</b> (or Enter). The arm should be still; we wait for it to settle.</p>
+  </section>
+
+  <section>
+    <div class="step">
+      <div class="count" id="count"></div>
+      <h2 id="stepName"></h2>
+      <p id="stepDesc"></p>
+      <div class="actions">
+        <button id="back">← Back</button>
+        <button class="primary" id="save">Save view</button>
+        <button id="skip">Skip →</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <h3>Views</h3>
+    <div class="grid" id="grid"></div>
+
+    <h3>Add your own</h3>
+    <div class="custom">
+      <input id="customName" placeholder="name, e.g. board_left" autocomplete="off">
+      <input id="customDesc" placeholder="what it shows" autocomplete="off">
+      <button id="customAdd">Save</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+let step = 0;
+try { step = Number(localStorage.getItem("captureStep")) || 0; } catch (e) {}
+
+function steps() {
+  if (!state) return [];
+  const guided = state.guided.map((g) => g.name);
+  const extra = Object.keys(state.views).filter((n) => !guided.includes(n))
+    .map((n) => ({ name: n, description: state.views[n].description || "" }));
+  return [...state.guided, ...extra];
+}
+
+function setStep(i) {
+  const all = steps();
+  step = Math.max(0, Math.min(all.length - 1, i));
+  try { localStorage.setItem("captureStep", String(step)); } catch (e) {}
+  render();
+}
+
+function render() {
+  if (!state) return;
+  const all = steps();
+  if (step >= all.length) step = 0;
+  const cur = all[step];
+  const saved = state.views[cur.name];
+  $("count").textContent = `Step ${step + 1} of ${all.length}` + (saved ? " · saved" : "");
+  $("stepName").textContent = cur.name;
+  $("stepDesc").textContent = cur.description || "";
+  $("save").textContent = saved ? "Retake view" : "Save view";
+  $("save").disabled = state.capturing;
+
+  $("grid").innerHTML = "";
+  all.forEach((v, i) => {
+    const s = state.views[v.name];
+    const card = document.createElement("div");
+    card.className = "card" + (i === step ? " current" : "");
+    const thumb = s && s.snapshot
+      ? `<img src="/views/${v.name}.jpg?t=${encodeURIComponent(s.captured_at)}" alt="">`
+      : (s ? "saved, no image" : "not yet");
+    card.innerHTML = `<div class="thumb">${thumb}</div>
+      <div class="meta"><span class="name">${v.name}</span><span class="dot ${s ? "saved" : ""}"></span></div>`;
+    card.onclick = () => setStep(i);
+    if (s) {
+      const del = document.createElement("button");
+      del.className = "danger"; del.textContent = "Delete"; del.style.cssText = "margin: 0 8px 8px; padding: 2px 8px; font-size: 12px";
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete view "${v.name}"?`)) return;
+        await post("/api/delete", { name: v.name });
+        refresh();
+      };
+      card.appendChild(del);
+    }
+    $("grid").appendChild(card);
+  });
+}
+
+function fillSelect(el, items, value, label) {
+  const want = JSON.stringify(items);
+  if (el.dataset.items !== want) {
+    el.innerHTML = items.map((it) => `<option value="${it}">${label(it)}</option>`).join("");
+    el.dataset.items = want;
+  }
+  if (document.activeElement !== el) el.value = value;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state");
+    state = await r.json();
+  } catch (e) {
+    $("joints").innerHTML = `<span class="warn">lost connection to capture_server.py</span>`;
+    return;
+  }
+  fillSelect($("bus"), Object.keys(state.buses), state.bus, (s) => `${s} (${state.buses[s]})`);
+  fillSelect($("camera"), state.cameras, state.camera, (q) => "camera " + q.split("/").pop().slice(0, 6));
+  const limp = state.buses[state.bus] === "limp";
+  $("joints").innerHTML = (limp ? `<span class="warn">this arm is limp — is it the follower, and is mirroring on?</span> ` : "") + state.joints;
+  render();
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function flash() {
+  $("flash").style.transition = "none"; $("flash").style.opacity = ".8";
+  requestAnimationFrame(() => { $("flash").style.transition = "opacity .5s"; $("flash").style.opacity = "0"; });
+}
+
+async function saveView(name, description) {
+  $("save").disabled = true;
+  $("msg").className = "msg"; $("msg").textContent = "Waiting for the arm to settle…";
+  try {
+    const r = await post("/api/capture", { name, description });
+    flash();
+    $("msg").className = "msg ok"; $("msg").textContent = `Saved "${name}"`;
+    await refresh();
+    return r;
+  } catch (e) {
+    $("msg").className = "msg bad"; $("msg").textContent = "Failed: " + e.message;
+    await refresh();
+  }
+}
+
+$("save").onclick = async () => {
+  const cur = steps()[step];
+  if (await saveView(cur.name, cur.description)) {
+    const all = steps();
+    const next = all.findIndex((v, i) => i > step && !state.views[v.name]);
+    setStep(next >= 0 ? next : step);
+  }
+};
+$("skip").onclick = () => setStep(step + 1);
+$("back").onclick = () => setStep(step - 1);
+$("customAdd").onclick = async () => {
+  const name = $("customName").value.trim().toLowerCase();
+  if (await saveView(name, $("customDesc").value.trim())) {
+    $("customName").value = ""; $("customDesc").value = "";
+    setStep(steps().findIndex((v) => v.name === name));
+  }
+};
+$("camera").onchange = () => post("/api/camera", { queue: $("camera").value }).then(refresh);
+$("bus").onchange = () => post("/api/bus", { bus: $("bus").value }).then(refresh);
+$("live").onerror = () => { $("badge").textContent = "no camera"; setTimeout(() => { $("live").src = "/stream?" + Date.now(); }, 2000); };
+$("live").onload = () => { $("badge").textContent = "live"; };
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "Enter") { e.preventDefault(); $("save").click(); }
+  if (e.key === "ArrowRight") setStep(step + 1);
+  if (e.key === "ArrowLeft") setStep(step - 1);
+});
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

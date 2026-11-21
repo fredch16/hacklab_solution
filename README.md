@@ -20,9 +20,11 @@ Both arms: power supply (each arm's own, voltages differ) + USB to the laptop. T
 
 | Script | Milestone | What it does |
 |---|---|---|
+| `python calib_watch.py` | M0 | Live calibration progress per joint, shows which arm is moving |
 | `python joints.py` | M0.7 | Live joints of every arm; shows which is leader (limp) and follower (torque on) |
 | `python camera.py` | M0.8 | Save one camera frame to `frame.jpg` (`--list` shows cameras) |
 | `python torque.py off\|on` | M1.1 | Make the arm limp to pose by hand (hold it first!) |
+| `python capture_server.py` | M1 | Web UI at http://localhost:8890: live camera, guided steps, Save/Retake/Delete per view |
 | `python capture_view.py` | M1 | Guided capture: pose with the leader, press Enter per view → `views.json` + `views/<name>.jpg` |
 | `python go.py top` | M2 | Move the follower to a view; `--tour 5` runs home → every view → home ×5; Ctrl-C holds |
 | `uv run python director.py` | M3 | Type requests, Claude picks the view, the arm moves; `--sim` runs without hardware |

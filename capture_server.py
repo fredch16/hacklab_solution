@@ -7,6 +7,7 @@
 /         capture: Go limp, pose the follower by hand, Hold here, check the live picture, click Save.
           Writes the same views.json + views/<name>.jpg as capture_view.py.
 /control  control: click a saved view and the arm moves there (motion.go_to_view); STOP holds it where it is.
+/api/still.jpg  one camera JPEG for the MCP server (mcp_server.py), only while the arm holds still; read-only.
 
 All arm motion and torque goes through motion.py (go_to_view, hold, engage, release, describe).
 
@@ -48,6 +49,7 @@ HOLD_CONFIRM_S = 1.5  # ...and we give up waiting for that after this long
 STALE_CLICK = "the arm was stopped since this page last updated; check the arm and click again"
 DRAIN_S = 3.0       # shutdown: how long to wait for the stopped move task to end
 WHERE_TTL_S = 1.0   # motion.describe() is asked at most this often, and never while a move is running
+STILL_MAX_AGE_S = 1.0  # /api/still.jpg: a camera frame older than this counts as no picture
 
 NO_CAMERA_SVG = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360"/>'
                  b'<text x="320" y="187" fill="#8a92a3" font-family="system-ui, sans-serif" font-size="20" '
@@ -244,6 +246,35 @@ class State:
                  "captured_at": data["views"].get(n, {}).get("captured_at"),
                  "checked": motion.view_checked(n), "limit_notes": limit_notes.get(n, [])}
                 for n in motion.view_names()]
+
+    def still(self) -> tuple[bytes, dict]:
+        """One JPEG for the MCP server (Claude), only while nothing moves, with where the arm is.
+
+        Read-only: never commands the arm. On --sim (no camera) it returns the saved snapshot of
+        the view the arm is at, so the image workflow can be tried without hardware."""
+        if self.moving or self.stopping:
+            raise Refused("the arm is moving: stills are only taken while it holds still")
+        try:
+            joints = self.arm.joints()
+        except RuntimeError as e:
+            raise Refused(f"no arm data: {e}", 503)
+        w = (self.where or {}).get("where") or {}
+        view = w.get("view") if w.get("where") == "view" else None
+        cam = self.cams.get(self.cam_queue) if self.cam_queue else None
+        if cam is not None:
+            if not cam.jpeg or time.monotonic() - cam.stamp > STILL_MAX_AGE_S:
+                raise Refused("no fresh camera frame; is the camera in Station?", 503)
+            jpeg = cam.jpeg
+        elif self.sim:
+            snap = load_views(self.views_path)["views"].get(view or "", {}).get("snapshot")
+            f = SNAPSHOT_DIR / Path(snap).name if snap else None
+            if f is None or not f.exists():
+                raise Refused("sim camera: pictures only at saved views that have a snapshot", 503)
+            jpeg = f.read_bytes()
+        else:
+            raise Refused("no camera", 503)
+        return jpeg, {"X-View": view or "", "X-Joints": json.dumps(joints, separators=(",", ":")),
+                      "X-Taken-At": f"{time.time():.3f}"}
 
     def snapshot(self) -> dict:
         data = load_views(self.views_path)
@@ -600,6 +631,19 @@ def make_handler(state: State):
                     self._json({"error": f"state: {e or type(e).__name__}"}, 500)
             elif path == "/stream":
                 self._stream()
+            elif path == "/api/still.jpg":
+                try:
+                    jpeg, extra = state.still()
+                except Refused as e:
+                    return self._json({"ok": False, "error": str(e)}, e.status)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(jpeg)))
+                for k, v in extra.items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(jpeg)
             elif path.startswith("/views/"):
                 f = SNAPSHOT_DIR / Path(path).name
                 if f.suffix == ".jpg" and f.exists():

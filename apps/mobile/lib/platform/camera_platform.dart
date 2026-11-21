@@ -15,11 +15,15 @@ class WebrtcFailure implements Exception {
 abstract class CameraPlatform {
   Stream<Map<String, Object?>> get events;
 
-  /// Texture id, or null when the camera could not start.
-  Future<int?> start();
-  Future<void> stop();
-  Future<void> pause();
-  Future<void> resume();
+  /// Takes a hold on the camera for [user] ('stream' or 'scan'); resolves once
+  /// frames arrive. Texture id, or null when it could not start.
+  Future<int?> start(String user);
+
+  /// Drops that hold; the camera stops when nobody needs it.
+  Future<void> stop(String user);
+
+  /// Tap-to-focus at a point normalised to the preview buffer (0..1).
+  Future<void> focus(double x, double y);
   Future<String> offer(String sdp);
   Future<void> stopStream(String reason);
 }
@@ -45,17 +49,17 @@ class ChannelCameraPlatform implements CameraPlatform {
   }
 
   @override
-  Future<int?> start() async {
-    final r = await _call<Map<Object?, Object?>>('start');
+  Future<int?> start(String user) async {
+    final r = await _call<Map<Object?, Object?>>('start', {'user': user});
     return r?['textureId'] as int?;
   }
 
   @override
-  Future<void> stop() => _call<void>('stop');
+  Future<void> stop(String user) => _call<void>('stop', {'user': user});
+
   @override
-  Future<void> pause() => _call<void>('pause');
-  @override
-  Future<void> resume() => _call<void>('resume');
+  Future<void> focus(double x, double y) =>
+      _call<void>('focus', {'x': x, 'y': y});
 
   @override
   Future<String> offer(String sdp) async {

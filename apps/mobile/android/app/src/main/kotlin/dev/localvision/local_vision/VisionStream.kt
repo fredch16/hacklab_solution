@@ -3,6 +3,7 @@ package dev.localvision.local_vision
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.camera.core.ImageProxy
 import org.webrtc.CapturerObserver
 import org.webrtc.DefaultVideoDecoderFactory
@@ -37,6 +38,8 @@ private fun Handler.later(block: () -> Unit) { post(block) }
 class VisionStream(
     private val appContext: Context,
     private val emit: (Map<String, Any?>) -> Unit,
+    /** Called after a peer is torn down so the owner can release the camera. */
+    private val onStopped: () -> Unit,
 ) : FrameSink {
     private val main = Handler(Looper.getMainLooper())
     private var egl: EglBase? = null
@@ -55,6 +58,11 @@ class VisionStream(
     override var wantsFrames = false
         private set
 
+    private companion object {
+        // rtc::AdapterType bit flags: CELLULAR | 2G | 3G | 4G | 5G
+        const val CELLULAR_MASK = 4 or 64 or 128 or 256 or 512
+    }
+
     val hasPeer: Boolean get() = peer != null
 
     private fun ensureFactory(): PeerConnectionFactory {
@@ -64,7 +72,16 @@ class VisionStream(
         )
         val e = EglBase.create()
         egl = e
+        // No Android NetworkMonitor: it lists only ConnectivityManager networks and
+        // so never offers the phone's own hotspot/tether interface (ap_br_wlan*).
+        // Without it libwebrtc enumerates interfaces with getifaddrs. Cellular
+        // (rmnet*) is masked out: LAN only, no WAN candidates.
+        val opts = PeerConnectionFactory.Options().apply {
+            disableNetworkMonitor = true
+            networkIgnoreMask = CELLULAR_MASK
+        }
         val f = PeerConnectionFactory.builder()
+            .setOptions(opts)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(e.eglBaseContext, true, false))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(e.eglBaseContext))
             .createPeerConnectionFactory()
@@ -101,7 +118,7 @@ class VisionStream(
 
     /** Main thread. Replaces any existing peer. [done] gets the answer SDP or an error code. */
     fun offer(sdp: String, done: (answer: String?, code: String?, message: String?) -> Unit) {
-        if (peer != null) stop("replaced")
+        if (peer != null) stop("replaced", release = false)
         val f: PeerConnectionFactory
         try {
             f = ensureFactory()
@@ -177,7 +194,10 @@ class VisionStream(
                                     finished = true
                                     val desc = pc.localDescription
                                     if (desc == null) { finished = false; fail("no local description") }
-                                    else done(desc.description, null, null)
+                                    else {
+                                        logCandidates(desc.description)
+                                        done(desc.description, null, null)
+                                    }
                                 }
                                 pending = { finish.run() }
                                 if (gathered || pc.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE) finish.run()
@@ -191,6 +211,15 @@ class VisionStream(
             }
             override fun onSetFailure(e: String?) = main.later { fail("setRemoteDescription: $e") }
         }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    }
+
+    /** Local candidates in the answer (address family + type only, nothing secret). */
+    private fun logCandidates(sdp: String) {
+        val found = sdp.lineSequence().filter { it.startsWith("a=candidate:") }.map {
+            val t = it.split(' ')
+            "${t.getOrNull(4)} ${t.getOrNull(2)} ${t.getOrNull(7)}"
+        }.toList()
+        Log.i("LVC", "answer candidates (ip proto type): ${found.joinToString("; ").ifEmpty { "none" }}")
     }
 
     private fun applySenderParams(t: RtpTransceiver) {
@@ -223,7 +252,7 @@ class VisionStream(
     }
 
     /** Tears the peer down (if any). The camera is never touched. */
-    fun stop(reason: String, failure: String? = null) {
+    fun stop(reason: String, failure: String? = null, release: Boolean = true) {
         val pc = peer ?: return
         peer = null
         peerGen++
@@ -233,6 +262,7 @@ class VisionStream(
         try { pc.close(); pc.dispose() } catch (_: Throwable) {}
         emit(mapOf("event" to "webrtc_stopped", "reason" to reason))
         emit(mapOf("event" to "stream", "state" to if (failure != null) "failed" else "idle", "error" to failure))
+        if (release) onStopped()
     }
 
     fun dispose() {

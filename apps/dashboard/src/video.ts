@@ -42,7 +42,7 @@ export async function startVideo() {
   if (pc) return;
   teardown();
   const my = gen;
-  set("connecting");
+  set("connecting", "Starting phone camera\u2026");
   try {
     const p = new RTCPeerConnection({ iceServers: [] });
     pc = p;
@@ -66,7 +66,7 @@ export async function startVideo() {
     if (my !== gen || !p.localDescription) return;
     reqId = rid();
     if (!send({ version: 1, type: "webrtc.offer", request_id: reqId, payload: { sdp: p.localDescription.sdp } })) { stopVideo("Video stopped — not connected to the phone.", false); return; }
-    answerTimer = window.setTimeout(() => stopVideo("The phone did not answer. Try again."), 10000);
+    answerTimer = window.setTimeout(() => stopVideo("The phone did not answer. Try again."), 12000);
     statsTimer = window.setInterval(() => void tick(), 1000);
   } catch {
     if (my === gen) stopVideo("Could not set up video in this browser.", false);
@@ -94,6 +94,7 @@ export function handleSignal(type: string, requestId: string | undefined, payloa
   if (type === "webrtc.answer") {
     if (requestId && requestId !== reqId) return true;
     clearTimeout(answerTimer);
+    view.message = "Connecting\u2026"; changed();
     p.setRemoteDescription({ type: "answer", sdp: String(payload?.sdp ?? "") }).catch(() => stopVideo(webrtcErrorMessage("NEGOTIATION_FAILED")));
   } else if (type === "webrtc.error") {
     if (!requestId || requestId === reqId) stopVideo(webrtcErrorMessage(payload?.code, payload?.message), false);

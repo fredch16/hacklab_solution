@@ -51,6 +51,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     // libwebrtc build (BSD-3-Clause; wrapper Apache-2.0). Pinned.
     implementation("io.github.webrtc-sdk:android:144.7559.15")
+    // Pure-Java QR decoder (Apache-2.0); replaces ML Kit, which phoned home.
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
 }
 

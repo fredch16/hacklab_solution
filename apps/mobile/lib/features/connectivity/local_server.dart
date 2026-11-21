@@ -340,6 +340,10 @@ class LocalServer {
       return _json(res, 404, {'error': 'NOT_FOUND'});
     }
     final bytes = await assetLoader(name);
+    if (bytes == null && name == 'favicon.ico') {
+      res.statusCode = 204; // browsers ask for it unprompted; nothing to show
+      return res.close();
+    }
     if (bytes == null) return _json(res, 404, {'error': 'NOT_FOUND'});
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
     res.statusCode = 200;

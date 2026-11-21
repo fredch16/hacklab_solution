@@ -11,8 +11,9 @@ typedef MessageSender = void Function(
   String? requestId,
 });
 
-/// Dart view of the native camera/stream state machine. Camera states:
-/// not_started|initializing|previewing|transmitting|paused|interrupted|error.
+/// Dart view of the native camera/stream state machine. The camera runs only
+/// while the PC streams or the QR scanner is open; native events drive state.
+/// Camera states: not_started|initializing|previewing|transmitting|interrupted|error.
 class CaptureController extends ChangeNotifier implements WebrtcPort {
   CaptureController(this.platform) {
     _sub = platform.events.listen(_onEvent, onError: (Object _) {});
@@ -20,10 +21,10 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
 
   final CameraPlatform platform;
   late final StreamSubscription<Map<String, Object?>> _sub;
+  final _scans = StreamController<String>.broadcast();
   MessageSender? sender;
 
-  bool _started = false;
-  String _native = 'not_started'; // initializing|previewing|paused|error
+  String _native = 'not_started'; // initializing|previewing|error
   String? error;
   bool interrupted = false;
   int? textureId;
@@ -36,11 +37,14 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
   Map<String, Object?>? captureStats;
   Map<String, Object?>? streamStats;
 
+  /// Decoded QR strings from the native scanner (only while it holds the camera).
+  Stream<String> get scans => _scans.stream;
+
   bool get permissionDenied => error == 'PERMISSION_CAMERA';
 
   String get state {
-    if (!_started) return 'not_started';
     if (_native == 'error') return 'error';
+    if (_native == 'not_started') return 'not_started';
     if (interrupted) return 'interrupted';
     if (_native == 'previewing' && streamState == 'connected')
       return 'transmitting';
@@ -59,41 +63,50 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
     'error': streamError,
   };
 
-  Future<void> start() async {
-    _started = true;
-    _native = 'initializing';
-    error = null;
-    notifyListeners();
-    final id = await platform.start();
-    if (id != null) {
-      textureId = id;
-    } else if (error == null) {
-      _native = 'error';
-      error = 'CAMERA_FAILED';
-    }
-    notifyListeners();
-  }
-
+  /// Camera permission refused when the session started.
   void denyPermission() {
-    _started = true;
     _native = 'error';
     error = 'PERMISSION_CAMERA';
     notifyListeners();
   }
 
-  Future<void> end() async {
-    if (streamState != 'idle') await platform.stopStream('session_ended');
-    if (_started) await platform.stop();
-    _started = false;
+  /// Permission now granted; the camera itself starts on the next offer.
+  void permissionGranted() {
+    if (!permissionDenied) return;
     _native = 'not_started';
     error = null;
+    notifyListeners();
+  }
+
+  /// QR scanner opened: take a hold on the camera.
+  Future<bool> startForScanner() async {
+    final id = await platform.start('scan');
+    if (id != null) textureId = id;
+    notifyListeners();
+    return id != null;
+  }
+
+  Future<void> stopForScanner() => platform.stop('scan');
+
+  Future<void> focus(double x, double y) => platform.focus(x, y);
+
+  /// Session end: stop the peer (which releases the stream's camera hold).
+  Future<void> end() async {
+    await platform.stopStream('session_ended');
+    await platform.stop('stream');
     interrupted = false;
-    textureId = null;
-    previewWidth = previewHeight = null;
-    captureStats = streamStats = null;
+    error = null;
+    _native = 'not_started';
+    _clearCamera();
     streamState = 'idle';
     streamError = null;
     notifyListeners();
+  }
+
+  void _clearCamera() {
+    textureId = null;
+    previewWidth = previewHeight = null;
+    captureStats = streamStats = null;
   }
 
   void setInterrupted(bool v) {
@@ -102,27 +115,13 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
     notifyListeners();
   }
 
-  /// Release the camera for the QR scanner. Resolves once it is unbound.
-  Future<void> pauseForScanner() async {
-    if (!_started || _native == 'error') return;
-    _native = 'paused';
-    notifyListeners();
-    await platform.pause();
-  }
-
-  Future<void> resumeFromScanner() async {
-    if (_native != 'paused') return;
-    _native = 'initializing';
-    notifyListeners();
-    await platform.resume();
-  }
-
+  /// Native side starts the camera and waits for frames before answering.
   @override
   Future<String> offer(String sdp) async {
-    if (!live) {
+    if (permissionDenied) {
       throw const WebrtcFailure(
         'CAMERA_UNAVAILABLE',
-        'The phone camera is not running.',
+        'Camera permission not granted on the phone',
       );
     }
     return platform.offer(sdp);
@@ -134,10 +133,15 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
   void _onEvent(Map<String, Object?> e) {
     switch (e['event']) {
       case 'state':
-        _native = e['state'] as String;
+        final s = e['state'] as String;
+        // A permission error stays until permission is granted.
+        if (permissionDenied && s != 'previewing') return;
+        _native = s;
         error = e['error'] as String?;
+        if (s == 'not_started') _clearCamera();
         notifyListeners();
       case 'preview':
+        textureId = (e['textureId'] as int?) ?? textureId;
         previewWidth = e['width'] as int?;
         previewHeight = e['height'] as int?;
         previewRotation = (e['rotationDegrees'] as int?) ?? 0;
@@ -148,6 +152,9 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
         notifyListeners();
       case 'webrtc_stopped':
         sender?.call('webrtc.stopped', {'reason': e['reason']});
+      case 'scan':
+        final t = e['text'];
+        if (t is String) _scans.add(t);
       case 'stats':
         captureStats = _map(e['capture']);
         streamStats = _map(e['stream']);
@@ -164,6 +171,7 @@ class CaptureController extends ChangeNotifier implements WebrtcPort {
   @override
   void dispose() {
     _sub.cancel();
+    _scans.close();
     super.dispose();
   }
 }

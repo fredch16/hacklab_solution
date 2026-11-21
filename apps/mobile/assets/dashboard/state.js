@@ -127,26 +127,15 @@ export function webrtcErrorMessage(code, message) {
                 : "Video failed.";
     return message ? `${base} (${message})` : base;
 }
-/** Why Start video is unavailable for a phone camera state, or null when it is available. */
-export function startBlockedReason(camera) {
-    if (!camera)
-        return "Waiting for the phone.";
-    if (camera.state === "previewing" || camera.state === "transmitting")
+/** Informational note about the phone camera (never blocks Start video: the phone starts its camera on offer). */
+export function cameraHint(camera) {
+    if (!camera || camera.state !== "error")
         return null;
-    if (camera.state === "error") {
-        const e = {
-            PERMISSION_CAMERA: "Camera permission is denied on the phone.", DEVICE_IN_USE: "The camera is in use by another app.",
-            CAPABILITY_UNSUPPORTED: "The phone does not support the required camera mode.", CAMERA_FAILED: "The camera failed on the phone.",
-        };
-        return (camera.error && e[camera.error]) || "The camera has an error on the phone.";
-    }
-    if (camera.state === "paused")
-        return "Camera paused \u2014 the phone is on the scanner screen.";
-    if (camera.state === "initializing")
-        return "Camera is starting on the phone.";
-    if (camera.state === "interrupted")
-        return "Camera interrupted on the phone.";
-    return "Camera not running on the phone.";
+    const e = {
+        PERMISSION_CAMERA: "Camera permission is not granted on the phone.", DEVICE_IN_USE: "The camera is in use by another app.",
+        CAPABILITY_UNSUPPORTED: "The phone does not support the required camera mode.", CAMERA_FAILED: "The camera failed on the phone.",
+    };
+    return (camera.error && e[camera.error]) || "The camera has an error on the phone.";
 }
 /** H.264 first (stable), everything else kept after as fallback. */
 export function preferH264(codecs) {

@@ -2,7 +2,7 @@ import { qrCanvas } from "./qr.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
-  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, startBlockedReason, type PhoneStats, UNAVAILABLE, type Envelope, type Snapshot, type State,
+  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, type PhoneStats, UNAVAILABLE, type Envelope, type Snapshot, type State,
 } from "./state.js";
 
 type View = "boot" | "pairing" | "dashboard" | "terminal";
@@ -291,19 +291,20 @@ function updateDash() {
   const cs = snap?.camera.state ?? "not_started";
   patch(d.status, [document.createTextNode(`Camera \u00B7 ${stateLabel(cs)}`)]);
   const ph = vs.phase;
-  const ov: Node[] = ph === "live" ? [] : ph === "connecting" ? [h("strong", null, "Connecting\u2026")]
+  const ov: Node[] = ph === "live" ? [] : ph === "connecting" ? [h("strong", null, vs.message || "Connecting\u2026")]
     : ph === "stalled" ? [h("strong", null, "No frames arriving"), h("span", "muted", vs.message)]
-    : ph === "stopped" ? [h("strong", null, "Video stopped"), h("span", "muted", vs.message)]
+    : ph === "stopped" ? [h("strong", null, "Video stopped \u00B7 phone camera off"), h("span", "muted", vs.message)]
     : [h("strong", null, "Video not started"), h("span", "muted", "Click Start video to watch the phone camera.")];
   patch(d.overlay, ov);
   d.overlay.parentElement?.classList.toggle("hidden", ph === "live");
 
-  const blocked = live ? "Not connected to the phone." : startBlockedReason(snap?.camera);
+  const blocked = live ? "Not connected to the phone." : null;
+  const hint = !live ? cameraHint(snap?.camera) : null;
   const active = ph === "connecting" || ph === "live" || ph === "stalled";
   const btn = h("button", active ? "btn" : "btn primary", active ? "Stop video" : ph === "stopped" ? "Start video again" : "Start video");
   btn.dataset.focus = "video"; btn.disabled = !active && blocked !== null;
   btn.onclick = () => (active ? stopVideo("Video stopped.") : void startVideo());
-  patch(d.controls, [btn, ...(blocked && !active ? [h("span", "muted", blocked)] : [])]);
+  patch(d.controls, [btn, ...(blocked && !active ? [h("span", "muted", blocked)] : hint && !active ? [h("span", "muted", hint)] : [])]);
 
   const st = vs.stats;
   const webrtc = ph === "live" && st?.codec ? `WebRTC \u00B7 ${st.codec}${st.width && st.height ? ` ${st.width}\u00D7${st.height}` : ""}` : `WebRTC \u00B7 ${ph === "connecting" ? "Connecting" : "Not started"}`;

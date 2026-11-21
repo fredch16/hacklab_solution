@@ -422,7 +422,6 @@ void main() {
   test(
     'webrtc: paired ws offer -> answer, stats and stopped share the sequence',
     () async {
-      await capture.start();
       await pairA(a);
       final log = WsLog(await a.ws());
       await log.waitFor(1);
@@ -476,7 +475,6 @@ void main() {
   );
 
   test('webrtc: unpaired client cannot open the socket, so no offer reaches native', () async {
-    await capture.start();
     await expectLater(a.ws(), throwsA(isA<WebSocketException>()));
     expect(cam.offers, isEmpty);
   });

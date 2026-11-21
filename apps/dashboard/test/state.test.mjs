@@ -90,12 +90,12 @@ test("stop reasons and errors", () => {
   assert.match(S.webrtcErrorMessage("CAMERA_UNAVAILABLE"), /not available/);
 });
 
-test("start blocked reasons", () => {
-  assert.equal(S.startBlockedReason({ state: "previewing" }), null);
-  assert.equal(S.startBlockedReason({ state: "transmitting" }), null);
-  assert.match(S.startBlockedReason({ state: "not_started" }), /not running/);
-  assert.match(S.startBlockedReason({ state: "error", error: "PERMISSION_CAMERA" }), /permission/);
-  assert.match(S.startBlockedReason({ state: "paused" }), /scanner/);
+test("camera hint is informational only", () => {
+  assert.equal(S.cameraHint({ state: "not_started" }), null);
+  assert.equal(S.cameraHint({ state: "previewing" }), null);
+  assert.equal(S.cameraHint({ state: "paused" }), null); // unknown/removed states are tolerated
+  assert.match(S.cameraHint({ state: "error", error: "PERMISSION_CAMERA" }), /permission/);
+  assert.match(S.cameraHint({ state: "error", error: "WHATEVER" }), /error on the phone/);
 });
 
 test("codec preference puts H264 first, keeps fallbacks", () => {

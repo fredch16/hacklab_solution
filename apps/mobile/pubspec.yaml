@@ -44,7 +44,6 @@ dependencies:
   asn1lib: ^1.6.8
   pointycastle: ^4.0.0
   crypto: ^3.0.8
-  mobile_scanner: ^7.5.0
 
 dev_dependencies:
   flutter_test:

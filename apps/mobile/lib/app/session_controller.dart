@@ -149,7 +149,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
       sessionStartedUtc = _now().toUtc();
       phase = AppPhase.active;
       _poll = Timer.periodic(pollInterval, (_) => _refresh());
-      await _startCamera();
+      await _requestCameraPermission();
     } catch (e) {
       phase = AppPhase.error;
       errorMessage = 'Could not start the local server: ${e.runtimeType}';
@@ -160,12 +160,14 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _startCamera() async {
+  /// Session start only asks for permission; the camera starts when the
+  /// browser clicks Start video.
+  Future<void> _requestCameraPermission() async {
     if (permissions['camera'] != 'granted') {
       await requestPermission(Permission.camera);
     }
     if (permissions['camera'] == 'granted') {
-      await capture.start();
+      capture.permissionGranted();
     } else {
       capture.denyPermission();
     }
@@ -236,7 +238,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     if (sessionRunning &&
         capture.permissionDenied &&
         p['camera'] == 'granted') {
-      await capture.start();
+      capture.permissionGranted();
     }
   }
 

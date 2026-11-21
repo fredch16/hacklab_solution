@@ -16,3 +16,8 @@ A plugin-owned WebRTC camera cannot also feed a high-quality native recorder (sp
 
 ## Risks
 CPU copy of 640×360 YUV→I420 (~0.35 MB/frame at 30 FPS) — measure. Device-specific use-case combination limits in Slice 2. H.264 availability depends on negotiated hardware encoder; report actual codec/encoder.
+
+## Notes (Slice 1 device findings)
+- **Hotspot candidates.** libwebrtc's Android `NetworkMonitor` enumerates only `ConnectivityManager` networks, so the phone's own hotspot/tether interface (`ap_br_wlan*`, `swlan*`) never produced host candidates and a PC on the phone's hotspot could not connect. `PeerConnectionFactory.Options.disableNetworkMonitor = true` makes libwebrtc fall back to `getifaddrs` enumeration (all up interfaces with an address) and sockets are no longer bound to one `Network`, so checks arriving on the hotspot interface are answered by kernel routing.
+- **No WAN.** `networkIgnoreMask` excludes cellular adapter types (`rmnet*`: CELLULAR, 2G-5G = 4|64|128|256|512), so no cellular/CGNAT candidates are gathered. VPN and loopback are ignored by default. The answer's local candidates (ip, proto, type) are logged at logcat tag `LVC`.
+- Trade-off: without the monitor, network changes are noticed by libwebrtc's periodic poll (about 2 s) instead of platform callbacks. Candidate gathering is one-shot (`GATHER_ONCE`), so an IP change needs a new Start video, which matches the "no auto-restart" product rule. Not verified on the Pixel yet.

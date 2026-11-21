@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../platform/device_status.dart';
@@ -136,12 +138,51 @@ String webrtcChipLabel(SessionController c) {
   }
 }
 
-class CameraViewport extends StatelessWidget {
+class CameraViewport extends StatefulWidget {
   const CameraViewport({super.key, required this.controller});
   final SessionController controller;
 
   @override
+  State<CameraViewport> createState() => _CameraViewportState();
+}
+
+class _CameraViewportState extends State<CameraViewport> {
+  Offset? _ring; // local tap position of the focus ring
+  Timer? _ringTimer;
+
+  @override
+  void dispose() {
+    _ringTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Displayed (rotated) normalised point -> preview buffer normalised point.
+  static (double, double) toBuffer(double u, double v, int rotation) =>
+      switch (rotation % 360) {
+        90 => (v, 1 - u),
+        180 => (1 - u, 1 - v),
+        270 => (1 - v, u),
+        _ => (u, v),
+      };
+
+  void _tap(TapDownDetails d, Size size) {
+    final cap = widget.controller.capture;
+    final (bx, by) = toBuffer(
+      (d.localPosition.dx / size.width).clamp(0.0, 1.0),
+      (d.localPosition.dy / size.height).clamp(0.0, 1.0),
+      cap.previewRotation,
+    );
+    cap.focus(bx, by);
+    _ringTimer?.cancel();
+    setState(() => _ring = d.localPosition);
+    _ringTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _ring = null);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     final cap = controller.capture;
     final st = cap.state;
     Widget? texture;
@@ -154,30 +195,59 @@ class CameraViewport extends StatelessWidget {
       final quarter = turns.isOdd;
       texture = AspectRatio(
         aspectRatio: quarter ? h / w : w / h,
-        child: FittedBox(
-          fit: BoxFit.cover,
-          clipBehavior: Clip.hardEdge,
-          child: RotatedBox(
-            quarterTurns: turns,
-            child: SizedBox(
-              width: w,
-              height: h,
-              child: Texture(textureId: cap.textureId!),
+        child: LayoutBuilder(
+          builder: (context, c) => GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => _tap(d, Size(c.maxWidth, c.maxHeight)),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                FittedBox(
+                  fit: BoxFit.cover,
+                  clipBehavior: Clip.hardEdge,
+                  child: RotatedBox(
+                    quarterTurns: turns,
+                    child: SizedBox(
+                      width: w,
+                      height: h,
+                      child: Texture(textureId: cap.textureId!),
+                    ),
+                  ),
+                ),
+                if (_ring != null)
+                  Positioned(
+                    left: _ring!.dx - 32,
+                    top: _ring!.dy - 32,
+                    child: IgnorePointer(
+                      child: Container(
+                        width: 64,
+                        height: 64,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Tok.teal, width: 2),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
       );
     }
+    final running = controller.sessionRunning;
     final msg = switch (st) {
-      'not_started' => 'Camera · Not started',
+      'not_started' =>
+        running
+            ? 'Camera off · starts when the PC clicks Start video'
+            : 'Camera off · start a session first',
       'initializing' => 'Camera · Starting…',
-      'paused' => 'Camera · Paused while scanning a QR code',
       'interrupted' => 'Camera · Interrupted — the app is in the background',
       'error' => switch (cap.error) {
         'PERMISSION_CAMERA' => 'Camera · Permission needed',
         'DEVICE_IN_USE' => 'Camera · In use by another app',
         'CAPABILITY_UNSUPPORTED' => 'Camera · Not supported on this device',
-        _ => 'Camera · Failed to start',
+        _ => 'Camera · No frames from the camera',
       },
       _ => 'Camera · Starting…',
     };
@@ -210,22 +280,19 @@ class CameraViewport extends StatelessWidget {
                             fontSize: 14,
                           ),
                         ),
-                        if (st == 'error' && controller.sessionRunning) ...[
+                        if (st == 'error' &&
+                            running &&
+                            cap.permissionDenied) ...[
                           const SizedBox(height: 12),
-                          cap.permissionDenied
-                              ? FilledButton(
-                                  onPressed: controller.grantCamera,
-                                  child: Text(
-                                    controller.permissions['camera'] ==
-                                            'permanently_denied'
-                                        ? 'Open settings'
-                                        : 'Grant camera',
-                                  ),
-                                )
-                              : OutlinedButton(
-                                  onPressed: cap.start,
-                                  child: const Text('Retry'),
-                                ),
+                          FilledButton(
+                            onPressed: controller.grantCamera,
+                            child: Text(
+                              controller.permissions['camera'] ==
+                                      'permanently_denied'
+                                  ? 'Open settings'
+                                  : 'Grant camera',
+                            ),
+                          ),
                         ],
                       ],
                     ),

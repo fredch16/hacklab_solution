@@ -47,7 +47,7 @@ export async function startVideo() {
         return;
     teardown();
     const my = gen;
-    set("connecting");
+    set("connecting", "Starting phone camera\u2026");
     try {
         const p = new RTCPeerConnection({ iceServers: [] });
         pc = p;
@@ -82,7 +82,7 @@ export async function startVideo() {
             stopVideo("Video stopped — not connected to the phone.", false);
             return;
         }
-        answerTimer = window.setTimeout(() => stopVideo("The phone did not answer. Try again."), 10000);
+        answerTimer = window.setTimeout(() => stopVideo("The phone did not answer. Try again."), 12000);
         statsTimer = window.setInterval(() => void tick(), 1000);
     }
     catch {
@@ -128,6 +128,8 @@ export function handleSignal(type, requestId, payload) {
         if (requestId && requestId !== reqId)
             return true;
         clearTimeout(answerTimer);
+        view.message = "Connecting\u2026";
+        changed();
         p.setRemoteDescription({ type: "answer", sdp: String(payload?.sdp ?? "") }).catch(() => stopVideo(webrtcErrorMessage("NEGOTIATION_FAILED")));
     }
     else if (type === "webrtc.error") {

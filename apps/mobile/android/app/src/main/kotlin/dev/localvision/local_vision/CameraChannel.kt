@@ -8,13 +8,14 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 /** Thin Flutter bridge for CameraSession + VisionStream. */
-class CameraChannel(private val activity: FlutterActivity, engine: FlutterEngine) {
+class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
     private val emit: (Map<String, Any?>) -> Unit = { e -> main.post { sink?.success(e) } }
-    private val vision = VisionStream(activity.applicationContext, emit)
-    private val camera = CameraSession(activity, activity, engine.renderer, vision, emit)
+    private lateinit var camera: CameraSession
+    private val vision = VisionStream(activity.applicationContext, emit) { camera.stop("stream") }
     private var ticking = true
+    private var offerGen = 0
 
     private val tick = object : Runnable {
         override fun run() {
@@ -27,22 +28,19 @@ class CameraChannel(private val activity: FlutterActivity, engine: FlutterEngine
     }
 
     init {
+        camera = CameraSession(activity, activity, engine.renderer, vision, emit)
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "dev.localvision/camera").setMethodCallHandler { call, result ->
             when (call.method) {
-                "start" -> camera.start { id -> result.success(mapOf("textureId" to id)) }
-                "stop" -> { vision.stop("camera_stopped"); camera.stop(); result.success(null) }
-                "pause" -> { camera.pause(); result.success(null) }
-                "resume" -> { camera.resume(); result.success(null) }
-                "webrtcOffer" -> {
-                    val sdp = call.argument<String>("sdp")
-                    if (sdp == null) result.error("BAD_REQUEST", "missing sdp", null)
-                    else if (!camera.running) result.error("CAMERA_UNAVAILABLE", "camera is not running", null)
-                    else vision.offer(sdp) { answer, code, msg ->
-                        if (answer != null) result.success(mapOf("sdp" to answer))
-                        else result.error(code ?: "NEGOTIATION_FAILED", msg, null)
-                    }
+                "start" -> camera.start(call.argument<String>("user") ?: "scan") { id ->
+                    result.success(mapOf("textureId" to id, "ok" to (id != null)))
                 }
+                "stop" -> { camera.stop(call.argument<String>("user") ?: "scan"); result.success(null) }
+                "focus" -> {
+                    camera.focus(call.argument<Double>("x") ?: 0.5, call.argument<Double>("y") ?: 0.5)
+                    result.success(null)
+                }
+                "webrtcOffer" -> offer(call.argument<String>("sdp"), result)
                 "webrtcStop" -> { vision.stop(call.argument<String>("reason") ?: "browser_stop"); result.success(null) }
                 else -> result.notImplemented()
             }
@@ -54,10 +52,33 @@ class CameraChannel(private val activity: FlutterActivity, engine: FlutterEngine
         main.postDelayed(tick, 1000)
     }
 
+    /** Browser asked for video: start the camera, wait for frames, then negotiate. */
+    private fun offer(sdp: String?, result: MethodChannel.Result) {
+        if (sdp == null) { result.error("BAD_REQUEST", "missing sdp", null); return }
+        val gen = ++offerGen
+        emit(mapOf("event" to "stream", "state" to "connecting", "error" to null))
+        camera.start("stream") { id ->
+            if (gen != offerGen) { result.error("NEGOTIATION_FAILED", "replaced by a newer offer", null); return@start }
+            if (id == null) {
+                emit(mapOf("event" to "stream", "state" to "failed", "error" to "CAMERA_UNAVAILABLE"))
+                result.error("CAMERA_UNAVAILABLE", camera.lastFailure, null)
+                return@start
+            }
+            vision.offer(sdp) { answer, code, msg ->
+                if (answer != null) result.success(mapOf("sdp" to answer))
+                else {
+                    vision.stop("error", "NEGOTIATION_FAILED") // releases the camera
+                    camera.stop("stream")
+                    result.error(code ?: "NEGOTIATION_FAILED", msg, null)
+                }
+            }
+        }
+    }
+
     fun dispose() {
         ticking = false
         main.removeCallbacks(tick)
         vision.dispose()
-        camera.stop()
+        camera.shutdown()
     }
 }

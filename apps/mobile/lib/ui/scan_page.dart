@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../app/session_controller.dart';
+import 'capture_page.dart';
 import 'theme.dart';
 
 /// Returns the request id from `lvc-pair:1:<id>`, else null.
@@ -23,11 +23,11 @@ class ScanPage extends StatefulWidget {
 }
 
 class _ScanPageState extends State<ScanPage> {
-  MobileScannerController? _scanner;
+  StreamSubscription<String>? _scanSub;
+  var _holding = false;
   String? _message;
   Timer? _clear;
   var _busy = false;
-  var _cameraFree = false;
 
   SessionController get c => widget.controller;
   bool get _granted => c.permissions['camera'] == 'granted';
@@ -36,38 +36,30 @@ class _ScanPageState extends State<ScanPage> {
   void initState() {
     super.initState();
     c.addListener(_onController);
-    // The session camera must be unbound before the scanner opens the camera.
-    c.capture.pauseForScanner().whenComplete(() {
-      _cameraFree = true;
-      if (mounted) _onController();
-    });
+    _scanSub = c.capture.scans.listen(_onScan);
+    _hold();
   }
 
   void _onController() {
-    _syncScanner();
+    _hold();
     if (mounted) setState(() {});
   }
 
-  void _syncScanner() {
-    if (_granted && _cameraFree && _scanner == null) {
-      _scanner = MobileScannerController(
-        formats: const [BarcodeFormat.qrCode],
-        detectionSpeed: DetectionSpeed.noDuplicates,
-      );
+  /// Take the session camera for scanning once permission is granted.
+  void _hold() {
+    if (_granted && !_holding) {
+      _holding = true;
+      c.capture.startForScanner();
     }
   }
 
   @override
   void dispose() {
     c.removeListener(_onController);
+    _scanSub?.cancel();
     _clear?.cancel();
-    // Release the scanner's camera first, then give it back to the session.
-    final scanner = _scanner;
-    final capture = c.capture;
-    Future(() async {
-      await scanner?.dispose();
-      await capture.resumeFromScanner();
-    });
+    if (_holding)
+      c.capture.stopForScanner(); // camera stops unless a PC stream uses it
     super.dispose();
   }
 
@@ -79,11 +71,9 @@ class _ScanPageState extends State<ScanPage> {
     });
   }
 
-  Future<void> _onDetect(BarcodeCapture cap) async {
+  Future<void> _onScan(String raw) async {
     if (_busy) return;
-    for (final b in cap.barcodes) {
-      final raw = b.rawValue;
-      if (raw == null) continue;
+    {
       final id = parsePairQr(raw);
       if (id == null) {
         _say('Not a Local Vision pairing code.');
@@ -95,7 +85,6 @@ class _ScanPageState extends State<ScanPage> {
         return;
       }
       _busy = true;
-      await _scanner?.stop();
       if (!mounted) return;
       final approve = await showModalBottomSheet<bool>(
         context: context,
@@ -148,7 +137,6 @@ class _ScanPageState extends State<ScanPage> {
         return;
       }
       _busy = false; // sheet dismissed without a choice: keep scanning
-      await _scanner?.start();
       return;
     }
   }
@@ -160,13 +148,29 @@ class _ScanPageState extends State<ScanPage> {
       backgroundColor: Tok.ink900,
       foregroundColor: Tok.textPrimary,
     ),
-    body: _granted && _scanner != null ? _scanView() : _permissionView(),
+    body: _granted ? _scanView() : _permissionView(),
   );
 
   Widget _scanView() => Stack(
     fit: StackFit.expand,
     children: [
-      MobileScanner(controller: _scanner!, onDetect: _onDetect),
+      Center(child: CameraViewport(controller: c)),
+      const IgnorePointer(
+        child: Center(
+          child: SizedBox(
+            width: 220,
+            height: 220,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.fromBorderSide(
+                  BorderSide(color: Tok.teal, width: 3),
+                ),
+                borderRadius: BorderRadius.all(Radius.circular(18)),
+              ),
+            ),
+          ),
+        ),
+      ),
       Align(
         alignment: Alignment.bottomCenter,
         child: SafeArea(

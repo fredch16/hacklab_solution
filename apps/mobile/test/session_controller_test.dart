@@ -83,6 +83,7 @@ void main() {
       expect(c.snapshotPayload()['app'], 'active');
       expect(c.snapshotPayload()['keep_screen_on'], true);
 
+      await c.capture.startForScanner(); // a running camera
       c.didChangeAppLifecycleState(AppLifecycleState.paused);
       expect(c.phase, AppPhase.interrupted);
       expect(c.capture.state, 'interrupted');
@@ -91,6 +92,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(c.phase, AppPhase.active);
       expect(c.capture.state, 'previewing');
+      await c.capture.stopForScanner();
 
       c.pairing.createOneTimeCode();
       c.pairing.authorizeViewer(c.pairing.codeState.code!);
@@ -100,7 +102,6 @@ void main() {
       expect(c.server.running, isFalse);
       expect(c.server.viewerInfo.paired, isFalse);
       expect(wake, [true, false]);
-      expect(cam.calls.last, 'stop');
 
       // paused while not in a session does nothing
       c.didChangeAppLifecycleState(AppLifecycleState.paused);
@@ -109,44 +110,57 @@ void main() {
   });
 
   testWidgets(
-    'session start requests camera, starts it, snapshot shows camera + stream',
+    'session start asks permission only; camera starts on offer, stops on end',
     (tester) async {
       await tester.runAsync(() async {
         await c.init();
         await c.startSession();
-        expect(cam.calls, ['start']);
-        final snap = c.snapshotPayload();
+        expect(cam.calls, isEmpty); // the session does NOT start the camera
+        var snap = c.snapshotPayload();
         expect(snap['camera'], {
-          'state': 'previewing',
+          'state': 'not_started',
           'error': null,
           'lens': 'back',
         });
         expect(snap['stream'], {'state': 'idle', 'error': null});
         expect((snap['permissions'] as Map)['camera'], 'granted');
+
+        await c.relay.handle(
+          '{"version":1,"type":"webrtc.offer","request_id":"r","payload":{"sdp":"v=0"}}',
+        );
+        expect(cam.cameraRunning, isTrue);
+        snap = c.snapshotPayload();
+        expect(snap['camera'], {
+          'state': 'previewing',
+          'error': null,
+          'lens': 'back',
+        });
+
         await c.endSession();
+        expect(cam.cameraRunning, isFalse);
       });
     },
   );
 
   testWidgets(
-    'camera permission denied: session runs, camera error, grant later starts it',
+    'camera permission denied: session runs, camera error, offer refused, grant clears it',
     (tester) async {
       await tester.runAsync(() async {
         perms.grantOnRequest = 'denied';
         await c.init();
         await c.startSession();
         expect(c.phase, AppPhase.active);
-        expect(cam.calls, isEmpty);
         expect(c.snapshotPayload()['camera'], {
           'state': 'error',
           'error': 'PERMISSION_CAMERA',
           'lens': 'back',
         });
+        await expectLater(c.capture.offer('x'), throwsA(isA<Exception>()));
         perms.camera = 'granted'; // e.g. granted in system settings
         c.didChangeAppLifecycleState(AppLifecycleState.resumed);
         await Future<void>.delayed(const Duration(milliseconds: 50));
-        expect(cam.calls, ['start']);
-        expect(c.capture.state, 'previewing');
+        expect(cam.calls, isEmpty); // granting does not start the camera
+        expect(c.capture.state, 'not_started');
         await c.endSession();
       });
     },
@@ -177,7 +191,7 @@ void main() {
   ) async {
     await tester.runAsync(() => c.init());
     await tester.pumpWidget(LocalVisionApp(controller: c));
-    expect(find.text('Camera · Not started'), findsOneWidget);
+    expect(find.text('Camera off · start a session first'), findsOneWidget);
     expect(find.text('WebRTC · Idle (no viewer)'), findsOneWidget);
     expect(find.text('Local master · Not started'), findsOneWidget);
     expect(find.text('Unavailable'), findsWidgets);

@@ -8,3 +8,4 @@ events.jsonl
 frame.jpg
 motion_log.jsonl
 .motion.lock
+scene.json

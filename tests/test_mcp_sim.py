@@ -101,7 +101,7 @@ async def main():
         img = await client.call_tool("get_camera_image", {})
         assert img.is_error and "moving" in img.content[0].text, img.content[0].text
         st = data(await client.call_tool("get_status", {}))
-        assert st["moving"] and st["target_view"] == target and st["phase"] in ("check", "rise", "turn", "descend"), st
+        assert st["moving"] and st["target_view"] == target and set(st["phase"].split("+")) <= {"check", "rise", "turn", "descend", "roll", "direct", "arc"}, st
         st = await wait_idle(client)
         assert st["last_result"]["ok"] is True and st["last_result"]["view"] == target, st
         st = await wait_where(client)

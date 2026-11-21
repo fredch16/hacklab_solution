@@ -8,6 +8,7 @@ import 'package:local_vision/features/connectivity/snapshot.dart';
 import 'package:local_vision/platform/device_status.dart';
 
 void main() {
+  lanAddressTests();
   test('private address filter', () {
     bool ok(String a) => isAllowedPeer(InternetAddress(a));
     for (final a in [
@@ -117,5 +118,33 @@ void main() {
       'camera': 'not_requested',
       'microphone': 'not_requested',
     });
+  });
+}
+
+void lanAddressTests() {
+  InternetAddress ip(String a) => InternetAddress(a);
+  test('cellular interfaces are excluded from advertised addresses', () {
+    final got = selectLanAddresses({
+      'wlan0': [ip('10.19.20.246')],
+      'ap_br_wlan2': [ip('10.181.249.119')],
+      'rmnet16': [ip('100.94.73.169')],
+      'v4-rmnet_data2': [ip('192.0.0.4')],
+      'ccmni1': [ip('10.5.5.5')],
+      'lo': [ip('127.0.0.1')],
+      'swlan0': [ip('192.168.43.1')],
+      'dummy0': [ip('8.8.8.8')],
+    });
+    expect(got, ['10.181.249.119', '10.19.20.246', '192.168.43.1']);
+  });
+
+  test('non-cellular CGNAT (e.g. a CGNAT-numbered Wi-Fi) is allowed', () {
+    expect(
+      selectLanAddresses({
+        'wlan0': [ip('100.100.1.2')],
+      }),
+      ['100.100.1.2'],
+    );
+    expect(isCellularInterface('rmnet16'), isTrue);
+    expect(isCellularInterface('wlan0'), isFalse);
   });
 }

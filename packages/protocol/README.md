@@ -4,8 +4,8 @@ Both `apps/mobile` (server) and `apps/dashboard` (browser client) implement exac
 
 ## Transport
 
-- Phone serves **HTTPS + WSS on port 8443**, bound to `0.0.0.0`, using a **self-signed certificate** (ADR 0001). Connections whose remote address is not loopback, RFC1918 private (10/8, 172.16/12, 192.168/16), link-local (169.254/16) or CGNAT (100.64/10) are dropped.
-- Certificate: generated on the phone, stored in app-private storage, SAN = every current non-loopback IPv4 of the phone. Regenerated only when the IP set is no longer covered. The phone shows its **SHA-256 fingerprint** (uppercase hex, colon-separated) on the Link tab and in the snapshot.
+- Phone serves **HTTPS + WSS on port 8443**, bound to `0.0.0.0`, using a **self-signed certificate** (ADR 0001). Connections whose remote address is not loopback, RFC1918 private (10/8, 172.16/12, 192.168/16), link-local (169.254/16) or CGNAT (100.64/10) are dropped (CGNAT is accepted only as a peer; the phone never advertises a cellular CGNAT address). Answer SDP candidates are limited to RFC1918/link-local IPv4 host candidates (UDP/TCP): no loopback, no IPv6, no CGNAT.
+- Certificate: generated on the phone, stored in app-private storage, SAN = every current non-loopback, **non-cellular** IPv4 of the phone (interfaces rmnet*/ccmni*/pdp*/wwan*… are never listed, put in the certificate or offered as ICE candidates; hotspot/tether and Wi-Fi interfaces are). Regenerated only when the IP set is no longer covered. The phone shows its **SHA-256 fingerprint** (uppercase hex, colon-separated) on the Link tab and in the snapshot.
 - Server runs **only while a session is active** (phone "Start session"); "End session" stops the server and revokes the viewer.
 - Static dashboard files are served from Flutter assets `assets/dashboard/` (`/` → `index.html`). All responses carry `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'`.
 

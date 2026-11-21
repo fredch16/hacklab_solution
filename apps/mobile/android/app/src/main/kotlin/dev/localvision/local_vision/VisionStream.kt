@@ -1,6 +1,8 @@
 package dev.localvision.local_vision
 
 import android.content.Context
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -61,6 +63,30 @@ class VisionStream(
     private companion object {
         // rtc::AdapterType bit flags: CELLULAR | 2G | 3G | 4G | 5G
         const val CELLULAR_MASK = 4 or 64 or 128 or 256 or 512
+    }
+
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    /** Low-latency Wi-Fi (no power-save batching) while a peer is active. */
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        try {
+            val wm = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wm.createWifiLock(mode, "lvc-stream").also {
+                it.setReferenceCounted(false)
+                it.acquire()
+            }
+            Log.i("LVC", "wifi lock acquired mode=$mode")
+        } catch (e: Throwable) {
+            Log.w("LVC", "wifi lock unavailable: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try { wifiLock?.takeIf { it.isHeld }?.release() } catch (_: Throwable) {}
+        wifiLock = null
     }
 
     val hasPeer: Boolean get() = peer != null
@@ -195,8 +221,10 @@ class VisionStream(
                                     val desc = pc.localDescription
                                     if (desc == null) { finished = false; fail("no local description") }
                                     else {
-                                        logCandidates(desc.description)
-                                        done(desc.description, null, null)
+                                        val answer = SdpFilter.filter(desc.description)
+                                        logCandidates(answer)
+                                        acquireWifiLock()
+                                        done(answer, null, null)
                                     }
                                 }
                                 pending = { finish.run() }
@@ -259,6 +287,7 @@ class VisionStream(
         wantsFrames = false
         connected = false
         disconnectCheck?.let { main.removeCallbacks(it) }
+        releaseWifiLock()
         try { pc.close(); pc.dispose() } catch (_: Throwable) {}
         emit(mapOf("event" to "webrtc_stopped", "reason" to reason))
         emit(mapOf("event" to "stream", "state" to if (failure != null) "failed" else "idle", "error" to failure))
@@ -275,7 +304,17 @@ class VisionStream(
     fun collectStats(cb: (Map<String, Any?>?) -> Unit) {
         val pc = peer
         if (pc == null || !connected) { cb(null); return }
-        pc.getStats { report -> main.post { cb(parse(report)) } }
+        pc.getStats { report ->
+            main.post {
+                val m = parse(report)
+                if (m != null) {
+                    Log.i("LVC", "stream rtt=${m["rtt_ms"]?.let { "%.0f".format(it as Double) } ?: "n/a"}ms " +
+                        "fps=${m["fps"]?.let { "%.1f".format(it as Double) } ?: "n/a"} " +
+                        "bps=${m["bitrate_bps"] ?: "n/a"} path=${m["local_candidate"]}/${m["remote_candidate"]}")
+                }
+                cb(m)
+            }
+        }
     }
 
     private fun num(v: Any?): Double? = (v as? Number)?.toDouble()

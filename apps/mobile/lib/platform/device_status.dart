@@ -130,18 +130,43 @@ class ChannelDeviceStatusSource implements DeviceStatusSource {
   }
 }
 
-/// Non-loopback IPv4 addresses the server can actually be reached on
-/// (private/CGNAT/link-local; public mobile-data addresses are excluded
-/// because the server would drop those peers anyway).
+/// Cellular/data interfaces are never advertised: their addresses are CGNAT
+/// or public, change every session and would force a new certificate.
+bool isCellularInterface(String name) {
+  final n = name.toLowerCase();
+  return const [
+    'rmnet',
+    'v4-rmnet',
+    'ccmni',
+    'pdp',
+    'wwan',
+    'ppp',
+    'seth',
+    'usb_rmnet',
+  ].any(n.startsWith);
+}
+
+/// Pure selection so it is testable: non-loopback, non-cellular, reachable IPv4.
+List<String> selectLanAddresses(
+  Map<String, List<InternetAddress>> byInterface,
+) {
+  final out = <String>{
+    for (final e in byInterface.entries)
+      if (!isCellularInterface(e.key))
+        for (final a in e.value)
+          if (a.type == InternetAddressType.IPv4 &&
+              !a.isLoopback &&
+              isAllowedPeer(a))
+            a.address,
+  }.toList()..sort();
+  return out;
+}
+
+/// IPv4 addresses the server can be reached on (Wi-Fi, hotspot, ethernet).
 Future<List<String>> localIpv4Addresses() async {
   try {
     final ifs = await NetworkInterface.list(type: InternetAddressType.IPv4);
-    final out = <String>{
-      for (final i in ifs)
-        for (final a in i.addresses)
-          if (!a.isLoopback && isAllowedPeer(a)) a.address,
-    }.toList()..sort();
-    return out;
+    return selectLanAddresses({for (final i in ifs) i.name: i.addresses});
   } on SocketException {
     return const [];
   }

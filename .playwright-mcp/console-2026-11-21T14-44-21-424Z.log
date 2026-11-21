@@ -19,3 +19,11 @@
 [ 1363073ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:176
 [ 1363078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
 [ 1378659ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: HTTP Authentication failed; no valid credentials available @ https://10.181.249.119:8443/main.js:176
+[ 3245242ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 3246295ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:196
+[ 3246298ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 3248332ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:196
+[ 3248339ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 3252351ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:196
+[ 3252356ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 3260559ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: HTTP Authentication failed; no valid credentials available @ https://10.181.249.119:8443/main.js:196

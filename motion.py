@@ -47,6 +47,13 @@ SPEED_FIRST = 100      # ~9 deg/s: forced for views nobody has checked on the re
 SPEED_SLOW = 200       # ~18 deg/s
 SPEED_NORMAL = 400     # ~35 deg/s
 SPEED_FAST = 800       # ~70 deg/s for rise and turn; the descent into a view is capped at SPEED_NORMAL
+SPEED_TURBO = 2000     # ~175 deg/s for rise and turn, run by the servo's own motion profile (see
+                       # _run_segment); the descent is streamed at SPEED_FAST. The servo's limit is ~3400.
+TURBO_ACCEL = 40       # register 0x29 for the joint that travels furthest (4000 steps/s^2)
+TURBO_CURRENT_LIMIT = 380   # raw; accelerating hard draws more than CURRENT_LIMIT (stall is ~415)
+TURBO_DRIFT_LIMIT = 100     # held joints get shaken more when the others move fast
+HOLD_ACCEL = 100       # a Stop brakes joints that were being driven as hard as this allows
+TEMP_LIMIT = 70        # deg C, sustained: stop before a servo cooks
 MIN_SEGMENT_S = 0.8
 RATE_HZ = 30
 MAX_TICK_S = 2 / RATE_HZ   # a late tick never advances the path by more than this much time
@@ -359,7 +366,9 @@ async def hold(arm, keep_within: int = FREEZE_TOL, moving: tuple = ()):
     goals = {m: near(m) for m in held
              if m in moving or abs(tel[m]["goal"] - tel[m]["pos"]) > keep_within}
     if goals:
-        await _write(arm, goals)
+        # Joints that were being driven brake as hard as the servo allows (matters after turbo,
+        # where the servo was running towards a far goal on a gentle acceleration setting).
+        await (_write(arm, goals, accel=HOLD_ACCEL) if moving else _write(arm, goals))
     # Confirmed only when reads taken after this point show every joint with the goal it should have.
     await _confirm(arm, tel, {m: goals.get(m, tel[m]["goal"]) for m in held}, ids=held)
     return "confirmed"
@@ -479,8 +488,11 @@ class _Watch:
 OTHER_WRITER = "something else is commanding motor {}; is the follower still linked to a leader in Station?"
 
 
-def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goal: dict):
-    """Checks that run on every sample from the first waypoint until the segment has settled."""
+def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goal: dict,
+           hard: tuple = (), drift_limit: int = DRIFT_LIMIT):
+    """Checks that run on every sample from the first waypoint until the segment has settled.
+    `hard`: joints being driven flat out (turbo); for them full PWM is expected, so only the
+    higher current limit applies."""
     if tuple(sorted(tel)) != EXPECTED_MOTORS:
         raise MotionError(f"a motor dropped off the bus (found {sorted(tel)})")
     for m in MOVABLE:
@@ -494,22 +506,29 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
         stats["max_current"][m] = max(stats["max_current"].get(m, 0), t["current"])
         stats["max_load"][m] = max(stats["max_load"].get(m, 0), t["load"])
         stats["max_temp"] = max(stats.get("max_temp", 0), t.get("temp", 0))
-        watch.check(("current", m), t["current"] > CURRENT_LIMIT, now,
+        watch.check(("temp", m), t.get("temp", 0) >= TEMP_LIMIT, now,
+                    f"motor {m} is too hot ({t.get('temp')} C); let it cool down")
+        watch.check(("current", m), t["current"] > (TURBO_CURRENT_LIMIT if m in hard else CURRENT_LIMIT), now,
                     f"motor {m} is drawing too much current ({t['current']}); it may be blocked", BlockedError)
-        watch.check(("load", m), t["load"] > LOAD_LIMIT, now,
+        watch.check(("load", m), m not in hard and t["load"] > LOAD_LIMIT, now,
                     f"motor {m} is pushing at full effort (load {t['load']}); it may be blocked", BlockedError)
     for m, g in held_goal.items():      # a joint we are not moving must keep the goal it had
         if abs(tel[m]["goal"] - g) > GOAL_MATCH:
             raise MotionError(OTHER_WRITER.format(m))
     for m, ref in held_pos.items():
-        if abs(tel[m]["pos"] - ref) > DRIFT_LIMIT:
+        if abs(tel[m]["pos"] - ref) > drift_limit:
             raise BlockedError(f"motor {m} was pushed off its position while holding still")
 
 
 async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
-                       env: dict, stats: dict, ctx: dict, planned: dict) -> float:
+                       env: dict, stats: dict, ctx: dict, planned: dict, turbo: bool = False) -> float:
     """Move the joints in `goal` to their targets; every other joint must stay put.
-    `planned` gives, for joints an earlier segment moved, where they are supposed to be."""
+    `planned` gives, for joints an earlier segment moved, where they are supposed to be.
+
+    Normally the path is streamed in small waypoints on a leash. With `turbo` the final goal
+    is written once and each servo runs its own speed/acceleration profile: much faster, but
+    the goal is far ahead of the arm, so what protects it is the progress watchdog, the other
+    guards and a hard-braking Stop, not the leash."""
     tel = arm.telemetry(max_age_s=STALE_S)
     ids = sorted(goal)
     watch = _Watch()
@@ -549,10 +568,44 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         k = _ease(s)
         return {m: min(max(int(round(start[m] + (goal[m] - start[m]) * k)), env[m][0]), env[m][1]) for m in ids}
 
-    s, last, stalled_since, first = 0.0, time.monotonic(), None, True
-    cmd = dict(start)
     sent: deque = deque()                                    # (time, goals) we wrote recently
-    while True:
+    if turbo:
+        final = {m: min(max(goal[m], env[m][0]), env[m][1]) for m in ids}
+        todo = {m: abs(final[m] - tel[m]["pos"]) for m in ids}
+        far = max(max(todo.values()), 1)
+        # Slower joints get proportionally less speed and acceleration, so all arrive together
+        # and the arm stays close to the straight line between the two taught poses.
+        speeds = {m: max(60, int(peak_speed * todo[m] / far)) for m in ids}
+        accels = {m: max(5, int(TURBO_ACCEL * todo[m] / far)) for m in ids}
+        expected = far / peak_speed + peak_speed / (TURBO_ACCEL * 100)
+        ctx["wrote"] = _last["wrote"] = True
+        await _write(arm, final, speed=speeds, accel=accels)
+        t0 = best_t = time.monotonic()
+        sent.append((t0, final))
+        best = far
+        while True:
+            await asyncio.sleep(1 / RATE_HZ)
+            now = time.monotonic()
+            tel = arm.telemetry(max_age_s=STALE_S)
+            _guard(tel, watch, now, stats, held_pos, held_goal, hard=tuple(ids), drift_limit=TURBO_DRIFT_LIMIT)
+            watch.check("foreign", now - t0 > GOAL_HISTORY_S
+                        and any(abs(tel[m]["goal"] - final[m]) > GOAL_MATCH for m in ids), now,
+                        OTHER_WRITER.format(next((m for m in ids if abs(tel[m]["goal"] - final[m]) > GOAL_MATCH), "")))
+            worst = max(ids, key=lambda m: abs(final[m] - tel[m]["pos"]))
+            left = abs(final[worst] - tel[worst]["pos"])
+            status["progress"] = max(0.0, 1 - left / far)
+            if left <= ARRIVE_TOL:
+                break
+            if left < best - 8:
+                best, best_t = left, now
+            elif now - best_t > 0.5:
+                raise BlockedError(f"motor {worst} stopped making progress {left} steps from its goal; it may be blocked")
+            if now - t0 > 2 * expected + 2:
+                raise BlockedError(f"'{name}' is taking far longer than it should; stopping")
+        cmd, duration = final, time.monotonic() - t0
+    s, last, stalled_since, first = (1.0 if turbo else 0.0), time.monotonic(), None, True
+    cmd = cmd if turbo else dict(start)
+    while not turbo:
         now = time.monotonic()
         tel = arm.telemetry(max_age_s=STALE_S)               # raises if any motor's data is stale
         _guard(tel, watch, now, stats, held_pos, held_goal)
@@ -597,7 +650,8 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         await asyncio.sleep(SETTLE_POLL_S)
         now = time.monotonic()
         tel = arm.telemetry(max_age_s=STALE_S)
-        _guard(tel, watch, now, stats, held_pos, held_goal)
+        _guard(tel, watch, now, stats, held_pos, held_goal,
+               drift_limit=TURBO_DRIFT_LIMIT if turbo else DRIFT_LIMIT)
         echoed = all(abs(tel[m]["goal"] - final[m]) <= GOAL_MATCH for m in ids)
         if not echoed and now - sent[-1][0] > GOAL_HISTORY_S:
             bad = next(m for m in ids if abs(tel[m]["goal"] - final[m]) > GOAL_MATCH)
@@ -782,10 +836,14 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
                         raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
                                           "needs it to be; not continuing")
                 ctx["moving"] = _last["driving"] = tuple(goal)
-                # Coming down onto a view is where an overshoot would matter: never faster than normal.
-                seg_speed = min(max_speed, SPEED_NORMAL) if seg == "descend" else max_speed
+                # Turbo: rise and turn on the servos' own profile; the descent is streamed at fast.
+                # Otherwise the descent is capped at normal: coming down onto a view is where an
+                # overshoot would matter.
+                turbo = max_speed >= SPEED_TURBO and seg != "descend"
+                seg_speed = (max_speed if seg != "descend"
+                             else SPEED_FAST if max_speed >= SPEED_TURBO else min(max_speed, SPEED_NORMAL))
                 result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
-                                                         {m: expect[m] for m in moved})
+                                                         {m: expect[m] for m in moved}, turbo=turbo)
                 ctx["moving"] = _last["driving"] = ()
                 expect.update(goal)
                 moved |= set(goal)

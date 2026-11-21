@@ -77,7 +77,8 @@ async def main(args):
             names = [motion.TRANSIT]
         if not names:
             raise RuntimeError("give view names, --tour N, --recover, --where, --unlink, --engage or --list")
-        speed = motion.SPEED_FAST if args.fast else motion.SPEED_NORMAL if args.normal else motion.SPEED_SLOW
+        speed = (motion.SPEED_TURBO if args.turbo else motion.SPEED_FAST if args.fast
+                 else motion.SPEED_NORMAL if args.normal else motion.SPEED_SLOW)
         for name in names:
             r = await motion.go_to_view(arm, name, max_speed=speed, allow_unknown_start=args.recover)
             print(f"{'ok  ' if r['ok'] else 'FAIL'} {name:<10} {r['duration']:>5}s  {' > '.join(r['route'])}  {r['error'] or ''}")
@@ -100,6 +101,7 @@ if __name__ == "__main__":
     p.add_argument("--mark-checked", metavar="VIEW", help="record that this view's move was watched and is clean")
     p.add_argument("--list", action="store_true")
     p.add_argument("--normal", action="store_true", help="normal speed (checked views only; default is slow)")
+    p.add_argument("--turbo", action="store_true", help="turbo (checked views only): rise and turn at the servos' own pace")
     p.add_argument("--fast", action="store_true", help="fast (checked views only; the descent stays at normal speed)")
     p.add_argument("--pause", type=float, default=1.0, help="seconds to wait at each view")
     p.add_argument("--sim", action="store_true", help="simulated arm, no hardware")

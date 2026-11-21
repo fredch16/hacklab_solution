@@ -109,7 +109,7 @@ class SimArm:
             self._goal[m] = float(g)
             self._torque[m] = True          # like the real servo: a goal write energises the joint
             if speed is not None:
-                self._speed[m] = speed
+                self._speed[m] = speed[m] if isinstance(speed, dict) else speed
         for m, g in self.hijack.items():
             self._goal[m] = float(g)
         self._echo.append((time.monotonic(), dict(self._goal)))

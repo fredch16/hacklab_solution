@@ -345,13 +345,18 @@ class Arm:
         value = b"\x01" if enable else b"\x00"
         await send_commands(self.client, [self._sync_write(RAM_TORQUE_ENABLE, {mid: value for mid in ids})])
 
-    async def write_goals(self, goals: dict[int, int], speed: int | None = None, accel: int | None = None):
-        """Goal positions (0-4095) in one pack; speed/accel go first so they apply to this move."""
+    async def write_goals(self, goals: dict[int, int], speed: int | dict | None = None,
+                          accel: int | dict | None = None):
+        """Goal positions (0-4095) in one pack; speed/accel go first so they apply to this move.
+        speed (steps/s) and accel (units of 100 steps/s^2) are one value for all, or {motor: value}."""
+        def per(value, mid):
+            return value[mid] if isinstance(value, dict) else value
+
         pack = []
         if speed is not None:
-            pack.append(self._sync_write(RAM_GOAL_SPEED, {mid: speed.to_bytes(2, "little") for mid in goals}))
+            pack.append(self._sync_write(RAM_GOAL_SPEED, {mid: int(per(speed, mid)).to_bytes(2, "little") for mid in goals}))
         if accel is not None:
-            pack.append(self._sync_write(RAM_ACC, {mid: bytes([accel]) for mid in goals}))
+            pack.append(self._sync_write(RAM_ACC, {mid: bytes([min(254, int(per(accel, mid)))]) for mid in goals}))
         pack.append(self._sync_write(RAM_GOAL_POSITION, {mid: g.to_bytes(2, "little") for mid, g in goals.items()}))
         await send_commands(self.client, pack)
 

@@ -313,6 +313,34 @@ async def main():
     await motion.hold(sag)
     check(abs(sag._goal[2] - sag._pos[2]) <= motion.FREEZE_TOL, "hold pulls back a goal that is far from the joint")
 
+    # --- turbo: rise and turn on the servos' own profile -------------------------------------
+    quick = SimArm()
+    t0 = time.monotonic()
+    r = await go_to_view(quick, "left", max_speed=motion.SPEED_TURBO)
+    check(r["ok"] and at(quick, "left") and r["route"] == ["rise", "turn", "descend"],
+          f"turbo move arrives ({time.monotonic() - t0:.1f}s): {r['error']}")
+    check(8 not in quick.written_ids, "turbo never writes the gripper either")
+    jam = SimArm(); jam.stuck = {3}
+    r = await go_to_view(jam, "top", max_speed=motion.SPEED_TURBO)
+    check(not r["ok"] and "motor 3" in r["error"] and "progress" in r["error"] and r["hold"] == "confirmed",
+          f"turbo: a joint that stops making progress ends the move: {r['error']}")
+    check(abs(jam._goal[3] - jam.joints()[3]) <= motion.RELAX_TOL, "...and its far-away goal is pulled back")
+    brake = SimArm()
+    task = asyncio.create_task(go_to_view(brake, "right", max_speed=motion.SPEED_TURBO))
+    await asyncio.sleep(0.35); task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    lead = max(abs(brake._goal[m] - brake.joints()[m]) for m in MOVABLE)
+    check(motion.status["hold"] == "confirmed" and lead <= motion.RELAX_TOL and await still(brake),
+          f"Stop during turbo: goals pulled back to the arm (lead {lead})")
+    slow_view = SimArm()
+    motion.view_checked = lambda name: name != "top"
+    r = await go_to_view(slow_view, "top", max_speed=motion.SPEED_TURBO)
+    check(r["ok"] and slow_view.writes > 40, "an unchecked view never runs in turbo (it is streamed, slowly)")
+    motion.view_checked = lambda name: True
+
     # --- the controller's hold after stopping a move (stop_hold) ----------------------------
     idle = SimArm(start={**VIEWS["top"], 8: 1279})
     idle._goal[2] = idle._pos[2] + 35; idle.stuck = {2}       # resting 35 steps short under load

@@ -173,6 +173,7 @@
         <button data-speed="slow" aria-pressed="true">Slow</button>
         <button data-speed="normal" aria-pressed="false">Normal</button>
         <button data-speed="fast" aria-pressed="false">Fast</button>
+        <button data-speed="turbo" aria-pressed="false">Turbo</button>
       </div>
       <span id="speedHint"></span>
     </div>
@@ -461,7 +462,7 @@ function render() {
   document.body.style.paddingBottom = (document.querySelector(".stopbar").offsetHeight + 16) + "px";
 
   // Speed selector works without state too.
-  const options = (state && state.speed_options) || { slow: 200, normal: 400, fast: 800 };
+  const options = (state && state.speed_options) || { slow: 200, normal: 400, fast: 800, turbo: 2000 };
   if (!(speed in options)) speed = "slow";
   document.querySelectorAll("#speed button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.speed === speed)));
   const first = state && state.first_speed;

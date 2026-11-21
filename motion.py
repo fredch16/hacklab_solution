@@ -302,13 +302,21 @@ async def _torque(arm, on: bool, ids):
 
 
 async def _confirm(arm, goals: dict[int, int], torque: bool | None = None):
-    """Wait until the arm reports these goal registers (and torque state). Raises if it doesn't."""
+    """Wait until the arm reports these goal registers (and torque state) on two different
+    fresh reads in a row, so a look-alike value still on its way through does not count.
+    Raises if it doesn't."""
     deadline = time.monotonic() + CONFIRM_S
+    seen = None         # per-motor read stamps of the last sample that matched
     while True:
         tel = arm.telemetry(max_age_s=STALE_S)
         if (all(abs(tel[m]["goal"] - g) <= GOAL_MATCH for m, g in goals.items())
                 and (torque is None or all(tel[m]["torque"] == torque for m in goals))):
-            return
+            stamps = {m: tel[m]["stamp"] for m in goals}
+            if seen is not None and all(stamps[m] != seen[m] for m in goals):
+                return
+            seen = seen or stamps
+        else:
+            seen = None
         if time.monotonic() > deadline:
             raise MotionError("the arm did not confirm the command")
         await asyncio.sleep(0.05)

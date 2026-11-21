@@ -136,6 +136,7 @@ RECORD_WORDS = re.compile(r"\b(?:record(?:s|ed|ing)?|film(?:s|ed|ing)?|rolling|r
 RECORD_NEGATION = re.compile(r"\b(?:don't|do not|never|without|not|cancel)\b")
 CLEAR_RECORDING = re.compile(r"\b(?:start|begin|stop|end|finish|record|film|rolling|roll)\b")
 RECORD_BOTH = re.compile(r"\b(?:both|all cameras|(?:and|then) (?:start|stop|record|film))\b")
+EXACT_ROBOT_STOP = re.compile(r"(?:stop|end) (?:the )?(?:robot (?:camera )?recording|recording (?:the )?robot(?: camera)?)")
 EXACT_RECORDING = re.compile(r"(?:(start|begin|stop|end) (?:the )?)?(phone |robot )?(camera )?recording$")
 
 
@@ -153,6 +154,8 @@ def recording_context(text: str, acoustic: str | None) -> tuple[str, str | None]
         return camera, "unrelated"
     if RECORD_NEGATION.search(words) or RECORD_BOTH.search(words):
         return camera, "reject"
+    if EXACT_ROBOT_STOP.fullmatch(words):
+        return "robot", "stop"
     if exact:
         verb, target, _ = exact.groups()
         if not verb and not target:

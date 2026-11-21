@@ -148,6 +148,11 @@ test("camera recording targets are explicit and phone is the default", () => {
   assert.equal(plan("start robot recording", "start robot recording")?.type, "robot.recording.start");
   assert.equal(plan("robot camera recording", "start robot recording")?.type, "robot.recording.start");
   assert.equal(plan("stop robot camera recording", "stop robot recording")?.type, "robot.recording.stop");
+  assert.equal(plan("stop robot recording", null)?.type, "robot.recording.stop");
+  assert.equal(plan("please stop recording the robot camera", undefined)?.type, "robot.recording.stop");
+  assert.equal(plan("don't stop robot recording", null), null);
+  assert.equal(plan("start robot recording", null), null);
+  assert.equal(plan("stop recording", null), null);
   assert.equal(plan("phone camera recording", "start recording")?.type, "recording.start");
   assert.equal(plan("start camera recording", "start recording")?.type, "recording.start");
   assert.equal(plan("stop phone recording", "stop recording")?.type, "recording.stop");

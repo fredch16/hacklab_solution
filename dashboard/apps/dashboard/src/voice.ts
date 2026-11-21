@@ -31,7 +31,8 @@ export function planVoiceCommand(type: string, payload: unknown): VoiceRecording
       /^(start|begin) (the )?robot (camera )?recording$/.test(request)) && acoustic_text === "start robot recording") {
     return { type: "robot.recording.start", request_id };
   }
-  if (/^(stop|end) (the )?robot (camera )?recording$/.test(request) && acoustic_text === "stop robot recording") {
+  // The laptop only stops a robot recording owned by this dashboard tab.
+  if (/^(stop|end) (the )?(robot (camera )?recording|recording (the )?robot( camera)?)$/.test(request)) {
     return { type: "robot.recording.stop", request_id };
   }
   if ((request === "record" && acoustic_text === "record") ||
@@ -50,8 +51,7 @@ export interface ArmRequest { session_id: string; utterance_id: string; text: st
 /**
  * A live final the recording grammar did not take, for the PC-side arm command service
  * (`voice_bridge.py`, which owns MCP). Only completed utterances (ended on a pause) with text; the
- * service itself ignores anything about recording, so a recording request that failed the acoustic
- * check still does nothing.
+ * service retries eligible free phrasing under the same recording and target rules.
  */
 export function armRequest(type: string, payload: unknown, sessionId: string | null): ArmRequest | null {
   if (type !== "voice.transcript.final" || !payload || typeof payload !== "object" || !sessionId) return null;

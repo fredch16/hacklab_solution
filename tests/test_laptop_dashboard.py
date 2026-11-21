@@ -257,11 +257,17 @@ class DashboardIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["command"], "robot.recording.start")
             for _ in range(6):
                 await asyncio.wait_for(ws.receive_bytes(), 2)
+            stopped = await bridge._run("stop robot recording", tab)
+            self.assertEqual(stopped, {"ok": True, "command": "robot.recording.stop",
+                                       "message": "Robot camera recording saved.", "error": None})
 
     def test_claude_context_preserves_the_acoustic_gate_and_target(self):
         check = voice_bridge.recording_context
         self.assertEqual(check("robot camera recording", "start robot recording"), ("robot", "start"))
         self.assertEqual(check("start camera recording", None), ("phone", "reject"))
+        self.assertEqual(check("stop robot recording", None), ("robot", "stop"))
+        self.assertEqual(check("do not stop robot recording", None), ("robot", "reject"))
+        self.assertEqual(check("stop recording", None), ("phone", "reject"))
         self.assertEqual(check("don't start robot recording", "start robot recording"), ("robot", "reject"))
         self.assertEqual(check("could you capture and start filming", None), ("phone", "reject"))
         self.assertEqual(check("could you film this with the robot camera", None), ("robot", None))

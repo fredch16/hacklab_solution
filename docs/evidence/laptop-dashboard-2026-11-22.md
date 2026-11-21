@@ -20,3 +20,9 @@
 The owner recorded a real Station feed on the laptop. FFprobe verified a 39.32 s, 960×720, video-only Matroska clip. It was moved to the Git-ignored `Camera recordings/` directory without restarting the paired dashboard. The download endpoint still returned the complete file.
 
 The Pixel continued processing microphone input with zero reported audio drops during that clip and showed Listening. The native logs contained no wake detection during the clip. The cause of the missed wake phrase has not been established. A same-position spoken comparison with the robot recorder on and off is pending.
+
+## Spoken robot stop follow-up
+
+The phone delivered the complete transcript “stop robot recording” during an active 97.2 s robot clip. The voice bridge returned `command: none` after the acoustic agreement gate rejected it. The laptop now routes exact, affirmative robot recording stops directly to the requesting tab's recorder. The start and phone-stop acoustic checks still apply.
+
+All 27 dashboard tests and six gateway tests passed. Chromium 158 exercised the real dashboard with a final transcript lacking an acoustic hint and verified a direct robot stop request. The Python integration suite started a fixture clip through the MCP bridge, stopped it with that exact text, and verified a saved result. A live spoken retry on the owner’s Pixel is pending.

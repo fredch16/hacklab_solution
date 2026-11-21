@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+station_data/
+*.json.tmp
+.env
+events.jsonl
+frame.jpg

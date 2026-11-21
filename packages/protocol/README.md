@@ -122,3 +122,28 @@ Envelopes all carry the shared `sequence`. Max 1 offer per second accepted (else
 - Browser **Start video** is enabled whenever the session is active and paired (camera state `not_started` is normal now); shows "Starting phone camera…" until the answer arrives.
 - **QR scanning uses the same CameraSession** (ZXing core on ImageAnalysis frames). `mobile_scanner`/ML Kit removed (it sent Google telemetry to firebaselogging.googleapis.com — forbidden). No pause/unbind for scanning; camera state `paused` removed. If the camera was off, the scanner starts it and stops it on exit.
 - Camera quality: continuous video autofocus, auto exposure + auto white balance, **tap-to-focus/meter** on the phone preview (returns to continuous AF after 3 s).
+
+## Slice 2 — master recording (locked)
+
+### Commands browser → phone (on `/api/v1/events`, authorized viewer only; idempotent by `request_id`)
+- `recording.start` `{"profile": {"lens_id","width","height","fps","codec"}?}` (omitted → current selected profile)
+- `recording.stop` `{}` (browser asks the user to confirm before sending)
+- `camera.settings.set` `{"lens_id"?, "width"?, "height"?, "fps"?, "codec"?: "hevc|avc", "stabilization"?: "off|on|preview", "hdr"?: false|true, "orientation_lock"?: "auto|portrait|landscape", "zoom"?: number, "exposure_comp"?: int, "torch"?: bool}` — lens/size/fps/codec/hdr/stabilization rejected while recording (`ACTION_NOT_ALLOWED_WHILE_RECORDING`); zoom/exposure/torch allowed anytime.
+- Reply for every command: `command.result` `{"request_id","ok":bool,"error":null|"<CODE>","message"?}`.
+
+### `GET /api/v1/capabilities` (auth) and snapshot field `capabilities_version`
+```json
+{"lenses":[{"id":"0","facing":"back","kind":"wide|ultrawide|tele|front|other","focal_mm":6.9,"zoom_range":[1.0,10.0],
+  "video":[{"width":3840,"height":2160,"fps":[30,60],"codecs":["hevc","avc"],"hdr":true,"verified":"untested|passed|failed","measured":null|{"fps":29.9,"bitrate_bps":...}}],
+  "stabilization":["off","on","preview"],"exposure_comp":[-12,12],"exposure_step":0.1667,"torch":true,"af_modes":["continuous_video","auto"]}],
+ "audio":{"sample_rates":[48000],"channels":[1,2]}}
+```
+Derived from Camera2 `CameraCharacteristics` + `MediaCodecInfo` + `EncoderProfiles`; nothing hardcoded per model.
+
+### Snapshot additions
+`"recording": {"state":"idle|starting|recording|stopping|finalizing|available|failed","id":null|"rec-…","started_utc","elapsed_ms","bytes","profile":{actual lens/width/height/fps/codec/hdr},"audio":{"sample_rate","channels"},"error":null|"<CODE>","warning":null|"LOW_STORAGE|THERMAL"}`
+`"camera_settings": {current selected settings incl. lens_id, width, height, fps, codec, stabilization, hdr, orientation_lock, zoom, exposure_comp, torch}`
+`"recordings": [{"id","filename","created_utc","duration_ms","size_bytes","width","height","fps_measured","codec","finalized":true}]` (newest first, max 50; no paths).
+
+Error codes add: `ACTION_NOT_ALLOWED_WHILE_RECORDING`, `PROFILE_UNSUPPORTED`, `LOW_STORAGE`, `RECORDING_FINALIZE_FAILED`, `PERMISSION_MIC`, `ALREADY_RECORDING`, `NOT_RECORDING`.
+Storage rule: refuse start if free < 2 GB; warn when < 10 min remaining at current bitrate; auto-stop + finalize when < 500 MB.

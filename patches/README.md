@@ -3,7 +3,7 @@ so the web UI matches our desk: "Swap sides" for the two arm cards, and "Rotate 
 the 3D arm models about their base in 90° steps (default 90° anticlockwise).
 
     cp -R <norma-core>/software/station/clients/station-viewer viewer && cd viewer
-    patch -p1 -d src < ../patches/station-viewer.diff   # or apply by hand; paths are src/...
+    patch -p1 < ../patches/station-viewer.diff
     npm ci && npx tsc -b && npx vite build
     npx vite preview --host 127.0.0.1 --port 5173 --strictPort
 

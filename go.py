@@ -2,7 +2,7 @@
 
     python go.py --where             # where is the arm on the route network? (moves nothing)
     python go.py --engage            # limp arm -> hold its present pose (support the arm first)
-    python go.py top                 # one view, slow
+    python go.py top                 # one view (unchecked views run at first-run speed)
     python go.py home top home       # a sequence
     python go.py --tour 5            # home -> every view -> home, 5 rounds
     python go.py --recover           # unknown pose -> transit, slow; someone must watch the arm
@@ -39,7 +39,11 @@ async def main(args):
     try:
         if args.where:
             d = await motion.describe(arm)
-            print(d["where"] if d["ok"] else f"cannot move: {d['error']}")
+            print("where:", d["where"] or "cannot tell")
+            for b in d["blockers"]:
+                print("cannot move yet:", b)
+            if d["ok"]:
+                print("ready to move")
             for name, notes in motion.check_views(arm.ranges()).items():
                 print(f"note: {name} is saved at a joint limit and will be clamped: {'; '.join(notes)}")
             return

@@ -41,6 +41,7 @@ class SimArm:
         self._torque = {m: True for m in self._pos}
         self.writes = 0
         self.written_ids: set[int] = set()            # every motor id a goal was ever written to
+        self.torque_written_ids: set[int] = set()     # ...and every id a torque command went to
         self.stuck: set[int] = set()
         self.stale = False
         self.fail_writes = False
@@ -76,7 +77,7 @@ class SimArm:
         pos = self.joints(max_age_s)
         return {m: {"pos": pos[m], "goal": int(round(self._goal[m])), "load": self.load.get(m, 0),
                     "current": 0, "status": 0, "torque": self._torque[m], "temp": 30, "voltage": 12.0,
-                    "read_error": ""} for m in pos}
+                    "read_error": "", "stamp": time.monotonic_ns()} for m in pos}
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         return {m: SIM_RANGES.get(m, (0, 4095)) for m in self._pos}
@@ -88,6 +89,7 @@ class SimArm:
         self._advance()
         for m in (motor_ids if motor_ids is not None else self._pos):
             self._torque[m] = enable
+            self.torque_written_ids.add(m)
 
     async def write_goals(self, goals: dict[int, int], speed=None, accel=None):
         if self.fail_writes:

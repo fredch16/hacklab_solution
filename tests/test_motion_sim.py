@@ -22,6 +22,7 @@ motion.MIN_SEGMENT_S = 0.05
 motion.SETTLE_POLL_S = 0.04
 motion.LOG_PATH = Path("/dev/null")
 motion.view_checked = lambda name: True   # the "unchecked views run slow" rule is tested on its own below
+motion.SPEED_FIRST = FAST                  # ...and so is the forced first-run speed
 
 ENV = envelope(SIM_RANGES)
 VIEWS = {n: clamp_pose(p, ENV) for n, p in motion.load_views().items()}
@@ -81,8 +82,10 @@ async def main():
     check(route[0][1] == {m: VIEWS[TRANSIT][m] for m in PITCH}, "rise goes to the transit pitch configuration")
     check(route[2][1] == {m: VIEWS["left"][m] for m in PITCH}, "descend goes to the target's pitch joints")
     check(all(8 not in goal for _, goal in route), "gripper is never in a route")
-    check(plan_route(VIEWS["top"], "top", VIEWS) == [], "already there")
-    check([s for s, _ in plan_route(turned, "wide", VIEWS)] == ["turn", "descend"], "from the hub")
+    check(plan_route(VIEWS["top"], "top", VIEWS) == [("descend", {m: VIEWS["top"][m] for m in PITCH})],
+          "already there: only a corrective descend onto the exact pose")
+    check([s for s, _ in plan_route(turned, "wide", VIEWS)] == ["rise", "turn", "descend"],
+          "from the hub: still an exact rise first")
     check([s for s, _ in plan_route(half_up, "top", VIEWS)] == ["descend"], "back down the same spoke")
     check([s for s, _ in plan_route(half_up, "right", VIEWS)] == ["rise", "turn", "descend"],
           "from a spoke to another view: finish going up first")
@@ -119,10 +122,24 @@ async def main():
     limp = SimArm(); await limp.set_torque(False); before = limp.writes
     r = await go_to_view(limp, "top", max_speed=FAST)
     check(not r["ok"] and "limp" in r["error"] and limp.writes == before, "limp arm refused, nothing written")
+    check(r["hold"] is None, "a refusal reports no hold (nothing was commanded)")
+    d = await motion.describe(limp, "top")
+    check(not d["ok"] and d["where"] == {"where": "view", "view": "home"} and any("limp" in b for b in d["blockers"]),
+          "describe() still says where a limp arm is")
     await motion.hold(limp)
     check(limp.writes == before, "hold() does not energise a limp arm")
     await motion.engage(limp)
     check(limp.telemetry()[1]["torque"] and not limp.telemetry()[8]["torque"], "engage holds joints 1-7, not the gripper")
+    limp.torque_written_ids.clear()
+    await motion.release(limp)
+    check(limp.torque_written_ids == set(MOVABLE), "release only switches off joints 1-7")
+    limp.mirror = "5B61033001"
+    try:
+        await motion.engage(limp); check(False, "engage must refuse while mirrored")
+    except motion.MotionError as e:
+        check("mirroring" in str(e), "engage refuses while Station mirrors a leader onto the arm")
+    limp.mirror = None
+    await motion.engage(limp)
     r = await go_to_view(limp, "top", max_speed=FAST)
     check(r["ok"], f"after engage the move runs: {r['error']}")
 
@@ -141,10 +158,11 @@ async def main():
         j1 = a.joints(); await asyncio.sleep(0.3); return j1 == a.joints()
 
     stuck = SimArm(); stuck.stuck = {2}
-    r = await go_to_view(stuck, "top", max_speed=FAST)
+    r = await go_to_view(stuck, "top", max_speed=400)
     check(not r["ok"] and "motor 2" in r["error"] and "not following" in r["error"], f"stuck joint: {r['error']}")
     check(await still(stuck), "holding after a stuck joint")
     check(abs(stuck._goal[2] - stuck.joints()[2]) <= 2, "goal pulled back to the measured position")
+    check(r["hold"] == "confirmed", "the abort hold was read back")
 
     blind = SimArm()
     task = asyncio.create_task(go_to_view(blind, "top", max_speed=400))
@@ -152,7 +170,8 @@ async def main():
     r = await task; blind.stale = False
     check(not r["ok"] and "stale" in r["error"], f"stale data: {r['error']}")
     lead = max(abs(blind._goal[m] - blind.joints()[m]) for m in MOVABLE)
-    check(lead <= motion.LEAD_LIMIT, f"last goal stays near the arm when data goes stale (lead {lead})")
+    check(lead <= motion.lead_limit(400), f"last goal stays near the arm when data goes stale (lead {lead})")
+    check(r["hold"] == "unconfirmed" and "HOLD NOT CONFIRMED" in r["error"], "a hold we cannot confirm is reported as such")
 
     hot = SimArm(); hot.load = {2: 950}
     r = await go_to_view(hot, "top", max_speed=400)
@@ -167,7 +186,35 @@ async def main():
     task = asyncio.create_task(go_to_view(deaf, "top", max_speed=400))
     await asyncio.sleep(0.4); deaf.fail_writes = True
     r = await task
-    check(not r["ok"], f"failed writes abort: {r['error']}")
+    check(not r["ok"] and r["hold"] == "unconfirmed", f"failed writes abort: {r['error']}")
+
+    # --- the leash: a goal is never sent further ahead of the arm than lead_limit ------
+    slowpoke = SimArm(speed=60)                      # an arm that cannot keep up at all
+    worst = 0
+    async def watch_lead():
+        nonlocal worst
+        while True:
+            pos = slowpoke.joints()
+            worst = max(worst, max(abs(slowpoke._goal[m] - pos[m]) for m in MOVABLE))
+            await asyncio.sleep(0.01)
+    w = asyncio.create_task(watch_lead())
+    slowpoke._speed = {m: 60 for m in slowpoke._speed}
+    real_write = slowpoke.write_goals
+    async def write_keep_speed(goals, speed=None, accel=None):   # ignore our speed ceiling: stay slow
+        await real_write(goals)
+    slowpoke.write_goals = write_keep_speed
+    r = await go_to_view(slowpoke, "top", max_speed=400)
+    w.cancel()
+    check(worst <= motion.lead_limit(400) + 2, f"goal never led the arm by more than the leash (worst {worst:.0f})")
+
+    # --- starting slightly off: the route pulls the arm onto the exact poses ----------
+    near_hub = SimArm(start={**VIEWS[TRANSIT], 8: 1758, 2: VIEWS[TRANSIT][2] + 50, 3: VIEWS[TRANSIT][3] - 50})
+    r = await go_to_view(near_hub, "wide", max_speed=FAST)
+    check(r["ok"] and r["route"] == ["rise", "turn", "descend"] and at(near_hub, "wide"), "near the hub: exact rise, then on")
+    raw_home = SimArm(start=dict(motion.load_views()["home"]))      # M2 = 1061, below the allowed 1101
+    r = await go_to_view(raw_home, "home", max_speed=FAST)
+    check(r["ok"] and r["route"] == ["descend"] and raw_home.joints()[2] >= ENV[2][0] - 5,
+          "resting on a joint stop: pulled just inside the allowed range")
 
     # --- Stop, then carry on from wherever it stopped --------------------------------
     arm = SimArm()
@@ -202,13 +249,14 @@ async def main():
 
     # --- unchecked views are forced to slow speed ----------------------------------------
     motion.view_checked = lambda name: name != "wide"
+    motion.SPEED_FIRST = 100
     arm = SimArm(start={**VIEWS[TRANSIT], 8: 1279})
     t0 = time.monotonic()
     r = await go_to_view(arm, "wide", max_speed=FAST)
     slow_took = time.monotonic() - t0
     dist = max(abs(VIEWS["wide"][m] - VIEWS[TRANSIT][m]) for m in PITCH)
-    check(r["ok"] and slow_took > 1.5 * dist / motion.SPEED_SLOW * 0.8,
-          f"unchecked view ran at slow speed ({slow_took:.1f}s)")
+    check(r["ok"] and slow_took > 1.5 * dist / motion.SPEED_FIRST * 0.8,
+          f"unchecked view ran at first-run speed ({slow_took:.1f}s)")
 
     print(f"ALL OK ({passed} checks)")
 

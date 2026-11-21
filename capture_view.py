@@ -90,6 +90,9 @@ async def capture(arm: Arm, data: dict, name: str, cam=None, description: str = 
         except RuntimeError as e:
             logger.warning("no snapshot for %s: %s", name, e)
     data["views"][name] = view
+    if name == "transit":       # every route passes through it: re-teaching it un-checks all views
+        for other in data["views"].values():
+            other.pop("checked", None)
     save_views(data)
     print(f"saved '{name}': {format_joints(joints)}" + (" + snapshot" if "snapshot" in view else ""))
     return True

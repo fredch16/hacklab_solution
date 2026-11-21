@@ -14,7 +14,8 @@ from pathlib import Path
 # The vendored SDK uses imports rooted at the norma-core repo root.
 sys.path.insert(0, str(Path(__file__).parent / "vendor" / "normacore"))
 
-from software.station.shared.station_py import new_station_client, send_commands  # noqa: E402
+from software.station.shared.station_py import (  # noqa: E402
+    ErrEntryNotFound, ErrQueueNotFound, new_station_client, send_commands)
 from target.gen_python.protobuf.drivers.st3215 import st3215  # noqa: E402
 from target.gen_python.protobuf.station import commands as station_commands, drivers  # noqa: E402
 
@@ -229,6 +230,7 @@ class Arm:
                 "temp": st[RAM_PRESENT_TEMP],
                 "voltage": st[RAM_PRESENT_VOLTAGE] / 10,
                 "read_error": (err.get_description() or "read error") if err else "",
+                "stamp": m.get_monotonic_stamp_ns(),    # changes with every fresh read of this motor
             }
         return out
 
@@ -245,13 +247,20 @@ class Arm:
         except asyncio.TimeoutError:
             raise RuntimeError("could not read Station's mirroring state")
         if entry is None:
-            return None
-        state = mirroring.RxEnvelopeReader(entry.Data).get_state()
-        for link in (state.get_mirroring() or []) if state else []:
-            targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
-            if self.bus_serial in targets:
-                src = link.get_source()
-                return src.get_id().get_unique_id() if src and src.get_id() else "unknown"
+            err = qr.err
+            nothing_yet = (ErrQueueNotFound, ErrEntryNotFound)     # Station has never linked anything
+            if err is None or err in nothing_yet or isinstance(err, nothing_yet):
+                return None
+            raise RuntimeError(f"could not read Station's mirroring state: {err!r}")
+        try:
+            state = mirroring.RxEnvelopeReader(entry.Data).get_state()
+            for link in (state.get_mirroring() or []) if state else []:
+                targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
+                if self.bus_serial in targets:
+                    src = link.get_source()
+                    return src.get_id().get_unique_id() if src and src.get_id() else "unknown"
+        except Exception as e:      # an entry we cannot decode must not read as "not mirrored"
+            raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
         return None
 
     def ranges(self) -> dict[int, tuple[int, int]]:

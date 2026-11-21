@@ -5,7 +5,8 @@ their goals. Lets motion, the web UI, the director and voice run end to end with
 
 Faults can be injected for tests: `stuck` (motors that don't move), `stale` (no fresh data),
 `fail_writes`, `mirror` (pretend Station is mirroring a leader onto this arm), `load` (pretend
-PWM load per motor) and `hijack` (another writer keeps overwriting these goals).
+PWM load per motor), `hijack` (another writer keeps overwriting these goals) and `echo_delay`
+(written goals show up in telemetry late, as they do on the real bus).
 """
 
 import asyncio
@@ -48,6 +49,8 @@ class SimArm:
         self.mirror: str | None = None
         self.load: dict[int, int] = {}                # pretend PWM load per motor (0-1000)
         self.hijack: dict[int, int] = {}              # another writer keeps forcing these goals
+        self.echo_delay = 0.0                         # seconds until a written goal shows in telemetry
+        self._echo: list[tuple[float, dict[int, float]]] = [(0.0, dict(self._goal))]
 
     @classmethod
     async def connect(cls, *args, **kwargs) -> "SimArm":
@@ -75,7 +78,12 @@ class SimArm:
 
     def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
         pos = self.joints(max_age_s)
-        return {m: {"pos": pos[m], "goal": int(round(self._goal[m])), "load": self.load.get(m, 0),
+        # The goal register as telemetry shows it: the newest write that is at least echo_delay old.
+        cutoff = time.monotonic() - self.echo_delay
+        while len(self._echo) > 1 and self._echo[1][0] <= cutoff:
+            self._echo.pop(0)
+        shown = self._echo[0][1] if self.echo_delay else self._goal
+        return {m: {"pos": pos[m], "goal": int(round(shown[m])), "load": self.load.get(m, 0),
                     "current": 0, "status": 0, "torque": self._torque[m], "temp": 30, "voltage": 12.0,
                     "read_error": "", "stamp": time.monotonic_ns()} for m in pos}
 
@@ -104,6 +112,7 @@ class SimArm:
                 self._speed[m] = speed
         for m, g in self.hijack.items():
             self._goal[m] = float(g)
+        self._echo.append((time.monotonic(), dict(self._goal)))
 
     async def settled(self, tolerance: int = 8, timeout_s: float = 3.0) -> dict[int, int]:
         await asyncio.sleep(0.1)

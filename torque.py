@@ -37,6 +37,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("state", choices=["on", "off"])
     p.add_argument("--server", default="localhost")
-    p.add_argument("--bus", default="auto")
+    p.add_argument("--bus", default=motion.default_bus() or "auto",
+                   help="arm serial (default: the arm the saved views were captured on)")
     p.add_argument("-y", "--yes", action="store_true", help="skip the 'holding it?' prompt")
     run(main(p.parse_args()))

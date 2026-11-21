@@ -133,6 +133,9 @@ async def main():
     limp.torque_written_ids.clear()
     await motion.release(limp)
     check(limp.torque_written_ids == set(MOVABLE), "release only switches off joints 1-7")
+    d = await motion.describe(SimArm(start={**VIEWS["top"], 8: 1279, 3: VIEWS["top"][3] + 400, 1: VIEWS["top"][1] + 300}))
+    check(not d["ok"] and d["where"] == {"where": "unknown"} and any("known pose" in b for b in d["blockers"]),
+          "describe() treats an unknown pose as a blocker")
     limp.mirror = "5B61033001"
     try:
         await motion.engage(limp); check(False, "engage must refuse while mirrored")
@@ -191,8 +194,8 @@ async def main():
     await asyncio.sleep(0.4); deaf.fail_writes = True
     r = await task
     check(not r["ok"] and "rejected" in r["error"], f"failed writes abort: {r['error']}")
-    check(r["hold"] == "confirmed" and await still(deaf),
-          "...and the hold is confirmed by read-back alone: every goal was already next to the arm")
+    check(r["hold"] == "unconfirmed" and "HOLD NOT CONFIRMED" in r["error"],
+          "...and since the hold could not be written either, it is reported as unconfirmed")
 
     # --- the leash: a goal is never sent further ahead of the arm than lead_limit ------
     slowpoke = SimArm(speed=60)                      # an arm that cannot keep up at all
@@ -235,6 +238,7 @@ async def main():
     except asyncio.CancelledError:
         check(True, "")
     check(await still(arm), "holding after Stop")
+    check(motion.status["error"] == "stopped" and not motion.status["moving"], "status says stopped")
     lead = max(abs(arm._goal[m] - arm.joints()[m]) for m in MOVABLE)
     check(lead <= motion.RELAX_TOL and motion.status["hold"] == "confirmed",
           f"Stop: goals pulled back to the arm, hold confirmed (lead {lead})")
@@ -249,7 +253,38 @@ async def main():
         pass
     lead = abs(pressed._goal[2] - pressed.joints()[2])
     check(lead <= motion.RELAX_TOL, f"Stop on a blocked joint stops it pushing (lead {lead})")
-    check(motion.status["error"] == "stopped" and not motion.status["moving"], "status says stopped")
+
+    # ...also when the goal registers are read back late: "confirmed" must mean the real goals
+    late = SimArm(); late.stuck = {2}; late.echo_delay = 0.2
+    task = asyncio.create_task(go_to_view(late, "top", max_speed=100))
+    await asyncio.sleep(0.9)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    lead = abs(late._goal[2] - late.joints()[2])
+    check(motion.status["hold"] == "confirmed" and lead <= motion.RELAX_TOL,
+          f"Stop with delayed read-back: real goal pulled back before 'confirmed' (lead {lead})")
+    delayed = SimArm(); delayed.echo_delay = 0.2
+    r = await go_to_view(delayed, "wide", max_speed=400)
+    check(r["ok"], f"a normal move works with delayed read-back: {r['error']}")
+
+    # --- a joint resting against its stop has not arrived ---------------------------------
+    on_stop = SimArm(start=dict(motion.load_views()["home"])); on_stop.stuck = {2}    # M2 at 1061, min 1071
+    r = await go_to_view(on_stop, "home", max_speed=400)
+    check(not r["ok"] and "motor 2" in r["error"], f"resting on a mechanical stop is not arrival: {r['error']}")
+
+    # --- a pushed-back arm gets no further goals at all -----------------------------------
+    shoved = SimArm()
+    task = asyncio.create_task(go_to_view(shoved, "top", max_speed=100))
+    await asyncio.sleep(1.0)
+    shoved.stuck = {2}; shoved._pos[2] -= 150                 # knocked back 150 steps and held there
+    await asyncio.sleep(0.1); n = shoved.writes
+    await asyncio.sleep(0.25)
+    check(shoved.writes == n, "over the leash nothing is sent, not even a repeat")
+    r = await task
+    check(not r["ok"] and r["hold"] == "confirmed", f"...and the move ends: {r['error']}")
     where = locate(arm.joints(), VIEWS)
     check(where["where"] in ("spoke", "hub", "view"), f"after Stop the arm is still on the network: {where}")
     r = await go_to_view(arm, "right", max_speed=FAST)

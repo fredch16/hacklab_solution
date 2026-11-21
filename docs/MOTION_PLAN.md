@@ -1,6 +1,6 @@
 # Motion plan: getting to a saved view without breaking the arm
 
-**Version 4** (after council round 2). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 91 checks). **Nothing here has run on the real arm yet.**
+**Version 5** (after council round 3). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 97 checks; `tests/test_server_sim.py`). **Nothing here has run on the real arm yet.**
 Background: [HARDWARE.md](HARDWARE.md), [MOTION.md](MOTION.md).
 
 ## Goal
@@ -84,19 +84,19 @@ After an abort the arm is held: goals more than 25 steps from the arm (suspected
 
 One controlling program (the web server). Follower "(Self-controlled)" in Station, one person at the arm, desk cleared and padded, power plug in reach.
 
-**A. Nothing moves**
-1. Restart the server: `python3 capture_server.py --bus 5B79016329`. Open `/control`.
-2. `python3 go.py --where`: calibration matches, per-joint numbers print, register dumps complete.
-3. Mirroring check, once: link the leader in Station → `--where` must show the mirroring blocker. Unlink → it must clear. If it doesn't refuse, stop here.
+**A. Nothing moves** (leader arm stays unplugged for the whole session)
+1. Restart the server with the follower named: `python3 capture_server.py --bus 5B79016329`. Open `/control`.
+2. `python3 go.py --where` (it uses the arm the views belong to): calibration matches, per-joint numbers print, register dumps complete.
+3. Mirroring check, without motion: Station still has the follower linked to the leader from the capture session, and with the leader unplugged nothing can drive it. `--where` must show the mirroring blocker now. Then set the follower to "(Self-controlled)" in Station: the blocker must clear. If it never showed, stop here: the check is not working. (Do not link a powered leader to test this: Station would drive the follower immediately.)
 4. Saved poses still match the encoders: with the arm limp, place it in the `home` rest pose, then hold it at transit. The page must say "at home" / "at the hub", and the live picture at transit must match `views/transit.jpg`. (The calibration records of the first eight views were filled in afterwards, so this check stands in for them.)
 5. Cable: with the arm limp at transit height, sweep the base and both rolls by hand through the range the views use; the camera cable must stay slack.
 
 **B. Holding, not moving**
-6. Hand-pose to transit with M1, M5 and M7 near their transit values, press Hold here. Read `--where`: goal error (sag), load, current, temperature.
-7. Same at an extended pose (hand-pose to `wide`, Hold here). If static sag exceeds ~40 steps or load/current sit near the limits, retune before moving.
+6. Hand-pose to `wide` (the page must say "at wide"), press Hold here. Read `--where`: goal error (sag), load, current, temperature at an extended pose.
+7. Go limp (arm supported), hand-pose to transit with M1, M5 and M7 near their transit values (the page must say "at the hub"), Hold here. Read `--where` again. If static sag exceeds ~40 steps or load/current sit near the limits, retune before moving. The arm is now holding at transit for step 8.
 
 **C. First moves (first-run speed, 100 steps/s)**
-8. From transit: go to `wide`. Then back to transit.
+8. From transit (where step 7 left it): go to `wide`. Then back to transit.
 9. Stop test, high in the air: start `wide` again, press Stop mid-segment; the arm must hold. Press Stop three more times: no drift. Click a view: it must recover.
 10. Block test: during a rise, hold a soft object (a cushion) in the path; expect an abort within about 1 s and no continued pushing.
 11. `top`. Then `left`, `right` (after re-capturing them off the joint limits with a level horizon).

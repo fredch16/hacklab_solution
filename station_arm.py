@@ -260,12 +260,16 @@ class Arm:
         if entry is None:
             err = qr.err
             nothing_yet = (ErrQueueNotFound, ErrEntryNotFound)     # Station has never linked anything
-            if err is None or err in nothing_yet or isinstance(err, nothing_yet):
+            if err in nothing_yet or isinstance(err, nothing_yet):
                 return None
+            # No entry and no "not found" answer is not proof of anything: refuse rather than guess.
             raise RuntimeError(f"could not read Station's mirroring state: {err!r}")
         try:
-            state = mirroring.RxEnvelopeReader(entry.Data).get_state()
-            for link in (state.get_mirroring() or []) if state else []:
+            envelope = mirroring.RxEnvelopeReader(entry.Data)
+            if getattr(envelope, "_state_buf", None) is None:
+                raise ValueError("the latest entry carries no mirroring state")
+            state = envelope.get_state()
+            for link in state.get_mirroring() or []:
                 targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
                 if self.bus_serial in targets:
                     # Readers are always truthy and give "" for a missing id: never return a falsy source.

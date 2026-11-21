@@ -94,5 +94,6 @@ if __name__ == "__main__":
     p.add_argument("--pause", type=float, default=1.0, help="seconds to wait at each view")
     p.add_argument("--sim", action="store_true", help="simulated arm, no hardware")
     p.add_argument("--server", default="localhost")
-    p.add_argument("--bus", default="auto")
+    p.add_argument("--bus", default=motion.default_bus() or "auto",
+                   help="arm serial (default: the arm the saved views were captured on)")
     run(main(p.parse_args()))

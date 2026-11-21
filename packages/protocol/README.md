@@ -161,7 +161,7 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 ```json
 "voice": {"state":"unavailable|loading_model|listening|wake_detected|recognizing|cooling_down|muted|error",
           "error":null|"MODEL_MISSING|PERMISSION_MIC|VOICE_INTERRUPTED|VOICE_PROCESSING_FAILED|INVALID_WAKE_PHRASE",
-          "wake_phrase":"hey robot"|null, "language":"en", "model":{"kws":"<name>"|null,"asr":"<name>","vad":"silero"}|null,
+          "wake_phrase":"hey robot"|null, "language":"en", "model":{"kws":"<name>"|null,"asr":"<name>","vad":"silero","denoiser":"dpdfnet-baseline"|null}|null,
           "transcripts":[{"id","text","started_utc","ended_utc","end_reason":"silence|max_duration|no_speech|cancelled"}]}
 ```
 `transcripts` = this session only, newest first, max 50; `id` equals the events' `utterance_id`. No phrase set → state `unavailable` with reason shown ("Set a wake name in the dashboard").

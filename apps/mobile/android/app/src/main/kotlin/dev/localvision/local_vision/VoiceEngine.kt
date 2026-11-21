@@ -50,6 +50,7 @@ class VoiceEngine(
     private var phrase: String? = WakePhrase.fromSaved(prefs.getString("wake_phrase", null))
     private var muted = false
     private var kwsName: String? = null
+    private var denoiseName: String? = null
     private val transcripts = ArrayList<Map<String, Any?>>()
     private var subscribed = false
     private var resampler: Resampler? = null
@@ -58,11 +59,13 @@ class VoiceEngine(
     private var asr: OnlineRecognizer? = null
     private var stream: OnlineStream? = null
     private var vad: Vad? = null
+    private var denoiser: VoiceDenoiser? = null
     private val detector = WakeDetector(ctx.assets)
     private var replay = WakeAudio(5120)
     private var flow: VoiceFlow? = null
     private var runningRevision = -1L
-    private var audioMs = 0L
+    private var audioSamples = 0L
+    private val audioMs get() = audioSamples / 16
     private val vadBuf = FloatArray(WINDOW)
     private var vadFill = 0
     private var uttId = ""
@@ -82,7 +85,9 @@ class VoiceEngine(
     fun snapshot(): Map<String, Any?> = synchronized(lock) {
         mapOf(
             "state" to state, "error" to error, "wake_phrase" to phrase, "language" to "en",
-            "model" to (if (phrase != null) mapOf("asr" to ASR_NAME, "kws" to kwsName, "vad" to "silero") else null),
+            "model" to (if (phrase != null) mapOf(
+                "asr" to ASR_NAME, "kws" to kwsName, "vad" to "silero", "denoiser" to denoiseName,
+            ) else null),
             "transcripts" to transcripts.toList(),
         )
     }
@@ -167,6 +172,14 @@ class VoiceEngine(
                 Log.e(TAG, "keyword model load failed", e)
                 "MODEL_MISSING"
             }
+            if (configured == null && denoiser == null) {
+                denoiser = try {
+                    VoiceDenoiser(ctx.assets)
+                } catch (e: Exception) {
+                    Log.w(TAG, "voice noise suppression unavailable", e)
+                    null
+                }
+            }
             if (generation != revision.get()) return@enqueueControl
             val problem = configured ?: if (!subscribe()) "PERMISSION_MIC" else null
             if (problem != null) {
@@ -178,8 +191,9 @@ class VoiceEngine(
             replay = WakeAudio(detector.replaySamples)
             flow = VoiceFlow(p)
             runningRevision = generation
-            synchronized(lock) { kwsName = detector.modelName }
-            Log.i(TAG, "voice keyword model=${detector.modelName}")
+            val denoiseModel = denoiser?.let { VoiceDenoiser.NAME }
+            synchronized(lock) { kwsName = detector.modelName; denoiseName = denoiseModel }
+            Log.i(TAG, "voice keyword model=${detector.modelName} denoiser=${denoiseModel ?: "off"}")
             setState("listening", null)
         }
     }
@@ -230,6 +244,7 @@ class VoiceEngine(
             detector.close()
             asr?.release()
             vad?.release()
+            denoiser?.release()
         }
     }
 
@@ -270,6 +285,7 @@ class VoiceEngine(
         replay.clear()
         vadFill = 0
         vad?.reset()
+        denoiser?.reset()
     }
 
     private fun feed(b: ByteArray) {
@@ -277,7 +293,17 @@ class VoiceEngine(
         if (st == "muted" || st == "unavailable" || st == "error" || st == "loading_model") return
         val t0 = SystemClock.elapsedRealtimeNanos()
         val f = resampler?.process(b, b.size) ?: return
-        process(f)
+        val enhanced = try {
+            denoiser?.process(f) ?: f
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "voice noise suppression failed, continuing with mic input", e)
+            denoiser?.release()
+            denoiser = null
+            synchronized(lock) { denoiseName = null }
+            publish()
+            f
+        }
+        if (enhanced.isNotEmpty()) process(enhanced)
         procNs += SystemClock.elapsedRealtimeNanos() - t0
         statAudioMs += f.size / 16
         logStats()
@@ -285,7 +311,7 @@ class VoiceEngine(
 
     private fun process(f: FloatArray) {
         val fl = flow ?: return
-        audioMs += f.size / 16
+        audioSamples += f.size
         for (act in fl.onClock(audioMs)) apply(act)
         when (fl.mode) {
             VoiceFlow.Mode.COOLDOWN -> return

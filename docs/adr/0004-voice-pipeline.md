@@ -11,6 +11,7 @@
 
 ## Android engine
 `sherpa-onnx` (Apache-2.0) on Android, all models bundled in the APK (no download at runtime):
+- **Noise suppression:** DPDFNet Baseline runs on the Android worker after the mic tap is resampled to 16 kHz mono. The enhanced stream supplies KWS, the rolling wake handoff, Silero and ASR. The master recorder still receives its own capture PCM from the shared bus. Voice falls back to its original input if the enhancer cannot start or fails in Kotlin, with the reason logged and the snapshot denoiser set to null. [Streaming model](https://k2-fsa.github.io/sherpa/onnx/speech-enhancement/dpdfnet.html)
 - **KWS:** sherpa-onnx open-vocabulary Zipformer `zh-en-3M-2025-12-20`, using English CMU phonemes and chunk-8 models. The configured name is compiled on the phone using the bundled dictionary and Flite letter-to-sound rules, including names outside the dictionary. The existing GigaSpeech BPE model can encode a name if no pronunciation is available. The spotter starts fresh after a command, mute, stream restart or settings change.
 - **Wake handoff:** the command recognizer receives a short rolling PCM buffer so it can recover speech spoken during spotter confirmation. The buffer exists only in memory.
 - **VAD:** Silero VAD (MIT) for 1 s end-of-speech detection.
@@ -22,3 +23,10 @@ Model sources and licenses are recorded with the Android assets. Physical microp
 - Porcupine has an Android PCM API and dedicated per-phrase models. Its AccessKey and platform-specific model setup would add provisioning when the operator changes names. [Porcupine Android docs](https://picovoice.ai/quick-start/wake-word-android/)
 - openWakeWord needs a trained model for each new phrase. Its example pretrained model licenses include noncommercial terms. [openWakeWord project](https://github.com/dscripka/openWakeWord)
 - Continuous ASR with text matching missed the test phrases when the recognizer decoded different words. The dedicated model constrains decoding to the current name and runs independently of command ASR.
+
+
+## Noise suppression research
+
+- Google Home research combined microphone-array enhancement with keyword spotting feedback and measured gains with TV or music interference. Our Android app receives the audio that Android routes to its shared capture session. [Google Research](https://research.google/pubs/supervised-noise-reduction-for-multichannel-keyword-spotting/)
+- Home Assistant details openWakeWord training with background noise augmentation. Its Linux Voice Assistant supports WebRTC gain and noise suppression ahead of wake processing. [Home Assistant wake-word approach](https://www.home-assistant.io/voice_control/about_wake_word) [Linux Voice Assistant](https://github.com/OHF-Voice/linux-voice-assistant/blob/main/docs/configuration.md)
+- We compared the existing path with the GTCRN and DPDFNet streaming models. DPDFNet improved the most on the fan-like mixtures we tried. Gains depend on the noise, especially when nearby people are speaking. The voice path has no playback reference for echo cancellation. [GTCRN](https://github.com/Xiaobin-Rong/gtcrn) [Replay evidence](../evidence/slice-03-noise-2026-11-21.md)

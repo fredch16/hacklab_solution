@@ -85,7 +85,8 @@ class StatusLine extends StatelessWidget {
     final d = c.device;
     final p = c.phase;
     final color = switch (p) {
-      AppPhase.active => Tok.teal,
+      AppPhase.active =>
+        c.capture.state == 'transmitting' ? Tok.teal : Tok.blue,
       AppPhase.interrupted => Tok.warning,
       AppPhase.error => Tok.danger,
       _ => Tok.textSecondary,

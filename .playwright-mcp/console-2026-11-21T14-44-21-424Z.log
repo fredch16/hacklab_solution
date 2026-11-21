@@ -9,3 +9,13 @@
 [  595668ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:94
 [  595673ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
 [  611391ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: HTTP Authentication failed; no valid credentials available @ https://10.181.249.119:8443/main.js:94
+[ 1347804ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 1348971ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:176
+[ 1348975ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 1351010ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:176
+[ 1351014ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 1355028ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:176
+[ 1355034ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 1363073ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/main.js:176
+[ 1363078ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ https://10.181.249.119:8443/api/v1/session:1
+[ 1378659ms] [ERROR] WebSocket connection to 'wss://10.181.249.119:8443/api/v1/events' failed: HTTP Authentication failed; no valid credentials available @ https://10.181.249.119:8443/main.js:176

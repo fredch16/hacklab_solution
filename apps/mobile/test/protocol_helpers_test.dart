@@ -60,6 +60,8 @@ void main() {
       port: 8443,
       certSha256: null,
       viewer: const ViewerInfo(paired: false, connected: false),
+      camera: const {'state': 'not_started', 'error': null, 'lens': 'back'},
+      stream: const {'state': 'idle', 'error': null},
     );
     final j = jsonDecode(jsonEncode(p)) as Map<String, dynamic>;
     expect(j.keys.toSet(), {
@@ -69,6 +71,7 @@ void main() {
       'device',
       'permissions',
       'camera',
+      'stream',
       'recording',
       'voice',
       'battery',
@@ -104,7 +107,12 @@ void main() {
       'paired_since_utc': null,
       'expires_utc': null,
     });
-    expect(j['camera'], {'state': 'not_started'});
+    expect(j['camera'], {
+      'state': 'not_started',
+      'error': null,
+      'lens': 'back',
+    });
+    expect(j['stream'], {'state': 'idle', 'error': null});
     expect(j['permissions'], {
       'camera': 'not_requested',
       'microphone': 'not_requested',

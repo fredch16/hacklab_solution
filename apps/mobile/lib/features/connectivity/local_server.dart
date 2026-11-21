@@ -46,6 +46,7 @@ class LocalServer {
     required this.addresses,
     required this.assetLoader,
     required this.snapshotPayload,
+    this.onMessage,
     this.port = defaultPort,
     InternetAddress? bindAddress,
     Clock? clock,
@@ -61,6 +62,9 @@ class LocalServer {
   final Future<List<String>> Function() addresses;
   final AssetLoader assetLoader;
   final SnapshotBuilder snapshotPayload;
+
+  /// Raw text frames from authenticated sockets.
+  final void Function(String raw)? onMessage;
   final InternetAddress bindAddress;
   int port;
   final Clock _now;
@@ -157,11 +161,33 @@ class LocalServer {
     _events.add(const ServerEvent(ServerEventType.stateChanged));
   }
 
-  String _envelope({String? snapshotPayload}) {
+  String _envelope({
+    String? snapshotPayload,
+    String type = 'session.snapshot',
+    String? requestId,
+  }) {
     final payload = snapshotPayload ?? jsonEncode(this.snapshotPayload());
-    return '{"version":1,"type":"session.snapshot","session_id":${jsonEncode(_sessionId)},'
+    return '{"version":1,"type":"$type","session_id":${jsonEncode(_sessionId)},'
         '"sequence":${++_sequence},"timestamp_utc":"${_now().toUtc().toIso8601String()}",'
+        '${requestId == null ? '' : '"request_id":${jsonEncode(requestId)},'}'
         '"payload":$payload}';
+  }
+
+  /// One envelope (shared sequence) to every authenticated socket.
+  void sendMessage(
+    String type,
+    Map<String, Object?> payload, {
+    String? requestId,
+  }) {
+    if (_http == null || _sockets.isEmpty) return;
+    final text = _envelope(
+      snapshotPayload: jsonEncode(payload),
+      type: type,
+      requestId: requestId,
+    );
+    for (final s in _sockets.keys) {
+      s.add(text);
+    }
   }
 
   // ---- request handling ----
@@ -291,7 +317,9 @@ class LocalServer {
         ws.pingInterval = const Duration(seconds: 15);
         _sockets[ws] = token;
         ws.listen(
-          (_) {},
+          (m) {
+            if (m is String) onMessage?.call(m);
+          },
           onDone: () {
             if (_sockets.remove(ws) != null) notifyStateChanged();
           },

@@ -6,7 +6,11 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_vision/features/connectivity/certificate.dart';
 import 'package:local_vision/features/connectivity/local_server.dart';
+import 'package:local_vision/features/camera/capture_controller.dart';
 import 'package:local_vision/features/connectivity/pairing.dart';
+import 'package:local_vision/features/connectivity/signaling.dart';
+
+import 'fakes.dart';
 
 class Resp {
   Resp(this.status, this.headers, this.body);
@@ -89,18 +93,31 @@ void main() {
   late PairingService pairing;
   late LocalServer server;
   late Client a;
+  late FakeCameraPlatform cam;
+  late CaptureController capture;
+  late SignalingRelay relay;
   var counter = 0;
 
   setUp(() async {
     dir = await Directory.systemTemp.createTemp('lvc_test');
     counter = 0;
     pairing = PairingService();
+    cam = FakeCameraPlatform();
+    capture = CaptureController(cam);
+    relay = SignalingRelay(
+      port: capture,
+      send: (t, p, {requestId}) =>
+          server.sendMessage(t, p, requestId: requestId),
+    );
+    capture.sender = (t, p, {requestId}) =>
+        server.sendMessage(t, p, requestId: requestId);
     server = LocalServer(
       pairing: pairing,
       certs: CertificateService(dir),
       addresses: () async => ['127.0.0.1'],
       bindAddress: InternetAddress.loopbackIPv4,
       port: 0,
+      onMessage: (raw) => relay.handle(raw),
       assetLoader: (name) async => name == 'index.html'
           ? Uint8List.fromList(utf8.encode('<h1>hi</h1>'))
           : null,
@@ -400,5 +417,85 @@ void main() {
     final limited = await a.send('POST', '/api/v1/pair/request');
     expect(limited.status, 429);
     expect(limited.json['error'], 'RATE_LIMITED');
+  });
+
+  test(
+    'webrtc: paired ws offer -> answer, stats and stopped share the sequence',
+    () async {
+      await capture.start();
+      await pairA(a);
+      final log = WsLog(await a.ws());
+      await log.waitFor(1);
+      log.ws.add(
+        jsonEncode({
+          'version': 1,
+          'type': 'webrtc.offer',
+          'request_id': 'req-1',
+          'payload': {'sdp': 'v=0 offer'},
+        }),
+      );
+      await log.waitFor(2);
+      final answer = log.messages[1];
+      expect(answer['type'], 'webrtc.answer');
+      expect(answer['request_id'], 'req-1');
+      expect(answer['payload'], {'request_id': 'req-1', 'sdp': 'v=0 answer'});
+      expect(cam.offers, ['v=0 offer']);
+
+      cam.emit({
+        'event': 'stats',
+        'capture': {'width': 640, 'height': 360, 'fps_measured': 29.9},
+        'stream': null,
+      });
+      await log.waitFor(3);
+      expect(log.messages[2]['type'], 'camera.stats');
+      expect((log.messages[2]['payload'] as Map)['stream'], isNull);
+
+      log.ws.add(
+        jsonEncode({
+          'version': 1,
+          'type': 'webrtc.stop',
+          'request_id': 's',
+          'payload': {},
+        }),
+      );
+      await log.waitFor(4);
+      expect(
+        log.messages.any(
+          (m) =>
+              m['type'] == 'webrtc.stopped' &&
+              (m['payload'] as Map)['reason'] == 'browser_stop',
+        ),
+        isTrue,
+      );
+      final seqs = log.messages.map((m) => m['sequence'] as int).toList();
+      for (var i = 1; i < seqs.length; i++) {
+        expect(seqs[i], greaterThan(seqs[i - 1]));
+      }
+      await log.ws.close();
+    },
+  );
+
+  test('webrtc: unpaired client cannot open the socket, so no offer reaches native', () async {
+    await capture.start();
+    await expectLater(a.ws(), throwsA(isA<WebSocketException>()));
+    expect(cam.offers, isEmpty);
+  });
+
+  test('webrtc: bad offer over ws gets webrtc.error BAD_REQUEST', () async {
+    await pairA(a);
+    final log = WsLog(await a.ws());
+    await log.waitFor(1);
+    log.ws.add(
+      jsonEncode({
+        'version': 1,
+        'type': 'webrtc.offer',
+        'request_id': 'x',
+        'payload': {},
+      }),
+    );
+    await log.waitFor(2);
+    expect(log.messages[1]['type'], 'webrtc.error');
+    expect((log.messages[1]['payload'] as Map)['code'], 'BAD_REQUEST');
+    await log.ws.close();
   });
 }

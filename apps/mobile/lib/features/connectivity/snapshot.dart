@@ -15,6 +15,8 @@ Map<String, Object?> buildSnapshotPayload({
   required int port,
   required String? certSha256,
   required ViewerInfo viewer,
+  required Map<String, Object?> camera,
+  required Map<String, Object?> stream,
 }) => {
   'app': app,
   'session_started_utc': _utc(sessionStartedUtc),
@@ -30,7 +32,8 @@ Map<String, Object?> buildSnapshotPayload({
     'camera': permissions['camera'] ?? 'not_requested',
     'microphone': permissions['microphone'] ?? 'not_requested',
   },
-  'camera': {'state': 'not_started'},
+  'camera': camera,
+  'stream': stream,
   'recording': {'state': 'not_started'},
   'voice': {'state': 'not_started'},
   'battery': {

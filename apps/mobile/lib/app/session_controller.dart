@@ -5,8 +5,10 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../features/camera/capture_controller.dart';
 import '../features/connectivity/local_server.dart';
 import '../features/connectivity/pairing.dart';
+import '../features/connectivity/signaling.dart';
 import '../features/connectivity/snapshot.dart';
 import '../platform/device_status.dart';
 
@@ -20,7 +22,10 @@ extension on AppPhase {
   };
 }
 
-typedef LocalServerFactory = LocalServer Function(SnapshotBuilder payload);
+typedef LocalServerFactory = LocalServer Function(
+  SnapshotBuilder payload,
+  void Function(String raw) onMessage,
+);
 
 /// Small explicit state machine:
 ///   idle --init--> ready --start--> active <--paused/resumed--> interrupted
@@ -28,6 +33,7 @@ typedef LocalServerFactory = LocalServer Function(SnapshotBuilder payload);
 class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   SessionController({
     required this.pairing,
+    required this.capture,
     required LocalServerFactory serverFactory,
     required this.deviceSource,
     required this.permissionPort,
@@ -40,8 +46,22 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
        _wakelock = wakelock ?? ((b) => WakelockPlus.toggle(enable: b)),
        _appVersionLoader = appVersion ?? _packageVersion,
        _now = clock ?? DateTime.now {
-    server = serverFactory(snapshotPayload);
-    _serverSub = server.events.listen((_) => notifyListeners());
+    relay = SignalingRelay(
+      port: capture,
+      send: (type, payload, {requestId}) =>
+          server.sendMessage(type, payload, requestId: requestId),
+    );
+    capture.sender = (type, payload, {requestId}) =>
+        server.sendMessage(type, payload, requestId: requestId);
+    capture.addListener(_publish);
+    server = serverFactory(snapshotPayload, (raw) => relay.handle(raw));
+    _serverSub = server.events.listen((_) {
+      // Viewer gone (revoked, replaced, tab closed): nobody to send video to.
+      if (capture.streamState != 'idle' && !server.viewerInfo.connected) {
+        capture.stopStream('browser_stop');
+      }
+      notifyListeners();
+    });
     _batterySub = deviceSource.batteryEvents.listen((b) {
       device = device.withBattery(b);
       _publish();
@@ -49,6 +69,8 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   final PairingService pairing;
+  final CaptureController capture;
+  late final SignalingRelay relay;
   final DeviceStatusSource deviceSource;
   final PermissionPort permissionPort;
   final Duration pollInterval;
@@ -98,6 +120,8 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     port: server.port,
     certSha256: server.certSha256,
     viewer: server.viewerInfo,
+    camera: capture.cameraJson(),
+    stream: capture.streamJson(),
   );
 
   Future<void> init() async {
@@ -125,6 +149,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
       sessionStartedUtc = _now().toUtc();
       phase = AppPhase.active;
       _poll = Timer.periodic(pollInterval, (_) => _refresh());
+      await _startCamera();
     } catch (e) {
       phase = AppPhase.error;
       errorMessage = 'Could not start the local server: ${e.runtimeType}';
@@ -135,9 +160,31 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _startCamera() async {
+    if (permissions['camera'] != 'granted') {
+      await requestPermission(Permission.camera);
+    }
+    if (permissions['camera'] == 'granted') {
+      await capture.start();
+    } else {
+      capture.denyPermission();
+    }
+  }
+
+  /// "Grant camera" action: ask, or send the user to settings when blocked.
+  Future<void> grantCamera() async {
+    final s = permissions['camera'];
+    if (s == 'permanently_denied' || s == 'restricted') {
+      await openSettings();
+    } else {
+      await requestPermission(Permission.camera);
+    }
+  }
+
   Future<void> endSession() async {
     if (!sessionRunning) return;
     _poll?.cancel();
+    await capture.end();
     await server.stop();
     try {
       await _wakelock(false);
@@ -163,9 +210,11 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused && phase == AppPhase.active) {
       phase = AppPhase.interrupted;
+      capture.setInterrupted(true);
       _publish();
     } else if (state == AppLifecycleState.resumed) {
       if (phase == AppPhase.interrupted) phase = AppPhase.active;
+      capture.setInterrupted(false);
       _refresh();
     }
   }
@@ -183,6 +232,12 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     addressesNotCovered =
         server.running && !server.certAddresses.toSet().containsAll(a);
     _publish();
+    // Permission granted later (system settings or the Grant camera button).
+    if (sessionRunning &&
+        capture.permissionDenied &&
+        p['camera'] == 'granted') {
+      await capture.start();
+    }
   }
 
   void _publish() {
@@ -196,6 +251,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     _poll?.cancel();
     _serverSub.cancel();
     _batterySub.cancel();
+    capture.removeListener(_publish);
     server.dispose();
     super.dispose();
   }

@@ -81,3 +81,51 @@ test("power label and diff", () => {
   const d = S.diffSnapshots(snap({ battery: b({ plugged: false, charging: false }) }), snap({ battery: b({ plugged: true, charging: true }) }));
   assert.deepEqual(d, ["Power: on battery → charging"]);
 });
+
+test("stop reasons and errors", () => {
+  assert.match(S.stopReasonMessage("camera_stopped"), /camera stopped on the phone/);
+  assert.match(S.stopReasonMessage("ice_failed"), /client isolation/);
+  assert.match(S.stopReasonMessage("replaced"), /another viewer/);
+  assert.equal(S.stopReasonMessage("weird"), "Video stopped.");
+  assert.match(S.webrtcErrorMessage("CAMERA_UNAVAILABLE"), /not available/);
+});
+
+test("start blocked reasons", () => {
+  assert.equal(S.startBlockedReason({ state: "previewing" }), null);
+  assert.equal(S.startBlockedReason({ state: "transmitting" }), null);
+  assert.match(S.startBlockedReason({ state: "not_started" }), /not running/);
+  assert.match(S.startBlockedReason({ state: "error", error: "PERMISSION_CAMERA" }), /permission/);
+  assert.match(S.startBlockedReason({ state: "paused" }), /scanner/);
+});
+
+test("codec preference puts H264 first, keeps fallbacks", () => {
+  const c = [{ mimeType: "video/VP8" }, { mimeType: "video/H264", n: 1 }, { mimeType: "video/AV1" }, { mimeType: "video/h264", n: 2 }];
+  assert.deepEqual(S.preferH264(c).map((x) => x.mimeType), ["video/H264", "video/h264", "video/VP8", "video/AV1"]);
+});
+
+const report = (bytes, ts, extra = {}) => [
+  { id: "i", type: "inbound-rtp", kind: "video", codecId: "c", bytesReceived: bytes, timestamp: ts, frameWidth: 640, frameHeight: 360, framesPerSecond: 29.5, packetsLost: 0, framesDecoded: 10, ...extra },
+  { id: "c", type: "codec", mimeType: "video/H264" },
+  { id: "p", type: "candidate-pair", nominated: true, state: "succeeded", currentRoundTripTime: 0.004, localCandidateId: "l", remoteCandidateId: "r" },
+  { id: "l", type: "local-candidate", candidateType: "host" }, { id: "r", type: "remote-candidate", candidateType: "prflx" },
+];
+test("stats: first sample has no bitrate, second computes delta", () => {
+  const a = S.computeStats(report(1000, 1000), null);
+  assert.equal(a.model.bitrateBps, null);
+  assert.equal(a.model.codec, "H264");
+  assert.equal(a.model.rttMs, 4);
+  assert.equal(a.model.localCandidate, "host");
+  assert.equal(a.model.packetsLost, 0); // real zero is kept
+  const b = S.computeStats(report(126000, 2000), a.sample);
+  assert.equal(b.model.bitrateBps, 1_000_000);
+  assert.equal(S.formatBitrate(b.model.bitrateBps), "1.00 Mbps");
+});
+test("stats: missing data yields nulls and dashes", () => {
+  const { model } = S.computeStats([], null);
+  assert.equal(model.codec, null);
+  assert.ok(S.metricRows(model).every(([, v]) => v === "—"));
+  assert.ok(S.metricRows(null).every(([, v]) => v === "—"));
+  assert.ok(S.phoneEncoderRows(null).every(([, v]) => v === "—"));
+  const r = S.phoneEncoderRows({ capture: { width: 640, height: 360, fps_measured: 29.9 }, stream: { codec: "H264", encoder: "c2.x", width: 640, height: 360, fps: 29.7, bitrate_bps: 912000, quality_limitation: "none" } });
+  assert.equal(r[2][1], "912 kbps · 29.7 fps");
+});

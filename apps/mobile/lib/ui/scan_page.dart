@@ -27,6 +27,7 @@ class _ScanPageState extends State<ScanPage> {
   String? _message;
   Timer? _clear;
   var _busy = false;
+  var _cameraFree = false;
 
   SessionController get c => widget.controller;
   bool get _granted => c.permissions['camera'] == 'granted';
@@ -35,7 +36,11 @@ class _ScanPageState extends State<ScanPage> {
   void initState() {
     super.initState();
     c.addListener(_onController);
-    _syncScanner();
+    // The session camera must be unbound before the scanner opens the camera.
+    c.capture.pauseForScanner().whenComplete(() {
+      _cameraFree = true;
+      if (mounted) _onController();
+    });
   }
 
   void _onController() {
@@ -44,7 +49,7 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   void _syncScanner() {
-    if (_granted && _scanner == null) {
+    if (_granted && _cameraFree && _scanner == null) {
       _scanner = MobileScannerController(
         formats: const [BarcodeFormat.qrCode],
         detectionSpeed: DetectionSpeed.noDuplicates,
@@ -56,7 +61,13 @@ class _ScanPageState extends State<ScanPage> {
   void dispose() {
     c.removeListener(_onController);
     _clear?.cancel();
-    _scanner?.dispose(); // releases the camera
+    // Release the scanner's camera first, then give it back to the session.
+    final scanner = _scanner;
+    final capture = c.capture;
+    Future(() async {
+      await scanner?.dispose();
+      await capture.resumeFromScanner();
+    });
     super.dispose();
   }
 

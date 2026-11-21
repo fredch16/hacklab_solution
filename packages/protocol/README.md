@@ -113,3 +113,12 @@ Envelopes all carry the shared `sequence`. Max 1 offer per second accepted (else
 
 ### Targets (not guarantees)
 640×360, 30 FPS, max bitrate 1.2 Mbps set via sender `RtpParameters`, `degradationPreference = BALANCED`.
+
+## Slice 1 revision (owner, 2026-11-21) — supersedes conflicting lines above
+
+- **Camera starts when the browser clicks Start video**, not at session start. Session start only requests camera permission (with rationale) so remote start needs no phone tap. Phone preview shows whenever the camera runs.
+- On `webrtc.offer`: if camera not running → start it, wait until frames arrive (timeout 5 s → `webrtc.error CAMERA_UNAVAILABLE`), then answer. Permission missing → `webrtc.error CAMERA_UNAVAILABLE` message "Camera permission not granted on the phone".
+- On `webrtc.stop`, peer failure, viewer revoke/replace, or session end → stop the peer **and stop the camera** unless the phone's QR scanner is using it.
+- Browser **Start video** is enabled whenever the session is active and paired (camera state `not_started` is normal now); shows "Starting phone camera…" until the answer arrives.
+- **QR scanning uses the same CameraSession** (ZXing core on ImageAnalysis frames). `mobile_scanner`/ML Kit removed (it sent Google telemetry to firebaselogging.googleapis.com — forbidden). No pause/unbind for scanning; camera state `paused` removed. If the camera was off, the scanner starts it and stops it on exit.
+- Camera quality: continuous video autofocus, auto exposure + auto white balance, **tap-to-focus/meter** on the phone preview (returns to continuous AF after 3 s).

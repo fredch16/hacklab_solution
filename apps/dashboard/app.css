@@ -45,3 +45,12 @@ input{min-height:52px;font:600 26px ui-monospace,Menlo,Consolas,monospace;letter
 .qr-box{min-height:240px;display:grid;place-items:center}
 .qr{width:min(100%,280px);height:auto;image-rendering:pixelated;border-radius:8px}
 .link{background:none;border:0;color:var(--blue);font:inherit;text-decoration:underline;cursor:pointer;min-height:44px}
+.viewport{position:relative;overflow:hidden}
+.viewport video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.overlay{position:relative;z-index:1}.overlay.hidden{display:none}
+.cam-status{margin:-4px 0 12px;color:var(--t2)}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:12px}
+.strip{margin-top:8px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}
+.strip dt{font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.strip .m{min-width:0}.strip dd{margin:0}.sub{margin:12px 0 0;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--t2);font-weight:600}
+.stale .viewport{opacity:1}

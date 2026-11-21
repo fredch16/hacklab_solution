@@ -16,6 +16,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        cameraChannel = CameraChannel(this, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.localvision/device")
             .setMethodCallHandler { call, result ->
                 if (call.method == "getDeviceStatus") result.success(deviceStatus())
@@ -43,7 +44,11 @@ class MainActivity : FlutterActivity() {
             })
     }
 
+    private var cameraChannel: CameraChannel? = null
+
     override fun onDestroy() {
+        cameraChannel?.dispose()
+        cameraChannel = null
         batteryReceiver?.let { unregisterReceiver(it) }
         batteryReceiver = null
         super.onDestroy()

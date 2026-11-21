@@ -1,7 +1,8 @@
 import { qrCanvas } from "./qr.js";
+import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
-  initialState, isTerminalClose, pairErrorMessage, powerLabel, UNAVAILABLE, type Envelope, type Snapshot, type State,
+  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, startBlockedReason, type PhoneStats, UNAVAILABLE, type Envelope, type Snapshot, type State,
 } from "./state.js";
 
 type View = "boot" | "pairing" | "dashboard" | "terminal";
@@ -49,6 +50,7 @@ async function start() {
 
 function setView(v: View) {
   view = v;
+  if (v !== "dashboard" && dash) { videoLost(); vs.phase = "idle"; vs.message = ""; dash = null; }
   if (v === "pairing") { if (!pairPoll && pairMode === "qr") void requestQr(); } else stopPairing();
   render();
 }
@@ -116,7 +118,17 @@ async function unpair() {
   state = initialState(); pairMsg = ""; setView("pairing");
 }
 
+let phoneStats: PhoneStats | null = null;
+let phoneStatsAt = 0;
+const sendWs = (o: object) => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(o)); return true; } return false; };
+initVideo(sendWs, () => updateDash());
+function videoLost() {
+  if (vs.phase === "connecting" || vs.phase === "live" || vs.phase === "stalled") stopVideo("Video stopped \u2014 connection to the phone was lost.", false);
+  phoneStats = null;
+}
+
 function closeWs() {
+  videoLost();
   clearTimeout(retryTimer); clearInterval(tick);
   if (ws) { ws.onclose = null; ws.onmessage = null; ws.close(); ws = null; }
 }
@@ -128,12 +140,15 @@ function connect() {
   ws = sock;
   sock.onmessage = (m) => {
     try {
-      const next = applyEnvelope(state, JSON.parse(String(m.data)) as Envelope, Date.now());
+      const env = JSON.parse(String(m.data)) as Envelope & { request_id?: string };
+      if (env.type === "camera.stats") { phoneStats = env.payload as unknown as PhoneStats; phoneStatsAt = Date.now(); updateDash(); return; }
+      if (env.type !== "session.snapshot") { handleSignal(env.type, env.request_id, env.payload); return; }
+      const next = applyEnvelope(state, env, Date.now());
       conn = "connected"; attempt = 0; state = next;
       if (view === "dashboard") render();
     } catch { /* malformed frame: ignore */ }
   };
-  sock.onclose = (ev) => { if (ws === sock) onClosed(ev.code); };
+  sock.onclose = (ev) => { if (ws === sock) { videoLost(); onClosed(ev.code); } };
   if (view === "dashboard") render();
 }
 
@@ -155,9 +170,10 @@ async function onClosed(code: number) {
 
 // ---------- rendering ----------
 function render() {
+  if (view === "dashboard") { if (!dash) dash = buildDash(); if (root.firstChild !== dash.page) root.replaceChildren(dash.page); updateDash(); return; }
   const focused = (document.activeElement as HTMLElement | null)?.dataset?.focus;
   const typed = (document.getElementById("code") as HTMLInputElement | null)?.value ?? "";
-  root.replaceChildren(view === "pairing" ? pairingView(typed) : view === "terminal" ? terminalView() : view === "dashboard" ? dashboardView() : h("p", "boot", "Loading dashboard…"));
+  root.replaceChildren(view === "pairing" ? pairingView(typed) : view === "terminal" ? terminalView() : h("p", "boot", "Loading dashboard…"));
   if (focused) (root.querySelector(`[data-focus="${focused}"]`) as HTMLElement | null)?.focus();
 }
 
@@ -240,36 +256,68 @@ function perm(name: string, v: string | null) {
   return [name, h("span", `pill ${e[2]}`, icon(e[0]), e[1])] as [string, Node];
 }
 
-function dashboardView() {
-  const snap = state.snapshot;
-  const stale = conn !== "connected";
-  const dev = snap?.device;
-  const model = dev?.model ? [dev.manufacturer, dev.model].filter(Boolean).join(" ") : "Waiting for phone…";
+interface Dash { page: HTMLElement; hdr: HTMLElement; stale: HTMLElement; status: HTMLElement; overlay: HTMLElement; controls: HTMLElement; tags: HTMLElement; metrics: HTMLElement; phone: HTMLElement; rail: HTMLElement; grid: HTMLElement }
+let dash: Dash | null = null;
 
-  const hd = h("header", "top");
-  hd.append(h("div", "brand", icon("◈"), " LOCAL VISION"), h("div", "device", model), badge(), h("span", "pill neutral", icon("⌂"), "LAN only"));
-  const un = h("button", "btn", "Unpair this browser"); un.dataset.focus = "unpair"; un.onclick = () => void unpair();
-  hd.append(un);
-
-  const main = h("main", "grid" + (stale ? " stale" : ""));
-  if (stale) {
-    main.before(h("div", "stale-bar", icon("⏸"), `Showing last known values — not live. Last updated ${formatClock(state.receivedAt)}.`));
+/** Replace children only if the markup changed, so buttons are not rebuilt under the pointer every second. */
+function patch(el: HTMLElement, nodes: Node[]) {
+  const t = document.createElement("div"); t.append(...nodes);
+  if (t.innerHTML !== el.innerHTML) {
+    const f = (document.activeElement as HTMLElement | null)?.dataset?.focus;
+    el.replaceChildren(...t.childNodes);
+    if (f) (el.querySelector(`[data-focus="${f}"]`) as HTMLElement | null)?.focus();
   }
+}
 
-  const cam = h("section", "card camera");
-  const vp = h("div", "viewport", h("div", "vp-text", h("strong", null, `Camera · ${stateLabel(snap?.camera.state ?? "not_started")}`), h("span", "muted", "No video yet. Camera streaming arrives in a later release.")));
-  vp.setAttribute("role", "img"); vp.setAttribute("aria-label", "Camera viewport: no video, camera not started");
-  cam.append(h("h2", "mod", "Camera"), vp, h("div", "tags",
-    h("span", "tag", "WebRTC · " + stateLabel(snap?.camera.state ?? "not_started")),
-    h("span", "tag", "Local master · " + stateLabel(snap?.recording.state ?? "not_started"))));
+function buildDash(): Dash {
+  const hdr = h("header", "top"), stale = h("div"), status = h("p", "cam-status"), overlay = h("div", "vp-text");
+  const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay));
+  const controls = h("div", "controls"), tags = h("div", "tags"), metrics = h("div"), phone = h("div");
+  const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
+  const rail = h("aside", "rail"), grid = h("main", "grid", h("div", "main-col", cam), rail);
+  return { page: h("div", "page", hdr, stale, grid), hdr, stale, status, overlay, controls, tags, metrics, phone, rail, grid };
+}
 
-  const rail = h("aside", "rail");
-  if (snap) rail.append(...railCards(snap)); else rail.append(card("Waiting", h("p", "muted", "Waiting for the first snapshot from the phone…")));
-  main.append(h("div", "main-col", cam), rail);
+function updateDash() {
+  const d = dash; if (!d || view !== "dashboard") return;
+  const snap = state.snapshot, live = conn !== "connected";
+  const dev = snap?.device;
+  const model = dev?.model ? [dev.manufacturer, dev.model].filter(Boolean).join(" ") : "Waiting for phone\u2026";
+  const un = h("button", "btn", "Unpair this browser"); un.dataset.focus = "unpair"; un.onclick = () => void unpair();
+  patch(d.hdr, [h("div", "brand", icon("\u25C8"), " LOCAL VISION"), h("div", "device", model), badge(), h("span", "pill neutral", icon("\u2302"), "LAN only"), un]);
+  patch(d.stale, live ? [h("div", "stale-bar", icon("\u23F8"), `Showing last known values \u2014 not live. Last updated ${formatClock(state.receivedAt)}.`)] : []);
+  d.grid.classList.toggle("stale", live);
 
-  const wrap = h("div", "page", hd, main);
-  if (stale) wrap.prepend(h("div", "sr-only", "Values are stale"));
-  return wrap;
+  const cs = snap?.camera.state ?? "not_started";
+  patch(d.status, [document.createTextNode(`Camera \u00B7 ${stateLabel(cs)}`)]);
+  const ph = vs.phase;
+  const ov: Node[] = ph === "live" ? [] : ph === "connecting" ? [h("strong", null, "Connecting\u2026")]
+    : ph === "stalled" ? [h("strong", null, "No frames arriving"), h("span", "muted", vs.message)]
+    : ph === "stopped" ? [h("strong", null, "Video stopped"), h("span", "muted", vs.message)]
+    : [h("strong", null, "Video not started"), h("span", "muted", "Click Start video to watch the phone camera.")];
+  patch(d.overlay, ov);
+  d.overlay.parentElement?.classList.toggle("hidden", ph === "live");
+
+  const blocked = live ? "Not connected to the phone." : startBlockedReason(snap?.camera);
+  const active = ph === "connecting" || ph === "live" || ph === "stalled";
+  const btn = h("button", active ? "btn" : "btn primary", active ? "Stop video" : ph === "stopped" ? "Start video again" : "Start video");
+  btn.dataset.focus = "video"; btn.disabled = !active && blocked !== null;
+  btn.onclick = () => (active ? stopVideo("Video stopped.") : void startVideo());
+  patch(d.controls, [btn, ...(blocked && !active ? [h("span", "muted", blocked)] : [])]);
+
+  const st = vs.stats;
+  const webrtc = ph === "live" && st?.codec ? `WebRTC \u00B7 ${st.codec}${st.width && st.height ? ` ${st.width}\u00D7${st.height}` : ""}` : `WebRTC \u00B7 ${ph === "connecting" ? "Connecting" : "Not started"}`;
+  patch(d.tags, [
+    ...(ph === "live" ? [h("span", "pill ok", icon("\u25CF"), "LIVE")] : []),
+    h("span", "tag", webrtc),
+    h("span", "tag", "Local master \u00B7 " + stateLabel(snap?.recording.state ?? "not_started")),
+  ]);
+  const strip = (r: [string, string][]) => h("dl", "kv strip", ...r.map(([k, v]) => h("div", "m", h("dt", null, k), h("dd", null, v))));
+  patch(d.metrics, ph === "idle" ? [] : [strip(metricRows(ph === "stopped" ? null : st))]);
+  const phoneOk = !live && Date.now() - phoneStatsAt < 5000 && (cs === "previewing" || cs === "transmitting");
+  patch(d.phone, snap ? [h("p", "sub", "Phone encoder"), strip(phoneEncoderRows(phoneOk ? phoneStats : null))] : []);
+
+  patch(d.rail, snap ? railCards(snap) : [card("Waiting", h("p", "muted", "Waiting for the first snapshot from the phone\u2026"))]);
 }
 
 function railCards(s: Snapshot): Node[] {

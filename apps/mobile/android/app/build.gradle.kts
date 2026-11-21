@@ -44,6 +44,16 @@ kotlin {
     }
 }
 
+dependencies {
+    val cameraX = "1.7.0"
+    implementation("androidx.camera:camera-core:$cameraX")
+    implementation("androidx.camera:camera-camera2:$cameraX")
+    implementation("androidx.camera:camera-lifecycle:$cameraX")
+    // libwebrtc build (BSD-3-Clause; wrapper Apache-2.0). Pinned.
+    implementation("io.github.webrtc-sdk:android:144.7559.15")
+    testImplementation("junit:junit:4.13.2")
+}
+
 flutter {
     source = "../.."
 }

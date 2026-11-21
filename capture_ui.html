@@ -81,7 +81,7 @@
       <button id="hold">Hold here</button>
       <span id="torque" class="torque"></span>
     </div>
-    <p class="hint"><b>Go limp</b>, move the follower by hand, <b>Hold here</b> to lock it, check the picture, then <b>Save</b> (or Enter). The follower must be on "(Self-controlled)" in Station. Hold here locks joints 1-7; the gripper (camera mount) stays limp. Every move passes through the pose saved as <b>transit</b>: re-capturing a view clears its "checked" mark.</p>
+    <p class="hint"><b>Go limp</b>, move the follower by hand, <b>Hold here</b> to lock it, check the picture, then <b>Save</b> (or Enter). The follower must be on "(Self-controlled)" in Station. Hold here locks joints 1-7; the gripper (camera mount) stays limp. Every move passes through the pose saved as <b>transit</b>: re-capturing a view clears its "checked" mark, and re-capturing transit clears them all.</p>
   </section>
 
   <section>
@@ -193,7 +193,7 @@ async function refresh() {
   const limp = state.torque ? state.torque === "limp" : state.buses[state.bus] === "limp";
   $("joints").textContent = state.joints;
   $("torque").className = "torque " + (limp ? "off" : "on");
-  $("torque").textContent = moving() ? `moving to ${state.motion.view} (STOP is on the Control page; Hold here stops it too)`
+  $("torque").textContent = moving() ? `moving to ${state.motion.view} (STOP is on the Control page)`
     : state.connected === false ? "no data from the arm: is it plugged in and visible in Station?"
     : limp ? "limp: move it by hand, then Hold here" : "holding: hands off, check the picture";
   $("nav").hidden = !state.motion;

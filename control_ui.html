@@ -48,6 +48,9 @@
   .route li.now { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
   .where { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
   .where.warn { color: var(--warn); font-weight: 600; }
+  .blockers { margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 8px; background: rgba(245, 165, 36, .08); overflow-wrap: anywhere; }
+  .blockers b { color: var(--warn); }
+  .blockers ul { margin: 4px 0 0; padding-left: 18px; }
   .alert { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--bad); border-radius: 8px; background: rgba(255, 93, 93, .1);
            color: var(--bad); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
   .alert small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-bottom: 2px; }
@@ -103,6 +106,9 @@
   .stopbar .info { flex: 1; min-width: 0; font-size: 15px; overflow-wrap: anywhere; }
   .stopbar .info.bad { color: var(--bad); font-weight: 600; }
   .stopbar .info .err { display: block; color: var(--bad); font-weight: 600; }
+  .stopbar { flex-wrap: wrap; }
+  .holdfail { flex: 0 0 100%; padding: 10px 14px; border-radius: 8px; background: var(--stop); color: #fff; font-size: 16px; font-weight: 800; overflow-wrap: anywhere; }
+  .holdfail small { display: block; font-size: 12px; font-weight: 500; margin-top: 2px; }
   #stop { flex: none; min-width: 280px; padding: 12px 28px; background: var(--stop); border: 2px solid #ff8f93; border-radius: 12px;
           color: #fff; font-size: 24px; font-weight: 800; letter-spacing: .1em; line-height: 1.1; }
   #stop small { display: block; font-size: 11px; font-weight: 500; letter-spacing: .04em; opacity: .9; margin-top: 3px; }
@@ -136,6 +142,7 @@
       <div class="count">Status</div>
       <h2 id="headline">Connecting…</h2>
       <div class="where" id="where"></div>
+      <div class="blockers" id="blockers" hidden></div>
       <div class="phase" id="phase"></div>
       <ol class="route" id="route" aria-label="Route"></ol>
       <div class="bar idle" id="bar"><div id="barFill"></div></div>
@@ -156,7 +163,7 @@
       <ul>
         <li>The follower must be on <b>"(Self-controlled)"</b> in Station.</li>
         <li><b>Someone stands at the arm</b>, power plug within reach. STOP (below, or Space / Esc) holds the arm where it is.</li>
-        <li>The arm must be holding (<b>Hold here</b>) and at a known pose. A move rises to the transit pose, turns, then descends: 10 to 30 s at slow speed.</li>
+        <li>The arm must be holding (<b>Hold here</b>) and at a known pose. A move rises to the transit pose, turns, then descends: 30 to 60 s at first-run speed (every view until it is marked as checked), quicker after that.</li>
       </ul>
     </div>
 
@@ -179,6 +186,7 @@
 </main>
 
 <div class="stopbar">
+  <div class="holdfail" id="holdFail" role="alert" hidden></div>
   <div class="info" id="stopInfo">Connecting…</div>
   <button id="stop">STOP<small>Space / Esc · holds the arm where it is</small></button>
 </div>
@@ -188,7 +196,8 @@ const $ = (id) => document.getElementById(id);
 let state = null;      // last /api/state
 let lost = false;      // the state poll is failing
 let pending = null;    // view just clicked, until the server reports the move
-let stopFail = "";     // a STOP that did not go through; stays on screen until one does
+let stopFail = "";     // a STOP that did not reach the server; stays on screen until one does
+let holdFail = "";     // the last STOP answered "hold unconfirmed"; state.hold takes over once the poll has it
 let speed = "slow";
 try { speed = localStorage.getItem("controlSpeed") || speed; } catch (e) {}
 
@@ -222,6 +231,7 @@ async function refresh() {
     const s = await request("/api/state", {}, 2500);
     if (n < applied) return;   // an older answer arrived late
     applied = n; state = s; lost = false;
+    if (s.hold !== "unconfirmed") holdFail = "";
   } catch (e) {
     if (n < applied) return;
     applied = n; lost = true;
@@ -260,34 +270,52 @@ async function setChecked(name, checked) {
   if (checked && !confirm(`Mark "${name}" as checked?\n\nYou watched this view's move run cleanly on the real arm, there and back?`)) return;
   try {
     await post("/api/checked", { view: name, checked });
-    note(checked ? `"${name}" marked as checked: it may now run at normal speed.` : `"${name}" is unchecked again: it runs slow.`, "ok");
+    note(checked ? `"${name}" marked as checked: it may now run at the speed you pick.` : `"${name}" is unchecked again: it runs very slow.`, "ok");
   } catch (e) {
     note(`Could not mark "${name}": ${e.message}`, "bad");
   }
   kick();
 }
 
+const STOP_TIMEOUT_MS = 4000;
 async function sendStop() {
+  // Its own request with its own timeout; reads the answer whatever the HTTP status is.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), STOP_TIMEOUT_MS);
   try {
-    const r = await post("/api/stop", {}, 4000);
-    stopFail = "";
-    note(r.was_moving ? `Stopped on the way to "${r.view}". The arm is holding where it is.` : "Hold sent (nothing was moving).", "ok");
-    return r;
+    const r = await fetch("/api/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: ctl.signal });
+    return await r.json();   // {ok, hold: "confirmed" | "unconfirmed" | "limp", was_moving, view, error}
   } catch (e) {
-    stopFail = `STOP FAILED (${e.message}). Press again, or pull the follower's power plug.`;
-    note(stopFail, "bad");
+    return { failed: e.name === "AbortError" ? "no answer from capture_server.py" : e.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function stop() {
-  // Never blocked by anything else on the page: its own request, no dependence on the state poll.
-  const racing = starting;   // a click that may reach the server after this STOP
+  // Never blocked by anything else on the page: its own requests, no dependence on the state poll.
+  const racing = starting;   // a click still in flight; the server refuses to start it after this STOP, and we stop again anyway
   $("stop").classList.add("pressed");
-  const first = await sendStop();
+  const tries = [sendStop()];
   if (racing) {
-    await racing.catch(() => {});
-    const second = await sendStop();
-    if (first && first.was_moving && second && !second.was_moving) note(`Stopped on the way to "${first.view}". The arm is holding where it is.`, "ok");
+    // The second STOP does not wait for the first one: a hung request must not hold it back.
+    const settled = racing.catch(() => {});
+    tries.push(Promise.race([settled, new Promise((r) => setTimeout(r, 1500))]).then(sendStop));
+  }
+  tries.forEach((t) => t.then((r) => { if (!r.failed) kick(); }));   // show the new state as soon as one STOP is answered
+  const answers = await Promise.all(tries);
+  const reached = answers.filter((r) => !r.failed);
+  const last = reached[reached.length - 1];
+  const moved = reached.find((r) => r.was_moving);
+  if (!reached.length) {
+    stopFail = `STOP DID NOT REACH THE SERVER (${answers[0].failed}). Press again, or pull the follower's power plug.`;
+    note(stopFail, "bad");
+  } else {
+    stopFail = "";
+    holdFail = last.hold === "unconfirmed" ? (last.error || "the hold could not be confirmed") : "";
+    if (holdFail) note("STOP was received, but the hold could not be confirmed: " + holdFail, "bad");
+    else if (last.hold === "limp") note((moved ? `Stopped on the way to "${moved.view}". ` : "") + "The arm is limp, nothing to hold.", "");
+    else note(moved ? `Stopped on the way to "${moved.view}". The arm is holding where it is.` : "Hold confirmed (nothing was moving).", "ok");
   }
   $("stop").classList.remove("pressed");
   pending = null;
@@ -297,8 +325,8 @@ async function stop() {
 
 async function holdHere() {
   try {
-    const r = await post("/api/torque", { on: true });
-    note(r.was_moving ? `Stopped on the way to "${r.view}". The arm is holding where it is.` : "Holding (joints 1-7; the gripper stays limp).", "ok");
+    await post("/api/torque", { on: true });
+    note("Holding (joints 1-7; the gripper stays limp).", "ok");
   } catch (e) {
     note("Hold failed: " + e.message, "bad");
   }
@@ -357,7 +385,7 @@ function buildGrid() {
       limit.title = "Saved pose is at a joint limit; re-capture it a bit away from the stop. The arm stops just short, so the picture differs slightly from the snapshot.\n" + v.limit_notes.join("\n");
       flags.append(limit);
     }
-    flags.append(v.checked ? make("span", "flag checked", "\u2713 checked") : make("span", "flag unchecked", "unchecked: runs slow"));
+    flags.append(v.checked ? make("span", "flag checked", "\u2713 checked") : make("span", "flag unchecked", "unchecked: runs very slow"));
     const mark = make("button", "mark", v.checked ? "Uncheck" : "Mark as checked");
     mark.disabled = !!state.sim;
     mark.title = state.sim ? "Views are read-only in --sim" : (v.checked ? "Make this view run slow again" : "After you watched its move run cleanly on the real arm");
@@ -372,16 +400,17 @@ function buildGrid() {
 }
 
 function whereText() {
-  // [text, needs attention]
-  if (!state.connected) return ["No data from the arm. Is it plugged in and visible in Station?", true];
-  if (state.where_error) return [state.where_error, true];
+  // [text, needs attention]. Shown also while the arm is limp: pose it by hand until this says "at the transit pose".
+  if (!state.connected) return ["no data from the arm", true, "No data from the arm. Is it plugged in and visible in Station?"];
   const w = state.where;
-  if (!w) return ["checking where the arm is\u2026", false];
-  if (w.where === "view") return [`at "${w.view}"`, false];
-  if (w.where === "hub") return ["at the transit pose", false];
-  if (w.where === "spoke") return [`between "${w.view}" and the transit pose`, false];
-  return ["Not at a known pose: there is no checked path from here. Move it by hand to the transit pose (Capture page: Go limp, pose it, Hold here), or use Recover to transit with someone watching the arm.", true];
+  if (!w) return (state.blockers || []).length ? ["position not known", true, "Where the arm is: not known."] : ["checking where the arm is\u2026", false, "Checking where the arm is\u2026"];
+  let at = "not at a known pose";
+  if (w.where === "view") at = `at "${w.view}"`;
+  if (w.where === "hub") at = "at the transit pose";
+  if (w.where === "spoke") at = `between "${w.view}" and the transit pose`;
+  return [at, w.where === "unknown", `The arm is ${at}.`];
 }
+const UNKNOWN_HELP = "There is no checked path from here. Move the arm by hand to the transit pose (Capture page: Go limp, pose it until this page says \"at the transit pose\", Hold here), or use Recover to transit with someone watching the arm.";
 
 function resultText(r) {
   if (!r) return ["", ""];
@@ -397,7 +426,10 @@ function render() {
   const moving = isMoving();
   const target = pending !== null ? pending : m.view;
   const failed = moving ? null : failure(m.last_result);
-  const [whereLine, whereWarn] = state ? whereText() : ["", false];
+  const [whereLine, whereWarn, whereSentence] = state ? whereText() : ["", false, ""];
+  const unknown = !!(state && !moving && state.where && state.where.where === "unknown");
+  const blockers = state && !moving && state.connected ? [...(state.blockers || [])] : [];
+  if (unknown && !blockers.length) blockers.push(UNKNOWN_HELP);
 
   // Headline + sticky bar: usable even before the first state arrives.
   let headline = "Connecting\u2026";
@@ -413,10 +445,17 @@ function render() {
     $("headline").className = "";
     $("headline").textContent = headline;
     info.className = "info" + (stopFail ? " bad" : "");
-    info.textContent = stopFail || (moving && m.phase ? `${headline} \u00B7 ${m.phase}` : (!moving && state && !whereWarn ? `${headline} \u00B7 ${whereLine}` : headline));
-    // Refusals and aborts say what to do next; keep them in view wherever the page is scrolled.
-    const problem = !stopFail && (failed ? `"${failed.view}": ${failed.error}` : (!moving && whereWarn ? whereLine : ""));
+    info.textContent = stopFail || (moving && m.phase ? `${headline} \u00B7 ${m.phase}` : (!moving && state && whereLine ? `${headline} \u00B7 ${whereLine}` : headline));
+    // Refusals, aborts and blockers say what to do next; keep them in view wherever the page is scrolled.
+    const problem = !stopFail && (failed ? `"${failed.view}": ${failed.error}` : (blockers[0] || ""));
     if (problem) info.append(Object.assign(document.createElement("span"), { className: "err", textContent: problem }));
+  }
+  // A stop or abort whose hold could not be confirmed: loud, and it stays until a hold is confirmed.
+  const unheld = holdFail || (state && state.hold === "unconfirmed" ? (m.last_result && m.last_result.hold === "unconfirmed" && m.last_result.error) || "the last hold could not be confirmed" : "");
+  $("holdFail").hidden = !unheld;
+  if (unheld) {
+    $("holdFail").textContent = "HOLD NOT CONFIRMED: check the arm, pull the follower's power plug if it is still moving";
+    $("holdFail").append(Object.assign(document.createElement("small"), { textContent: unheld + " \u00B7 press STOP again once the arm answers, to confirm the hold" }));
   }
   document.body.style.paddingBottom = (document.querySelector(".stopbar").offsetHeight + 16) + "px";
 
@@ -424,7 +463,8 @@ function render() {
   const options = (state && state.speed_options) || { slow: 200, normal: 400 };
   if (!(speed in options)) speed = "slow";
   document.querySelectorAll("#speed button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.speed === speed)));
-  $("speedHint").textContent = `${options[speed]} steps/s` + (speed !== "slow" ? " \u00B7 unchecked views still run slow" : "") + (moving ? " \u00B7 applies to the next move" : "");
+  const first = state && state.first_speed;
+  $("speedHint").textContent = `${options[speed]} steps/s \u00B7 unchecked views run very slow` + (first ? ` (${first} steps/s)` : "") + (moving ? " \u00B7 applies to the next move" : "");
 
   if (!state) return;
 
@@ -435,7 +475,14 @@ function render() {
   $("badge").textContent = state.cameras.length ? "live" : (state.sim ? "simulated arm \u00B7 no camera" : "no camera");
 
   $("where").className = "where" + (whereWarn && !moving ? " warn" : "");
-  $("where").textContent = moving ? "" : whereLine;
+  $("where").textContent = moving ? "" : whereSentence;
+  $("blockers").hidden = !blockers.length;
+  if (blockers.length) {
+    const list = document.createElement("ul");
+    blockers.forEach((b) => list.appendChild(Object.assign(document.createElement("li"), { textContent: b })));
+    $("blockers").innerHTML = "";
+    $("blockers").append(Object.assign(document.createElement("b"), { textContent: "A move cannot start right now" }), list);
+  }
 
   // Phase, route steps and progress.
   const route = (moving && m.moving && m.route) || [];
@@ -476,8 +523,9 @@ function render() {
   const torque = state.connected ? state.torque : null;
   $("torque").className = "torque " + (torque === "holding" ? "on" : "off");
   $("torque").textContent = torque === "holding" ? "arm is holding" : torque === "limp" ? "arm is limp: support it, then Hold here before moving" : "no data from the arm";
-  const unknown = !moving && !state.where_error && state.where && state.where.where === "unknown";
   $("recover").hidden = !(unknown && torque === "holding" && state.has_transit);
+  $("hold").disabled = moving;
+  $("hold").title = moving ? "A move is running: press STOP to hold the arm where it is" : "";
 
   buildGrid();
   $("grid").classList.toggle("locked", moving);

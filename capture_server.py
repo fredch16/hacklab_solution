@@ -9,11 +9,18 @@
 /control  control: click a saved view and the arm moves there (motion.go_to_view); STOP holds it where it is.
 
 All arm motion and torque goes through motion.py (go_to_view, hold, engage, release, describe).
+
+Who may command the arm: everything that actuates (move start, Hold here, Go limp, arm selection) runs on the
+asyncio loop as ONE command at a time (State.command). A running move also counts as the owner. STOP is the
+exception: it never queues. It bumps the stop generation, cancels whatever owns the arm, waits for that to
+unwind, then holds. Every command remembers the generation from when its HTTP request arrived and refuses to
+start if a STOP came in since, so a click that was in flight when STOP was pressed can never start afterwards.
 """
 
 import argparse
 import asyncio
 import json
+import os
 import signal
 import threading
 import time
@@ -31,7 +38,8 @@ PAGES = {"/": ROOT / "capture_ui.html", "/index.html": ROOT / "capture_ui.html",
 
 SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL}  # max_speed for go_to_view, steps per second
 DEFAULT_SPEED = "slow"
-STOP_WAIT_S = 1.0   # how long STOP waits for the cancelled move to finish before holding again
+STOP_WAIT_S = 1.0   # how long STOP waits for the cancelled move / command to unwind before it holds anyway
+DRAIN_S = 3.0       # shutdown: how long to wait for the stopped move task to end
 WHERE_TTL_S = 1.0   # motion.describe() is asked at most this often, and never while a move is running
 
 NO_CAMERA_SVG = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360"/>'
@@ -47,8 +55,36 @@ class Refused(Exception):
         self.status = status
 
 
+def pick_bus(requested: str, buses: list[str], torqued: list[str], views: dict) -> str:
+    """Which arm we drive. Never guesses: with several arms and no single answer it refuses.
+
+    requested: --bus (a serial, or "auto").  buses: serials Station sees.  torqued: those holding.
+    views: views.json's "views"; the arm they were captured on is the follower.
+    """
+    if not buses:
+        raise RuntimeError("Station sees no arm; check USB and the Station web UI")
+    if requested != "auto":
+        if requested not in buses:
+            raise RuntimeError(f"arm {requested} is not connected; Station sees {', '.join(buses)}")
+        return requested
+    if len(buses) == 1:
+        return buses[0]
+    recorded = views.get(motion.TRANSIT, {}).get("bus")
+    if recorded not in buses:
+        known = {v.get("bus") for v in views.values()} & set(buses)
+        recorded = known.pop() if len(known) == 1 else None
+    holding = torqued[0] if len(torqued) == 1 else None
+    if recorded and holding and recorded != holding:
+        raise RuntimeError(f"cannot tell which arm is the follower: the saved views were captured on {recorded}, "
+                           f"but {holding} is the one holding torque. Pass --bus <serial>")
+    if recorded or holding:
+        return recorded or holding
+    raise RuntimeError(f"several arms are connected ({', '.join(buses)}) and none of them is the one the saved "
+                       "views were captured on. Pass --bus <serial>")
+
+
 class State:
-    """Lives on the asyncio loop thread; HTTP threads call in via `call`."""
+    """Lives on the asyncio loop thread; HTTP threads only submit coroutines via `call`."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop, sim: bool = False):
         self.loop = loop
@@ -58,10 +94,18 @@ class State:
         self.cam_queue: str | None = None
         self.capturing = False
         self.views_path = VIEWS_PATH
+        # Command ownership (see the module docstring).
+        self.owner = asyncio.Lock()            # held by the one command that may touch the arm or views.json
+        self.command_task: asyncio.Task | None = None  # the task holding `owner`, so STOP can cancel it
+        self.gen = 0                           # stop generation: every STOP bumps it
+        self._gen_lock = threading.Lock()
+        self.stopping = 0                      # STOPs in progress
+        self.closing = False                   # shutting down: no new work
         self.move_task: asyncio.Task | None = None
         self.move_view: str | None = None
         self.move_outcome: dict | None = None  # how the last move started here ended (result, stopped or crashed)
-        self.where: dict | None = None         # last motion.describe(): {"ok", "error", "where": {...}}
+        self.hold_state: str | None = None     # last stop/abort: "confirmed" | "unconfirmed" | "limp" (nothing to hold)
+        self.where: dict | None = None         # last motion.describe()
         self.where_at = 0.0
         self.where_gen = 0                     # bumped whenever the cached answer stops being true
         self.where_task: asyncio.Task | None = None
@@ -72,11 +116,12 @@ class State:
     async def start(self, server: str, bus: str):
         self.arm = await Arm.connect(server, bus="any")
         buses = list(self.arm.all_buses())
-        if bus != "auto":
-            self.arm.bus_serial = bus
-        else:
-            torqued = [s for s in buses if self.arm._torque_on(s)]
-            self.arm.bus_serial = torqued[0] if len(torqued) == 1 else buses[0]
+        try:
+            self.arm.bus_serial = pick_bus(bus, buses, [s for s in buses if self.arm._torque_on(s)],
+                                           load_views(self.views_path)["views"])
+        except RuntimeError:
+            self.arm.close()
+            raise
         for q in await list_camera_queues(self.arm.client):
             self.cams[q] = Camera(self.arm.client, q)
         await asyncio.sleep(1.5)
@@ -88,21 +133,59 @@ class State:
         from sim_arm import SimArm
         if not motion.view_names():
             self.views_path = motion.VIEWS_PATH = ROOT / "views.example.json"
+        motion.LOG_PATH = Path(os.devnull)  # motion_log.jsonl is for tuning limits from real-arm runs only
         self.arm = SimArm()  # starts at the saved home view
+
+    # ---- command ownership ----
 
     @property
     def moving(self) -> bool:
         return self.move_task is not None and not self.move_task.done()
 
+    def bump(self) -> int:
+        """A STOP arrived (any thread): from now on, commands received before it must not start."""
+        with self._gen_lock:
+            self.gen += 1
+            return self.gen
+
+    async def command(self, body, gen: int | None = None, idle: bool = True):
+        """Run `body()` as the single owner of the arm and views.json.
+
+        gen:  the stop generation when the request arrived; pass it for anything that actuates.
+        idle: refuse while a move is running.
+        """
+        def admit():
+            if self.closing:
+                raise Refused("the server is shutting down", 503)
+            if self.stopping or (gen is not None and gen != self.gen):
+                raise Refused("stopped before it started (STOP was pressed)")
+
+        admit()  # on arrival: a command that meets a STOP in progress is refused, not queued behind it
+        async with self.owner:
+            admit()  # and again once it owns the arm: a STOP may have come while it waited
+            if idle and self.moving:
+                raise Refused(f"moving to {self.move_view}: press STOP first")
+            self.command_task = asyncio.current_task()
+            try:
+                return await body()
+            except asyncio.CancelledError:
+                if self.stopping or self.closing:  # STOP took the arm away from this command
+                    raise Refused("interrupted by STOP") from None
+                raise
+            finally:
+                self.command_task = None
+
     def motion_state(self) -> dict:
         """motion.status, completed with what this server knows about the move it started."""
         m = dict(motion.status)
+        m.setdefault("hold", None)
         if self.moving:
             if not m.get("moving"):  # task created, go_to_view not running yet
                 m.update(moving=True, view=self.move_view, phase="check", phase_index=0, phase_count=0,
-                         progress=0.0, error=None, route=[])
+                         progress=0.0, error=None, route=[], hold=None)
         elif self.move_outcome is not None:
-            m.update(moving=False, phase=None, error=self.move_outcome.get("error"), last_result=self.move_outcome)
+            m.update(moving=False, phase=None, error=self.move_outcome.get("error"), last_result=self.move_outcome,
+                     hold=self.move_outcome.get("hold"))
         return m
 
     # ---- where is the arm (motion.describe, cached) ----
@@ -155,6 +238,9 @@ class State:
             self.loop.call_soon_threadsafe(self.refresh_where)
         described = (None if moving else self.where) or {}
         where = described.get("where")
+        blockers = described.get("blockers")
+        if blockers is None:
+            blockers = [described["error"]] if described.get("error") else []
         return {
             "bus": arm.bus_serial,
             "buses": buses,
@@ -171,127 +257,192 @@ class State:
             "has_transit": motion.TRANSIT in data["views"],
             "sim": self.sim,
             "motion": self.motion_state(),
+            "hold": self.hold_state,
+            "stopping": bool(self.stopping),
+            "generation": self.gen,
             "speed_options": SPEEDS,
             "default_speed": DEFAULT_SPEED,
+            "first_speed": getattr(motion, "SPEED_FIRST", None),  # what unchecked views are forced to
             "where": where,
-            "where_error": described.get("error"),
+            "can_move": (bool(described.get("ok")) and (where or {}).get("where") != "unknown") if described else None,
+            "blockers": blockers,  # why a move cannot start right now (the first one is where_error)
+            "where_error": blockers[0] if blockers else None,
             "current_view": where.get("view") if where and where.get("where") == "view" else None,
         }
 
-    # ---- torque ----
+    # ---- torque, arm and camera selection ----
 
-    async def set_torque(self, on: bool) -> dict:
-        if self.moving:
-            if not on:
-                raise Refused(f"moving to {self.move_view}: press STOP before going limp")
-            return await self.stop()  # "Hold here" during a move means stop
-        try:
-            await (motion.engage(self.arm) if on else motion.release(self.arm))
-        finally:
-            self._forget_where()
+    async def set_torque(self, on: bool, gen: int | None = None) -> dict:
+        async def body():
+            try:
+                await (motion.engage(self.arm) if on else motion.release(self.arm))
+            finally:
+                self._forget_where()
+            if on:
+                self.hold_state = "confirmed"
+            return {"ok": True}
+        result = await self.command(body, gen=self.gen if gen is None else gen)
         await asyncio.sleep(0.2)  # let the next frames from Station show the new torque state
         self.refresh_where()
-        return {"ok": True}
+        return result
+
+    async def select_bus(self, bus: str, gen: int | None = None) -> dict:
+        async def body():
+            if bus not in self.arm.all_buses():
+                raise Refused(f"arm {bus!r} is not connected", 404)
+            self.arm.bus_serial = bus
+            self._forget_where()
+            return {"ok": True, "bus": self.arm.bus_serial}
+        result = await self.command(body, gen=self.gen if gen is None else gen)
+        self.refresh_where()
+        return result
+
+    async def select_camera(self, queue: str) -> dict:
+        async def body():
+            if queue in self.cams:
+                self.cam_queue = queue
+            return {"ok": True, "camera": self.cam_queue}
+        return await self.command(body, idle=False)
 
     # ---- views ----
 
     async def do_capture(self, name: str, description: str) -> dict:
         if self.sim:
             raise Refused("views are read-only in --sim", 400)
-        if self.moving:
-            raise Refused(f"moving to {self.move_view}: wait or press STOP")
-        if self.capturing:
-            raise RuntimeError("already capturing")
-        self.capturing = True
-        try:
-            data = load_views()
-            cam = self.cams.get(self.cam_queue)
-            ok = await capture(self.arm, data, name, cam, description, confirm_overwrite=False)
-            if not ok:
-                raise RuntimeError(f"bad name {name!r}")
-            self._forget_where()  # a new or re-captured view changes where the arm "is"
-            return data["views"][name]
-        finally:
-            self.capturing = False
+
+        async def body():
+            self.capturing = True
+            try:
+                data = load_views()
+                cam = self.cams.get(self.cam_queue)
+                ok = await capture(self.arm, data, name, cam, description, confirm_overwrite=False)
+                if not ok:
+                    raise RuntimeError(f"bad name {name!r}")
+                return load_views()["views"][name]
+            finally:
+                self.capturing = False
+                self._forget_where()  # a new or re-captured view changes where the arm "is"
+        return await self.command(body)
 
     async def delete_view(self, name: str) -> dict:
         if self.sim:
             raise Refused("views are read-only in --sim", 400)
-        data = load_views()
-        data["views"].pop(name, None)
-        save_views(data)
-        self._forget_where()
-        return {"ok": True}
+
+        async def body():
+            data = load_views()
+            data["views"].pop(name, None)
+            save_views(data)
+            self._forget_where()
+            return {"ok": True}
+        return await self.command(body)
 
     async def mark_checked(self, view: str, checked) -> dict:
         if self.sim:
             raise Refused("views are read-only in --sim", 400)
         if not isinstance(checked, bool):
             raise Refused('"checked" must be true or false', 400)
-        if view not in motion.view_names():
-            raise Refused(f"unknown view {view!r}; known: {motion.view_names()}", 404)
-        motion.mark_checked(view, checked)
-        return {"ok": True, "view": view, "checked": motion.view_checked(view)}
+
+        async def body():
+            if view not in motion.view_names():
+                raise Refused(f"unknown view {view!r}; known: {motion.view_names()}", 404)
+            motion.mark_checked(view, checked)
+            return {"ok": True, "view": view, "checked": motion.view_checked(view)}
+        return await self.command(body)
 
     # ---- moving ----
 
-    async def start_move(self, view: str, speed: str, recover: bool = False) -> dict:
+    async def start_move(self, view: str, speed: str, recover: bool = False, gen: int | None = None) -> dict:
         """Start go_to_view as a task and return at once; progress, refusals and errors show up in state."""
-        if self.moving:
-            raise Refused(f"already moving to {self.move_view}")
+        gen = self.gen if gen is None else gen
         if speed not in SPEEDS:
             raise Refused(f"unknown speed {speed!r}; known: {list(SPEEDS)}", 400)
         if recover and view != motion.TRANSIT:
             raise Refused(f"recover only goes to {motion.TRANSIT!r}", 400)
-        if view not in motion.load_views():
-            raise Refused(f"unknown view {view!r}; known: {list(motion.load_views())}", 404)
         if recover:
             speed = "slow"
-        self.move_view, self.move_outcome = view, None
-        self._forget_where()
-        self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover))
-        self.move_task.add_done_callback(lambda _: self.refresh_where())
-        return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover}
+
+        async def body():
+            if view not in motion.load_views():
+                raise Refused(f"unknown view {view!r}; known: {list(motion.load_views())}", 404)
+            self.move_view, self.move_outcome = view, None
+            self._forget_where()
+            self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover))
+            self.move_task.add_done_callback(lambda _: self.refresh_where())
+            return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
+        return await self.command(body, gen=gen)
 
     async def _run_move(self, view: str, max_speed: float, recover: bool):
         try:
             result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover)
             self.move_outcome = {"view": view, **result}
-        except asyncio.CancelledError:
-            self.move_outcome = {"ok": False, "view": view, "error": "stopped"}
+            if result.get("hold") or result.get("ok"):  # a refusal commanded nothing and says nothing about holding
+                self.hold_state = result.get("hold") or "confirmed"
+        except asyncio.CancelledError:  # only STOP cancels; it records whether its hold was confirmed
+            self.move_outcome = {"ok": False, "view": view, "error": "stopped", "hold": None}
             raise
         except Exception as e:  # a bug in the move must not take the server (and its STOP) down
             logger.exception("move to %s crashed", view)
-            error = f"move crashed: {type(e).__name__}: {e}"
-            if hold_error := await self._hold():
-                error += f"; then {hold_error}"
-            self.move_outcome = {"ok": False, "view": view, "error": error}
+            self.hold_state, hold_error = await self._hold()
+            error = f"move crashed: {type(e).__name__}: {e}" + (f"; {hold_error}; HOLD NOT CONFIRMED" if hold_error else "")
+            self.move_outcome = {"ok": False, "view": view, "error": error, "hold": self.hold_state}
 
-    async def _hold(self) -> str | None:
+    async def _hold(self) -> tuple[str, str | None]:
+        """motion.hold(): ("confirmed" | "limp", None), or ("unconfirmed", why) when it could not be confirmed."""
         try:
-            await motion.hold(self.arm)
+            return (await motion.hold(self.arm)) or "confirmed", None
         except Exception as e:
             logger.error("hold failed: %s", e)
-            return f"could not confirm the hold: {e or type(e).__name__}"
+            return "unconfirmed", f"could not confirm the hold: {e or type(e).__name__}"
 
     async def stop(self) -> dict:
-        """STOP: cancel the move (if any) and hold. Works any time, also when nothing is moving."""
-        task, view, was_moving = self.move_task, self.move_view, self.moving
-        if was_moving:
-            task.cancel()
-        error = await self._hold()  # right away, without waiting for the move to unwind
-        if was_moving:
-            await asyncio.wait({task}, timeout=STOP_WAIT_S)  # go_to_view holds too, then re-raises
-            if task.cancelled():
-                self.move_outcome = {"ok": False, "view": view, "error": "stopped"}
-            error = await self._hold()  # the last word, after the move task is gone
-            if not task.done():
-                error = f"move task still running {STOP_WAIT_S:.0f}s after STOP" + (f"; {error}" if error else "")
-        self._forget_where()
-        self.refresh_where()
-        return {"ok": error is None, "was_moving": was_moving, "view": view if was_moving else None, "error": error}
+        """STOP: take the arm away from whatever owns it, then hold. Works any time, never queues."""
+        generation = self.bump()  # (the HTTP handler has already bumped once, before even reading the request)
+        self.stopping += 1
+        owned = False
+        try:
+            task, view, was_moving = self.move_task, self.move_view, self.moving
+            if was_moving:
+                task.cancel()
+            if self.command_task is not None:  # a Hold here / Go limp / capture in progress gives way
+                self.command_task.cancel()
+            try:  # own the arm through the cleanup; a command that will not unwind must not keep STOP from holding
+                await asyncio.wait_for(self.owner.acquire(), STOP_WAIT_S)
+                owned = True
+            except TimeoutError:
+                logger.error("STOP: the running command did not give way in %.0fs; holding anyway", STOP_WAIT_S)
+            if was_moving:
+                await asyncio.wait({task}, timeout=STOP_WAIT_S)  # go_to_view holds too, then re-raises
+            hold, error = await self._hold()  # the last word, after the move task is gone
+            if was_moving and not task.done():
+                hold, error = "unconfirmed", f"move task still running {STOP_WAIT_S:.0f}s after STOP" + (f"; {error}" if error else "")
+            self.hold_state = hold  # "limp" = no joint is energised, so there was nothing to hold
+            if was_moving and (task.cancelled() or not task.done()):
+                self.move_outcome = {"ok": False, "view": view, "hold": hold,
+                                     "error": "stopped" + (f"; {error}; HOLD NOT CONFIRMED" if error else "")}
+            self._forget_where()
+            return {"ok": error is None, "hold": hold, "was_moving": was_moving, "view": view if was_moving else None,
+                    "error": error, "generation": generation}
+        finally:
+            self.stopping -= 1
+            if owned:
+                self.owner.release()
+            self.refresh_where()
 
-    async def sim_faults(self, req: dict) -> dict:
+    async def shutdown(self) -> dict | None:
+        """Refuse new work, then stop and drain whatever is running. Returns the stop result, if there was one."""
+        self.closing = True
+        result = None
+        if self.moving or self.command_task is not None or self.stopping:
+            result = await self.stop()
+            if self.move_task is not None and not self.move_task.done():
+                await asyncio.wait({self.move_task}, timeout=DRAIN_S)
+        try:
+            self.arm.close()  # after the stop-and-hold: nothing of ours talks to the arm any more
+        except Exception as e:
+            logger.warning("closing the arm connection: %s", e)
+        return result
+
+    async def sim_faults(self, req: dict, gen: int | None = None) -> dict:
         """--sim only: SimArm's fault injection, to rehearse refusals and aborts from the browser or curl."""
         arm = self.arm
         if "stuck" in req:
@@ -304,17 +455,37 @@ class State:
             if fault in req:
                 setattr(arm, fault, {int(m): int(v) for m, v in (req[fault] or {}).items()})
         if req.get("offset"):  # {"3": 400}: push joints off their pose, e.g. to an unknown one
-            if self.moving:
-                raise Refused("moving: press STOP first")
-            present = arm.joints()
-            await arm.write_goals({int(m): present[int(m)] + int(d) for m, d in req["offset"].items()})
+            async def body():
+                present = arm.joints()
+                await arm.write_goals({int(m): present[int(m)] + int(d) for m, d in req["offset"].items()})
+            await self.command(body, gen=self.gen if gen is None else gen)
         self._forget_where()
         return {"ok": True, "stuck": sorted(arm.stuck), "stale": arm.stale, "mirror": arm.mirror,
                 "load": arm.load, "hijack": arm.hijack}
 
 
+class Server(ThreadingHTTPServer):
+    """Stamps every connection with the stop generation at accept time, in accept order and before any
+    worker thread runs, so "this request was already on its way when STOP arrived" is decided fairly."""
+
+    daemon_threads = True
+
+    def __init__(self, address, handler, state: State):
+        super().__init__(address, handler)
+        self.state = state
+        self.accept_gen: dict = {}
+
+    def process_request(self, request, client_address):
+        self.accept_gen[client_address] = self.state.gen
+        super().process_request(request, client_address)
+
+
 def make_handler(state: State):
     class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            self.gen = self.server.accept_gen.pop(self.client_address, state.gen)  # see Server
+
         def log_message(self, fmt, *args):
             pass
 
@@ -379,18 +550,21 @@ def make_handler(state: State):
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != self.headers.get("Host"):
                 return self._json({"ok": False, "error": "cross-origin request refused"}, 403)
+            gen = self.gen
             try:
-                req = self._body()
                 if self.path == "/api/stop":
+                    state.bump()  # first thing: commands that arrived before this point may no longer start
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))  # the body does not matter
                     result = state.call(state.stop(), timeout=5)
-                    self._json(result, 200 if result["ok"] else 500)
-                elif self.path == "/api/goto":
+                    return self._json(result, 200 if result["ok"] else 500)
+                req = self._body()
+                if self.path == "/api/goto":
                     self._json(state.call(state.start_move(str(req.get("view", "")), req.get("speed") or DEFAULT_SPEED,
-                                                           recover=req.get("recover") is True)))
+                                                           recover=req.get("recover") is True, gen=gen)))
                 elif self.path == "/api/checked":
                     self._json(state.call(state.mark_checked(str(req.get("view", "")), req.get("checked"))))
                 elif self.path == "/api/sim" and state.sim:
-                    self._json(state.call(state.sim_faults(req)))
+                    self._json(state.call(state.sim_faults(req, gen=gen)))
                 elif self.path == "/api/capture":
                     name = req.get("name", "").strip()
                     if not NAME_RE.match(name):
@@ -400,17 +574,11 @@ def make_handler(state: State):
                 elif self.path == "/api/delete":
                     self._json(state.call(state.delete_view(req.get("name"))))
                 elif self.path == "/api/torque":
-                    self._json(state.call(state.set_torque(bool(req.get("on")))))
+                    self._json(state.call(state.set_torque(bool(req.get("on")), gen=gen)))
                 elif self.path == "/api/camera":
-                    if req.get("queue") in state.cams:
-                        state.cam_queue = req["queue"]
-                    self._json({"ok": True})
+                    self._json(state.call(state.select_camera(req.get("queue"))))
                 elif self.path == "/api/bus":
-                    if state.moving:
-                        raise Refused(f"moving to {state.move_view}: press STOP before switching arms")
-                    if req.get("bus") in state.arm.all_buses():
-                        state.arm.bus_serial = req["bus"]
-                    self._json({"ok": True})
+                    self._json(state.call(state.select_bus(req.get("bus"), gen=gen)))
                 else:
                     self.send_error(404)
             except Refused as e:
@@ -443,18 +611,22 @@ def main():
     loop.call_soon_threadsafe(state.refresh_where)
     print(f"follower bus {state.arm.bus_serial}, camera {state.cam_queue}")
     print(f"open http://localhost:{args.port} (capture) or http://localhost:{args.port}/control (move)", flush=True)
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(state))
-    signal.signal(signal.SIGTERM, signal.default_int_handler)  # `kill` gets the same clean exit as Ctrl-C
+    httpd = Server(("127.0.0.1", args.port), make_handler(state), state)
+    for name in ("SIGTERM", "SIGHUP"):  # `kill` and a closed terminal get the same clean exit as Ctrl-C
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.default_int_handler)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
-    finally:
-        if state.moving:  # don't leave the arm chasing a waypoint when the server goes away
-            try:
-                print("stopping the running move:", state.call(state.stop(), timeout=5))
-            except Exception as e:
-                print(f"could not stop the move: {e}")
+    finally:  # refuse new work first, then don't leave the arm chasing a waypoint when the server goes away
+        try:
+            stopped = state.call(state.shutdown(), timeout=2 * STOP_WAIT_S + DRAIN_S + 2)
+            if stopped:
+                print("stopped what was running:", stopped, flush=True)
+        except Exception as e:
+            print(f"could not stop the move: {e or type(e).__name__}", flush=True)
+        httpd.server_close()
 
 
 if __name__ == "__main__":

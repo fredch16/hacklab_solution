@@ -12,7 +12,7 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 
 ## Local Vision mobile app and dashboard
 
-Source, build steps, and agent instructions live under [dashboard/](dashboard/README.md). The Flutter app records and transcribes on the phone. The paired browser interprets spoken recording requests and asks the phone's recorder to start or stop. Other spoken requests go to `voice_bridge.py` on the PC, which calls the camera-arm MCP server: run `.venv/bin/python voice_bridge.py` next to `mcp_server.py`. [Current architecture](docs/ARCHITECTURE.md)
+Source, build steps, and agent instructions live under [dashboard/](dashboard/README.md). The Flutter app records and transcribes on the phone. The paired browser interprets spoken recording requests and asks the phone's recorder to start or stop. Other spoken requests go to `voice_bridge.py` on the PC, which calls the camera-arm MCP server: run `.venv/bin/python voice_bridge.py` next to `mcp_server.py`. With `ANTHROPIC_API_KEY` set (environment or `.env`), loosely worded requests ("yo, show me the thing from da top") are interpreted by Claude; without it only the fixed phrases work. [Current architecture](docs/ARCHITECTURE.md)
 
 The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. In an existing checkout, run `git lfs pull` before building the Android app. The APK bundles the model for offline operation. The dashboard source was imported with 22 commits as the second parent of `fc86036`. Three commit IDs changed when the decoder entered Git LFS.
 
@@ -24,7 +24,7 @@ The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. 
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
 | M2 move to a view | 🟢 **works on the real arm**: 10 supervised moves on 21 Nov between transit, `top`, `wide` and `right`, from the web page at `/control`. Still to do: `left`, `close`, `side_low`, `home`, the Stop and block tests, normal speed. Details and data in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
-| M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Spoken arm requests (stop, go to a checked view, status, list views) go from the dashboard through `voice_bridge.py` to MCP; tested on the simulated arm, not yet on the real arm by voice. |
+| M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Spoken arm requests (stop, go to a checked view, status, list views) go from the dashboard through `voice_bridge.py` to MCP, with Claude interpreting free phrasing; tested on the simulated arm, not yet on the real arm by voice. |
 
 Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (current Android capture and dashboard, MCP handoff, previous planning context) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 

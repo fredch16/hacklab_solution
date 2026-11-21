@@ -18,7 +18,7 @@ flowchart LR
     MCP --> Arm
 ```
 
-The browser implements the recording grammar. Other live finals go to `voice_bridge.py` on the PC that runs the browser (`http://127.0.0.1:8210`), which maps a small local grammar to camera-arm MCP tools and shows the result beside the transcript; see [the handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
+The browser implements the recording grammar. Other live finals go to `voice_bridge.py` on the PC that runs the browser (`http://127.0.0.1:8210`), which maps a small local grammar to camera-arm MCP tools, asks Claude about what the grammar cannot place (optional, needs `ANTHROPIC_API_KEY`), and shows the result beside the transcript; see [the handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
 
 ---
 

@@ -60,6 +60,21 @@ class JointArc:
         self.size = (range_max - range_min) % FULL
         self.calibrated = self.size > 2 * MARGIN
 
+    def include(self, pos: int, slack: int = 300):
+        """Widen the arc to cover a pose the arm has physically been in (present or saved view),
+        if it's only a little outside the calibrated range. Far outside still gets clamped."""
+        if not self.calibrated:
+            return
+        rel = (pos - self.min) % FULL
+        if rel <= self.size:
+            return
+        above, below = rel - self.size, FULL - rel
+        if above <= below and above <= slack:
+            self.size += above + MARGIN
+        elif below < above and below <= slack:
+            self.min = (self.min - below - MARGIN) % FULL
+            self.size += below + MARGIN
+
     def to_rel(self, pos: int) -> float:
         if not self.calibrated:
             return float(pos)
@@ -94,6 +109,9 @@ async def move_to(arm: Arm, target: dict[int, int], include_gripper: bool = Fals
         return {"ok": False, "error": f"motors {missing} not on the bus"}
 
     arcs = {m: JointArc(*ranges.get(m, (0, 0))) for m in ids}
+    for m in ids:
+        arcs[m].include(present[m])
+        arcs[m].include(target[m])
     uncal = [m for m in ids if not arcs[m].calibrated]
     if uncal:
         logger.warning("motors %s have no calibrated range; moving without limit clamping", uncal)

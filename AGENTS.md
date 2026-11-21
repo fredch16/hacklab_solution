@@ -1,6 +1,6 @@
 # AGENTS.md — binding instructions for every implementation agent
 
-Applies to Claude Code, Codex, Cursor, Copilot, subagents, reviewers, and humans executing changes in this repository. **Read this file first**, then `docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/SLICE_PLAN.md` and `docs/TEST_PLAN.md`.
+Applies to Claude Code, Codex, Cursor, Copilot, reviewers, and humans executing changes in this repository. **Read this file first**, then `docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/SLICE_PLAN.md` and `docs/TEST_PLAN.md`.
 
 ## 1. Mission and boundaries
 
@@ -28,11 +28,9 @@ For each slice, in order:
 
 Do not create a feature that is three layers of placeholder code. Mock data can only appear in isolated, labeled demos/tests—not as working camera, recording, wake-word or transcription output.
 
-## 2A. Default to Sonnet for most coding, parallelize carefully
+## 2A. Working mode
 
-**User preference: Sonnet should do the majority of actual coding, not just easy chores.** Default Claude Code main session and scoped implementation/review subagents to Sonnet. Use Sonnet for Flutter, browser UI, Kotlin/Swift code against agreed interfaces, protocol implementation, tests and normal debugging. Opus is an exception for exceptionally difficult architecture/security, cross-platform media contention or persistent, evidenced hard bugs; return coding to Sonnet after deciding the fix. **Do not route all serious coding to Opus.**
-
-When useful, delegate independent parts of the **same active slice** to multiple Sonnet workers in parallel, with disjoint owned paths and agreed contracts. The integration lead owns interfaces, merges and end-to-end/hardware verification. Never parallelize conflicting camera/audio ownership or future unfinished slices. Read `docs/MODEL_ROUTING.md`; Claude-specific project settings and reusable Sonnet agents are in `.claude/`.
+One agent does all implementation itself; no subagents or parallel delegated workers. The owner performs real-world hardware tests and reports results — agents build, unit-test, install and provide short test steps instead of driving the device UI or relying on screenshots. Record progress in `docs/STATUS.md`.
 
 ## 3. Asking questions vs making routine decisions
 

@@ -14,9 +14,9 @@
 5. Use [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md), [`ui/design-tokens.json`](ui/design-tokens.json), and the [static, nonfunctional UI preview](ui/reference-dashboard.html) as visual direction.
 6. Use [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) as the definition of verified work, and record evidence.
 
-## Coding-agent execution preference
+## Coding-agent working mode
 
-**Sonnet is the default model for most coding**, including meaningful feature implementation, tests, Flutter UI, web dashboard and native adapters. Parallel Sonnet subagents are encouraged for genuinely independent subtasks within the same slice. The lead integrates and verifies each slice; Opus is a targeted escalation path for hard architecture/security/native-media problems, not the routine coder. See [`docs/MODEL_ROUTING.md`](docs/MODEL_ROUTING.md) and the ready-to-use Claude Code configuration in [`.claude/settings.json`](.claude/settings.json) plus [`.claude/agents/`](.claude/agents/).
+One agent implements everything itself (no subagents). The owner tests on real hardware. Current progress: [`docs/STATUS.md`](docs/STATUS.md).
 
 ## Non-negotiable architecture
 
@@ -44,8 +44,6 @@ Phone — Flutter (always foreground during a session)
 |---|---|
 | `AGENTS.md` | Mandatory agent rules, uncertainties, vertical-slice gates |
 | `CLAUDE.md` | Claude entry point; defers to `AGENTS.md` |
-| `.claude/settings.json` and `.claude/agents/` | Sonnet-first Claude Code default and ready-to-delegate Sonnet workers |
-| `docs/MODEL_ROUTING.md` | Sonnet-first model selection, safe parallel work, and Opus escalation gates |
 | `MASTER_PROMPT.md` | Copy/paste first request to the implementing agent |
 | `docs/PRODUCT_SPEC.md` | Scope, product behavior, performance targets, non-goals |
 | `docs/ARCHITECTURE.md` | Capture pipeline, native/Flutter boundary, local networking |

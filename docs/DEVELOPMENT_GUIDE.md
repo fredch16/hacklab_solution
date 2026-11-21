@@ -65,9 +65,9 @@ Initial dependency installation and model download by the **developer** can use 
 - No independent second mic/camera owner.
 - UI still responsive under full recording + KWS/ASR + streaming.
 
-## Coding model setup (Claude Code)
+## Coding agent setup
 
-This handoff ships `.claude/settings.json` with `"model": "sonnet"` so **most coding runs on Sonnet** by default. Start from this project root and inspect `/status` or `/model` to ensure settings are effective, or use `claude --model sonnet` for a one-off invocation. The `.claude/agents/sonnet-implementer.md` and `sonnet-test-reviewer.md` definitions are optional proactive Sonnet subagents. User/CLI/organization settings can override project model defaults. Follow `docs/MODEL_ROUTING.md` for escalation and parallel boundaries.
+One agent does all the work; no subagents. See `CLAUDE.md` and `docs/STATUS.md`.
 
 ## Agent cooperation
 

@@ -1,8 +1,7 @@
 # Phone-First Console MVP Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Progress and current state: see `docs/STATUS.md`. One agent executes this plan itself (no subagents).
 
-**Model execution:** Use **Sonnet as the default implementation model** for full-feature coding, tests and review; parallelize independent coding pieces of the *current* slice with non-overlapping ownership. Escalate to Opus only for clearly hard architecture/security/platform concurrency decisions, then return to Sonnet. Read `docs/MODEL_ROUTING.md` and `AGENTS.md` before executing tasks.
 
 **Goal:** Deliver a professional foreground Flutter phone camera/voice app, compressed one-to-one WebRTC PC browser dashboard, high-quality local recording, local wake-word+ASR and verified LAN file download, one tested vertical slice at a time.
 

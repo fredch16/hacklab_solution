@@ -67,6 +67,16 @@ Known issues:
 
 Tips: [calibration best practices](#calibration-best-practices) below, and `python calib_watch.py` shows live per-joint progress.
 
+### Running the same arms from another computer
+
+Do not calibrate again there: a new calibration moves every joint's zero, and every saved view in `views.json` stops being valid. Carry the calibration over instead. It has two halves: each servo's zero offset is stored in the servo and travels with the arm; the calibrated ranges are one small file in Station's data folder, kept in this repo as [`config/station-calibration.wal`](../config/station-calibration.wal) (both arms, from 21 Nov 13:13).
+
+1. Install Station v0.1.0-beta.10 in `~/station` with [`config/station.yaml`](../config/station.yaml), start it once (`./station --web --tcp`) so it creates its data folder, and stop it.
+2. `python3 calib_file.py install` (keeps a backup of the file it replaces; `--station-dir` if Station is elsewhere).
+3. Start Station, plug in the arms, then `python3 go.py --where`: it must not report any view as "recalibrated since it was captured".
+
+`python3 calib_file.py show --station` compares the repo's copy with the local Station; `export` refreshes the repo's copy after a new calibration. Not yet tried on a second computer: if Station ignores the copied file, its arm card shows the joints as uncalibrated and step 3 fails.
+
 ### Calibration best practices
 
 1. Unlink the arms (follower → "(Self-controlled)"); check the page header shows the arm in front of you.

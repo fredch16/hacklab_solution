@@ -303,6 +303,19 @@ class Arm:
             return verdict
         raise RuntimeError("Station's mirroring state keeps changing; cannot tell if the arm is linked")
 
+    async def stop_mirroring(self):
+        """Tell Station to stop mirroring any leader onto this arm (what choosing "(Self-controlled)"
+        in its web UI sends). It only ends a link; it never moves or energises anything."""
+        from target.gen_python.protobuf.drivers.motors_mirroring import mirroring
+        cmd = mirroring.Command(
+            type=mirroring.CommandType.CT_STOP_MIRROR,
+            source=mirroring.MirroringBus(type=mirroring.BusType.MBT_ST3215, unique_id=self.bus_serial),
+        )
+        await send_commands(self.client, [station_commands.DriverCommand(
+            type=drivers.StationCommandType.STC_MOTOR_MIRRORING_COMMAND,
+            body=cmd.encode(),
+        )])
+
     def ranges(self) -> dict[int, tuple[int, int]]:
         """Calibrated (min, max) per motor id, as Station reports them."""
         bus = self._bus()

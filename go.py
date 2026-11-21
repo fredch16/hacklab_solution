@@ -1,6 +1,7 @@
 """M2: move the follower to saved views from the command line (the web UI at /control does the same).
 
     python go.py --where             # where is the arm on the route network? (moves nothing)
+    python go.py --unlink            # tell Station to stop mirroring the leader onto this arm
     python go.py --engage            # limp arm -> hold its present pose (support the arm first)
     python go.py top                 # one view (unchecked views run at first-run speed)
     python go.py home top home       # a sequence
@@ -56,6 +57,12 @@ async def main(args):
             for name, notes in motion.check_views(arm.ranges()).items():
                 print(f"note: {name} is saved at a joint limit and will be clamped: {'; '.join(notes)}")
             return
+        if args.unlink:
+            await arm.stop_mirroring()
+            await asyncio.sleep(0.5)
+            source = await arm.mirroring_source()
+            print("still linked to " + source if source else "Station is no longer mirroring a leader onto this arm")
+            return
         if args.engage:
             answer = await asyncio.to_thread(input, "The arm will stiffen where it is. Is it supported and clear? [y/N] ")
             if answer.strip().lower() == "y":
@@ -69,7 +76,7 @@ async def main(args):
         if args.recover:
             names = [motion.TRANSIT]
         if not names:
-            raise RuntimeError("give view names, --tour N, --recover, --where, --engage or --list")
+            raise RuntimeError("give view names, --tour N, --recover, --where, --unlink, --engage or --list")
         speed = motion.SPEED_NORMAL if args.normal else motion.SPEED_SLOW
         for name in names:
             r = await motion.go_to_view(arm, name, max_speed=speed, allow_unknown_start=args.recover)
@@ -87,6 +94,8 @@ if __name__ == "__main__":
     p.add_argument("--tour", type=int, default=0, metavar="N")
     p.add_argument("--where", action="store_true", help="show where the arm is; moves nothing")
     p.add_argument("--engage", action="store_true", help="make a limp arm hold its present pose")
+    p.add_argument("--unlink", action="store_true",
+                   help="tell Station to stop mirroring a leader onto this arm (same as '(Self-controlled)')")
     p.add_argument("--recover", action="store_true", help="from an unknown pose, go up to transit (slow)")
     p.add_argument("--mark-checked", metavar="VIEW", help="record that this view's move was watched and is clean")
     p.add_argument("--list", action="store_true")

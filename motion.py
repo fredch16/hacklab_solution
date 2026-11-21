@@ -33,6 +33,10 @@ ARRIVE_TOLERANCE = 40  # steps; a joint further off than this after the move cou
 
 _move_lock = asyncio.Lock()
 
+# Live state of the current/last move, for UIs to poll. Updated in place, never replaced.
+status = {"moving": False, "view": None, "phase": None, "phase_index": 0, "phase_count": 0,
+          "progress": 0.0, "error": None, "last_result": None}
+
 
 def load_views(path: Path | None = None) -> dict[str, dict[int, int]]:
     path = path or VIEWS_PATH
@@ -128,6 +132,7 @@ async def move_to(arm: Arm, target: dict[int, int], include_gripper: bool = Fals
     try:
         while True:
             s = min(1.0, (time.monotonic() - t0) / duration)
+            status["progress"] = s
             k = _ease(s)
             goals = {m: arcs[m].to_pos(start[m] + (goal[m] - start[m]) * k) for m in ids}
             if first:
@@ -157,9 +162,20 @@ async def go_to_view(arm: Arm, name: str, **kwargs) -> dict:
     views = load_views()
     if name not in views:
         return {"ok": False, "view": name, "error": f"unknown view; known: {sorted(views)}"}
+    if _move_lock.locked():
+        return {"ok": False, "view": name, "error": "already moving"}
     async with _move_lock:
+        status.update(moving=True, view=name, phase="move", phase_index=1, phase_count=1,
+                      progress=0.0, error=None)
         try:
             result = await move_to(arm, views[name], **kwargs)
         except RuntimeError as e:
             result = {"ok": False, "error": str(e)}
-    return {"view": name, **result}
+        except asyncio.CancelledError:
+            status.update(moving=False, phase=None, error="stopped",
+                          last_result={"ok": False, "view": name, "error": "stopped"})
+            raise
+        result = {"view": name, **result}
+        status.update(moving=False, phase=None, progress=1.0 if result["ok"] else status["progress"],
+                      error=result["error"], last_result=result)
+    return result

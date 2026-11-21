@@ -139,9 +139,11 @@ class Arm:
     def _torque_on(self, serial: str) -> bool:
         bus = self._bus(serial)
         motors = (bus.get_motors() or []) if bus else []
+        # The gripper (last motor) is left limp on purpose, so it doesn't count.
+        grip = max((m.get_id() for m in motors), default=None)
         return bool(motors) and all(
             len(s := bytes(m.get_state())) > RAM_TORQUE_ENABLE and s[RAM_TORQUE_ENABLE] != 0
-            for m in motors
+            for m in motors if m.get_id() != grip
         )
 
     def all_buses(self) -> dict[str, dict[int, int]]:
@@ -203,6 +205,28 @@ class Arm:
                 "torque": len(st) > RAM_TORQUE_ENABLE and st[RAM_TORQUE_ENABLE] != 0,
             }
         return out
+
+    async def mirroring_source(self, timeout_s: float = 2.0) -> str | None:
+        """Serial of the leader Station is currently mirroring onto this bus, or None.
+
+        Station appends its mirroring state to inference/mirroring on every change, so the
+        last entry is the current state. No entries at all means nothing was ever linked.
+        """
+        from target.gen_python.protobuf.drivers.motors_mirroring import mirroring
+        qr = self.client.read_from_tail("inference/mirroring", b"\x01", 1, 1, 4)
+        try:
+            entry = await asyncio.wait_for(qr.data.get(), timeout_s)
+        except asyncio.TimeoutError:
+            raise RuntimeError("could not read Station's mirroring state")
+        if entry is None:
+            return None
+        state = mirroring.RxEnvelopeReader(entry.Data).get_state()
+        for link in (state.get_mirroring() or []) if state else []:
+            targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
+            if self.bus_serial in targets:
+                src = link.get_source()
+                return src.get_id().get_unique_id() if src and src.get_id() else "unknown"
+        return None
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         """Calibrated (min, max) per motor id, as Station reports them."""

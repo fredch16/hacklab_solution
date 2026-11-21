@@ -4,6 +4,14 @@ HackLab #2 · NormaCore track · Berlin, 21–22 Nov 2026 · team of 5
 
 Submission: Sun 16:30 at tally.so/r/GexoxQ (aim for 16:00). Feature freeze Sun 12:00.
 
+## Status at handover (Sat ~13:45)
+
+- **M0 done**: Station running, both arms + cameras connected and calibrated, joints/frames/torque from Python.
+- **M1 done**: 7 views captured via the capture web UI (`capture_server.py`). Re-capture `left`/`right`/`side_low` level.
+- **M2 in progress**: `motion.py` / `go.py` written, sim-tested, not yet run on the real arm. Next: safe paths between views (see `docs/MOTION.md`).
+- **M3 ready to try**: `director.py` needs an API key; `--sim` works today.
+- Hardware surprise: the arms are 8-motor ElRobots, not SO-101s. See `docs/HARDWARE.md`.
+
 ## Team split (5 people)
 
 | Who | Owns | Milestones | Then (after M4) |
@@ -58,7 +66,7 @@ See the original checklist (M0–M8, submission checklist) in the team doc. Done
 - **M3 ⭐:** "show me it from the left" → arm moves to left.
 - **M4:** say "top-down view" → arm moves.
 
-## Station notes (from the norma-core repo)
+## Station notes (from the norma-core repo; see docs/HARDWARE.md for what we actually found)
 
 - Run: `station --web --tcp` → web UI at http://localhost:8889, TCP API on :8888. macOS: `station-macos-arm64.zip` from the releases page.
 - Python SDK: `software/station/shared/station_py` (stdlib only) plus generated protobuf code under `target/gen_python`.

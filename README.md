@@ -45,6 +45,8 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python capture_server.py --bus 5B79016329` | M1 | **Capture web UI** at http://localhost:8890: live camera, Go limp / Hold here, guided steps, Save/Retake/Delete |
 | `python capture_view.py --bus 5B79016329` | M1 | Same as above in the terminal (Enter per view) |
 | `python go.py top` / `--tour 5` / `--speed 250` | M2 | Move the follower to saved views; Ctrl-C holds where it is |
+| `python control_server.py --bus 5B79016329` / `--sim` | M2 | **Control service** on localhost:8100: the only writer to the arm, non-blocking moves, stop, SSE events. See [docs/CONTROL.md](docs/CONTROL.md) |
+| `python ctl.py go top --wait` / `stop` / `watch` / `status` | M2 | CLI for the control service |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves; `--sim` needs no hardware |
 
 ## Interfaces between the pieces

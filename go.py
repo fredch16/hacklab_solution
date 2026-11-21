@@ -7,16 +7,27 @@
 
 Ctrl-C holds the arm where it is. Set the follower to "(Self-controlled)" in the
 Station web UI first, or mirroring will fight these moves.
+
+While control_server.py runs, use ctl.py instead: only one process may write to the arm.
 """
 
 import argparse
 import asyncio
+import socket
 
 from motion import go_to_view, hold, view_names
 from station_arm import Arm, run
 
 
+def control_service_running(port: int = 8100) -> bool:
+    with socket.socket() as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 async def main(args):
+    if not args.list and control_service_running():
+        raise RuntimeError("control_server.py is running and owns the arm; use ctl.py (e.g. python ctl.py go top --wait)")
     if args.list:
         print("\n".join(view_names()) or "no views yet: run capture_view.py")
         return

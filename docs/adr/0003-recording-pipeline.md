@@ -18,3 +18,8 @@
 
 ## Risks
 Custom VideoOutput relies on CameraX surface contract; A/V sync must be measured (clap test); 4K HEVC + 640×360 analysis + preview simultaneously must be benchmarked per device — capabilities mark combinations `untested` until a test recording passes.
+
+## Spike result (2026-11-21, Pixel 10 Pro XL, Android 17)
+- CameraX with a custom `VideoOutput` (HEVC input surface) **works at 1080p** (Preview + Analysis + Video via CameraX stream sharing, 30.01 fps measured from the muxed file) but **rejects 3840x2160 + 640x360 analysis**: "No supported surface combination" (FULL level; 4K counts against a camcorder max of 8K).
+- Decision: **Camera2 owns the camera** (`CameraSession`): preview texture + 640x360 YUV `ImageReader` + MediaCodec encoder surface in one capture session, no GL copy. Record output uses `TIMESTAMP_BASE_REALTIME` so video PTS share the boottime clock with `AudioRecord.getTimestamp`. CameraX removed.
+- Owner then re-scoped to a **best-effort demo recording**: 1080p, 60 fps when the camera offers a fixed 60 AE range (else 30), HEVC (AVC if no HEVC encoder), AAC-LC 48 kHz stereo via the single `AudioCaptureBus`. Measured with the stream running: video 60.01 fps (muxer file), WebRTC stream stays connected at ~25-30 fps (every other analysis frame is fed to WebRTC while recording). No capability/settings endpoints, no profile verification; `recording.profile` reports what was used. A/V sync not clap-tested.

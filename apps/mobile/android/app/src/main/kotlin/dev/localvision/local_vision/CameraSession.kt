@@ -95,6 +95,7 @@ class CameraSession(
     private var lastText: String? = null
     private var lastTextNs = 0L
     private var rebindAttempted = false
+    private var frameCount = 0L
 
     private companion object { const val TAG = "LVC" }
 
@@ -238,10 +239,6 @@ class CameraSession(
         return c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.any { it.lower == fps && it.upper == fps } == true
     }
 
-    /** Camera sensor clock domain; recording needs REALTIME (boottime) to align with audio. */
-    fun timestampIsRealtime(): Boolean =
-        chars?.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
-
     private fun publishPreview() {
         val prod = producer ?: return
         val rot = rotationFor(displayDegrees())
@@ -313,10 +310,11 @@ class CameraSession(
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         previewSize = pick(map.getOutputSizes(android.graphics.SurfaceTexture::class.java).filter { it.width <= 1280 }.toTypedArray(), 1280, 720)
         val yuv = pick(map.getOutputSizes(ImageFormat.YUV_420_888), 640, 360)
-        try { reader?.close() } catch (_: Throwable) {}
-        val rd = ImageReader.newInstance(yuv.width, yuv.height, ImageFormat.YUV_420_888, 3)
-        rd.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.let { onFrame(it) } }, frameHandler)
-        reader = rd
+        // One reader per camera open: closing it during a reconfigure would pull buffers out from under a frame in flight.
+        val rd = reader ?: ImageReader.newInstance(yuv.width, yuv.height, ImageFormat.YUV_420_888, 3).also { r ->
+            r.setOnImageAvailableListener({ x -> x.acquireLatestImage()?.let { onFrame(it) } }, frameHandler)
+            reader = r
+        }
 
         val outs = mutableListOf<OutputConfiguration>()
         val prod = producer
@@ -329,7 +327,8 @@ class CameraSession(
         outs.add(OutputConfiguration(rd.surface))
         val rs = recSurface
         if (rs != null) {
-            outs.add(OutputConfiguration(rs))
+            // Encoder timestamps on the boottime clock, the same one AudioRecord reports.
+            outs.add(OutputConfiguration(rs).also { it.setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_REALTIME) })
         }
         val gen = generation
         try {
@@ -455,7 +454,14 @@ class CameraSession(
         } catch (e: Throwable) {
             decoding.set(false)
         }
-        if (sink.wantsFrames) sink.onFrame(image, streamRotation) else image.close()
+        // Camera runs at 60 fps while recording: the 640x360 WebRTC stream only needs every other frame.
+        val skip = recSurface != null && (frameCount++ and 1L) == 1L
+        try {
+            if (sink.wantsFrames && !skip) sink.onFrame(image, streamRotation) else image.close()
+        } catch (e: Throwable) {
+            Log.w(TAG, "frame sink failed: ${e.javaClass.simpleName}")
+            try { image.close() } catch (_: Throwable) {}
+        }
     }
 
     // No frames for 3 s while open and foreground: report, reopen once.

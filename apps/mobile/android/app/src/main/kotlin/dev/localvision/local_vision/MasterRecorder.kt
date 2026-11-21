@@ -42,7 +42,7 @@ class MasterRecorder(
     private val emit: (Map<String, Any?>) -> Unit,
 ) {
     companion object {
-        const val W = 1920; const val H = 1080; const val FPS = 60
+        const val W = 1920; const val H = 1080
         const val MIN_START_FREE = 2L * 1024 * 1024 * 1024
         const val STOP_FREE = 500L * 1024 * 1024
         private const val TAG = "LVC"
@@ -58,6 +58,7 @@ class MasterRecorder(
     private var warning: String? = null
     private var codecName = "hevc"
     private var bitrate = 0
+    private var fps = 30
     private var bytes = 0L
     private var startRealtimeMs = 0L
     private var audioRate = 0
@@ -86,7 +87,7 @@ class MasterRecorder(
             "state" to state, "id" to id, "started_utc" to startedUtc,
             "elapsed_ms" to (if (running || state == "stopping") SystemClock.elapsedRealtime() - startRealtimeMs else null),
             "bytes" to (if (state == "idle") null else bytes),
-            "profile" to (if (state == "idle" || id == null) null else mapOf("lens_id" to "back", "width" to W, "height" to H, "fps" to FPS, "codec" to codecName, "hdr" to false)),
+            "profile" to (if (state == "idle" || id == null) null else mapOf("lens_id" to "back", "width" to W, "height" to H, "fps" to fps, "codec" to codecName, "hdr" to false)),
             "audio" to (if (audioRate > 0 && state != "idle") mapOf("sample_rate" to audioRate, "channels" to audioCh) else null),
             "error" to error, "warning" to warning,
         )
@@ -101,7 +102,7 @@ class MasterRecorder(
         for ((mime, name) in listOf("video/hevc" to "hevc", "video/avc" to "avc")) {
             val ok = list.codecInfos.any { ci ->
                 ci.isEncoder && ci.supportedTypes.contains(mime) &&
-                    try { ci.getCapabilitiesForType(mime).videoCapabilities?.areSizeAndRateSupported(W, H, FPS.toDouble()) == true } catch (_: Throwable) { false }
+                    try { ci.getCapabilitiesForType(mime).videoCapabilities?.areSizeAndRateSupported(W, H, 30.0) == true } catch (_: Throwable) { false }
             }
             if (ok) return mime to name
         }
@@ -114,15 +115,23 @@ class MasterRecorder(
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { done("PERMISSION_MIC"); return }
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) { done("CAMERA_FAILED"); return }
         if (freeBytes() < MIN_START_FREE) { done("LOW_STORAGE"); return }
-        val (mime, cname) = pickCodec() ?: run { done("PROFILE_UNSUPPORTED"); return }
-        if (!camera.supportsFps(FPS)) { done("PROFILE_UNSUPPORTED"); return }
-        Log.i(TAG, "record: ${W}x$H@$FPS $mime")
+        // Best effort: 1080p, 60 fps when the camera offers it (else 30), HEVC (else AVC); never refuse over the profile.
+        val (mime, cname) = pickCodec() ?: ("video/hevc" to "hevc")
+        fps = if (camera.supportsFps(60)) 60 else 30
+        Log.i(TAG, "record: ${W}x$H@$fps $mime")
         codecName = cname
         bitrate = if (cname == "hevc") 20_000_000 else 30_000_000
         reset()
         state = "starting"; error = null; warning = null
         id = "rec-" + System.currentTimeMillis()
         publish()
+        // Microphone first, so audio exists from before the first video frame (earlier audio is dropped).
+        val enc = try {
+            if (!audio.subscribe("record", pcmTap)) null else AacEncoder(audio.sampleRate, audio.channels, audioSink)
+        } catch (t: Throwable) { Log.w(TAG, "aac init failed $t"); null }
+        if (enc == null) { audio.unsubscribe("record"); fail("PERMISSION_MIC", done); return }
+        aac = enc
+        audioRate = audio.sampleRate; audioCh = audio.channels
         camera.start("record") { tex ->
             if (tex == null) { fail("CAMERA_FAILED", done); return@start }
             try {
@@ -132,7 +141,7 @@ class MasterRecorder(
                 cleanupFailed("PROFILE_UNSUPPORTED", done); return@start
             }
             camera.onVideoBindFailed = { code -> main.post { cleanupFailed(code, done) } }
-            val spec = VideoSpec(mime, W, H, FPS, bitrate)
+            val spec = VideoSpec(mime, W, H, fps, bitrate)
             val v = video!!
             camera.setRecordSurface(v.inputSurface, spec)
             v.start()
@@ -146,10 +155,14 @@ class MasterRecorder(
 
     private var startDone: ((String?) -> Unit)? = null
 
+    private val pcmTap = object : PcmSubscriber {
+        override fun onPcm(data: ByteArray, size: Int, ptsUs: Long) { aac?.onPcm(data, size, ptsUs) }
+    }
+
     private fun reset() {
         bytes = 0; vTrack = -1; aTrack = -1; vFormat = null; aFormat = null; muxStarted = false
         pending.clear(); t0Us = -1; lastV = -1; lastA = -1; vEnded = false; aEnded = false
-        videoSamples = 0; stopReason = null; audioRate = 0; audioCh = 0; startDone = null
+        videoSamples = 0; stopReason = null; startDone = null
     }
 
     private fun prepare(mime: String) {
@@ -169,9 +182,8 @@ class MasterRecorder(
         val m = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         m.setOrientationHint(camera.orientationHint())
         muxer = m
-        rtOffsetUs = if (camera.timestampIsRealtime()) 0L
-        else (SystemClock.elapsedRealtimeNanos() / 1000) - SystemClock.uptimeMillis() * 1000
-        video = VideoEncoder(VideoSpec(mime, W, H, FPS, bitrate), videoSink)
+        rtOffsetUs = 0L // the record output is configured with TIMESTAMP_BASE_REALTIME
+        video = VideoEncoder(VideoSpec(mime, W, H, fps, bitrate), videoSink)
     }
 
     private val videoSink = object : VideoSink {
@@ -180,6 +192,7 @@ class MasterRecorder(
             synchronized(lock) {
                 if (t0Us < 0) {
                     t0Us = ptsUs + rtOffsetUs
+                    Log.i(TAG, "t0 video pts=${t0Us}us now=${SystemClock.elapsedRealtimeNanos() / 1000}us")
                     main.post { onFirstFrame() }
                 }
                 var p = ptsUs + rtOffsetUs - t0Us
@@ -198,6 +211,7 @@ class MasterRecorder(
         override fun onSample(data: ByteBuffer, info: MediaCodec.BufferInfo, ptsUs: Long) {
             synchronized(lock) {
                 if (t0Us < 0) return // before the first video frame
+                if (lastA < 0) Log.i(TAG, "first audio pts=${ptsUs}us (t0=${t0Us}us)")
                 var p = ptsUs - t0Us
                 if (p < 0) return
                 if (p <= lastA) p = lastA + 1
@@ -244,15 +258,6 @@ class MasterRecorder(
 
     private fun onFirstFrame() {
         if (state != "starting") return
-        // microphone: recording always has audio
-        val enc = try {
-            if (!audio.subscribe("record", object : PcmSubscriber {
-                    override fun onPcm(data: ByteArray, size: Int, ptsUs: Long) { aac?.onPcm(data, size, ptsUs) }
-                })) null else AacEncoder(audio.sampleRate, audio.channels, audioSink)
-        } catch (t: Throwable) { Log.w(TAG, "aac init failed $t"); null }
-        if (enc == null) { audio.unsubscribe("record"); cleanupFailed("PERMISSION_MIC", startDone); return }
-        aac = enc
-        audioRate = audio.sampleRate; audioCh = audio.channels
         startRealtimeMs = SystemClock.elapsedRealtime()
         state = "recording"
         Log.i(TAG, "recording started id=$id")

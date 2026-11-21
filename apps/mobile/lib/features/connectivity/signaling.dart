@@ -53,19 +53,7 @@ class SignalingRelay {
     final rec = recording;
     if (rec == null) return res('BAD_REQUEST', 'Recording is not available.');
     if (type == 'recording.start') {
-      final p = payload['profile'];
-      if (p is Map) {
-        // Fixed profile for now: a different request is refused, never downgraded silently.
-        final wrong =
-            (p['width'] != null && p['width'] != 1920) ||
-            (p['height'] != null && p['height'] != 1080) ||
-            (p['fps'] != null && p['fps'] != 60);
-        if (wrong)
-          return res(
-            'PROFILE_UNSUPPORTED',
-            'Only 1920x1080 at 60 fps is available.',
-          );
-      }
+      // Best effort: any requested profile is ignored; the actual one is reported in recording.profile.
       return res(await rec.startRecording());
     }
     return res(await rec.stopRecording());

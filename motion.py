@@ -58,7 +58,22 @@ HOLD_ACCEL = 100       # a Stop brakes joints that were being driven as hard as 
 # camera at least this high above the desk. Below that line the moves stay strictly in sequence.
 BLEND = True
 CLEAR_HEIGHT_M = 0.25
+# Refinements of a blended move through the hub; each can be switched off on its own.
+M7_FREE = True         # the wrist roll (M7) runs from the first moment to the last instead of with the turn:
+M7_FREE_MAX = 300      # ...it only spins the gripper and camera about their own axis. Not if it has further
+                       # than this to go (steps; 300 = 26 deg moves the camera, 7 cm off that axis, by 3 cm)
+ALIGN = True           # the turn is slowed to fill the time it has (from the rise clearing the height until
+                       # the descent comes back down to it) instead of racing there and waiting. Never the
+                       # other way round: nothing is slowed that the move is waiting for
+HUB_PASS_THROUGH = True   # blended: the descent takes over as soon as the rise is within ARRIVE_TOL of the
+                          # hub with its goal read back, without first waiting for it to stand still
+BLEND_IDLE_GUARD = True   # blended: joints no segment is driving at the moment keep their goal and place
+                          # (another writer / pushed away), as they always did on a move in sequence
+FAST_DESCENT = True    # at fast the descent runs at fast too (as it already does in turbo), not at normal
+SHORT_HOPS = True      # a segment of a few steps takes as long as that hop needs at slow speed,
+                       # not MIN_SEGMENT_S: only the minimum duration changes, no guard
 CLEAR_POINTS = ("j5_forearm_roll", "j6_wrist_pitch", "j7_wrist_roll", "j8_gripper", "jaw_tip", "camera")
+ABOVE_SLACK_M = 0.02   # a stopped blended move counts as "above the clear height" down to this much under it
 # Direct moves: between two checked poses, at every speed, all seven joints go together along
 # one straight line in joint space instead of through the hub, when the geometry model (fk.py)
 # shows that line is no closer to the desk or to the arm itself than its two end poses (see
@@ -259,6 +274,12 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]], links=None
     {"where": "hub"}                   pitch joints at the transit configuration (any yaw/roll)
     {"where": "spoke", "view": name}   between a view and the hub: yaw/rolls are the view's and
                                        the pitch joints are all the same fraction of the way
+                                       (the wrist roll M7 may be up to M7_FREE_MAX away: a blended
+                                       move turns it all the way along, and it sweeps nothing)
+    {"where": "above", "view": name}   pitch joints on that line too, base yaw / forearm roll
+                                       anywhere, and the geometry model puts the arm above the
+                                       clear height: where a Stop leaves a blended move while its
+                                       turn overlaps the rise or the descent. Only with `links`.
     {"where": "between", "view": a, "to": b, "s": 0..1}
                                        on the direct line (or arc) from a to b, a fraction s of the
                                        way: where a Stop during a direct move leaves the arm. Only
@@ -278,18 +299,21 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]], links=None
     if _near(present, hub, PITCH):
         return {"where": "hub"}
 
-    best = None
-    for name, pose in views.items():
-        if name == TRANSIT or not _near(present, pose, TURN):
-            continue
-        # Closest point on the straight line from the view (f=0) to the hub (f=1) in joint space.
+    def off_spoke(pose):    # how far the pitch joints are from the straight line view (f=0) -> hub (f=1)
         span = sum((hub[m] - pose[m]) ** 2 for m in PITCH)
         if span <= AT_TOL ** 2:
-            continue
+            return None
         f = sum((present[m] - pose[m]) * (hub[m] - pose[m]) for m in PITCH) / span
         f = min(max(f, 0.0), 1.0)
-        miss = max(abs(present[m] - (pose[m] + (hub[m] - pose[m]) * f)) for m in PITCH)
-        if miss <= AT_TOL and (best is None or miss < best[0]):
+        return max(abs(present[m] - (pose[m] + (hub[m] - pose[m]) * f)) for m in PITCH)
+
+    best = None
+    roll_tol = M7_FREE_MAX + AT_TOL if (M7_FREE and BLEND) else AT_TOL
+    for name, pose in views.items():
+        if name == TRANSIT or not _near(present, pose, (1, 5)) or abs(present[7] - pose[7]) > roll_tol:
+            continue
+        miss = off_spoke(pose)
+        if miss is not None and miss <= AT_TOL and (best is None or miss < best[0]):
             best = (miss, {"where": "spoke", "view": name})
     if best is None and links is not None:
         for a, b, plan in links.pairs():
@@ -297,6 +321,11 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]], links=None
             rank = (-sum(n in (a, b) for n in set(prefer)), miss)
             if miss <= AT_TOL and (best is None or rank < best[0]):
                 best = (rank, {"where": "between", "view": a, "to": b, "s": round(s, 3)})
+    if best is None and links is not None and BLEND and links.height(present) >= CLEAR_HEIGHT_M - ABOVE_SLACK_M:
+        for name, pose in views.items():
+            miss = None if name == TRANSIT else off_spoke(pose)
+            if miss is not None and miss <= AT_TOL and (best is None or miss < best[0]):
+                best = (miss, {"where": "above", "view": name})
     return best[1] if best else {"where": "unknown"}
 
 
@@ -422,6 +451,10 @@ class _Links:
         self.grip = int(round(grip / 50.0)) * 50     # the limp gripper wobbles; do not re-plan for a step
         self._flags: dict[str, tuple[bool, bool]] = {}
 
+    def height(self, present: dict) -> float:
+        """Clear-point height of a measured pose by the geometry model (see _height)."""
+        return _height({**{m: present[m] for m in MOVABLE}, GRIPPER: self.grip}, self.ranges)
+
     def _flag(self, name: str) -> tuple[bool, bool]:    # (checked, may go direct), read once
         if name not in self._flags:
             self._flags[name] = (name == TRANSIT or view_checked(name), view_direct(name))
@@ -430,6 +463,8 @@ class _Links:
     def plan(self, a: str, b: str) -> dict:
         """{"ok", "lift", "reason"} for the pair, in either order."""
         no = {"ok": False, "lift": None}
+        if not DIRECT:
+            return {**no, "reason": "direct moves are switched off (motion.DIRECT)"}
         if a == b or a not in self.views or b not in self.views:
             return {**no, "reason": "not two known poses"}
         for name in (a, b):
@@ -444,6 +479,8 @@ class _Links:
         return plan
 
     def pairs(self):
+        if not DIRECT:
+            return
         names = sorted(self.views)
         for i, a in enumerate(names):
             for b in names[i + 1:]:
@@ -470,8 +507,6 @@ def route_kind(start_view: str, target_view: str) -> tuple[str, str]:
             return "hub", f"no saved pose '{name}'"
     if start_view == target_view:
         return "hub", "already there: only a small correction along the view's own path"
-    if not DIRECT:
-        return "hub", "direct moves are switched off (motion.DIRECT)"
     try:
         import fk  # noqa: F401
         ranges = {int(m): tuple(r) for m, r in raw[TRANSIT]["ranges"].items()}
@@ -538,9 +573,13 @@ def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, 
             plan = links.plan(at, target)
             if plan["ok"]:
                 return [_path_segment(views, at, target, plan["lift"], 0.0, 1.0)]
-    if loc.get("view") == target and target != TRANSIT:
-        # At the target or on its own spoke: straight down the spoke onto the exact pose.
-        return [("descend", _pick(views[target], PITCH))]
+    if loc["where"] in ("view", "spoke") and loc["view"] == target and target != TRANSIT:
+        # At the target or on its own spoke: straight down the spoke onto the exact pose. If a
+        # stopped blended move left the wrist roll somewhere else, that is put right first.
+        down = [("descend", _pick(views[target], PITCH))]
+        if abs(present[7] - views[target][7]) > AT_TOL:
+            return [("turn", {7: views[target][7]})] + down
+        return down
     rise = ("rise", _pick(hub, PITCH))
     if target == TRANSIT:
         return [rise, ("turn", _pick(hub, TURN))]
@@ -551,6 +590,23 @@ def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, 
 
 def _ease(s: float) -> float:
     return s * s * (3 - 2 * s)
+
+
+def _ease_inv(f: float) -> float:
+    """The s with _ease(s) = f."""
+    lo, hi = 0.0, 1.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if _ease(mid) < f else (lo, mid)
+    return (lo + hi) / 2
+
+
+def _duration(dist: float, peak_speed: float) -> float:
+    """Planned time of a streamed segment whose furthest joint travels `dist` steps: smoothstep
+    peaks at 1.5x its average speed. Never shorter than MIN_SEGMENT_S, except (SHORT_HOPS) for a
+    hop so small that even at slow speed it would take less: then that time, at least 0.2 s."""
+    floor = min(MIN_SEGMENT_S, max(0.2, 1.5 * dist / SPEED_SLOW)) if SHORT_HOPS else MIN_SEGMENT_S
+    return max(floor, 1.5 * dist / peak_speed)
 
 
 async def _write(arm, goals, **kw):
@@ -783,7 +839,7 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
 
 async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                        env: dict, stats: dict, ctx: dict, planned: dict, turbo: bool = False,
-                       others: tuple = (), gate=None) -> float:
+                       others: tuple = (), gate=None, need_still: bool = True) -> float:
     """Move the joints in `goal` to their targets; every other joint must stay put.
     `planned` gives, for joints an earlier segment moved, where they are supposed to be.
 
@@ -794,7 +850,10 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
 
     `others`: joints another segment is driving at the same time (blended moves); this segment
     does not expect them to hold still. `gate(waypoint)`: a streamed segment only advances to a
-    waypoint the gate allows (the descent waits above the clear height until the turn is done)."""
+    waypoint the gate allows (the descent waits above the clear height until the turn is done).
+    `need_still=False`: for a segment whose joints the next segment drives straight on (the rise
+    before a blended descent): arrival is the goal read back and every joint within ARRIVE_TOL
+    on a fresh sample, without waiting for the joints to come to rest."""
     tel = arm.telemetry(max_age_s=STALE_S)
     ids = sorted(goal)
     watch = _Watch()
@@ -840,7 +899,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         def shape(k):
             return {m: start[m] + (goal[m] - start[m]) * k for m in ids}
         dist = max(abs(goal[m] - start[m]) for m in ids)
-    duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
+    duration = _duration(dist, peak_speed)
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours
     servo_accel = max(SERVO_ACCEL, int(peak_speed / 20))     # enough acceleration to keep up when fast
     leash = lead_limit(peak_speed)
@@ -930,7 +989,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     final = cmd
     deadline, prev = time.monotonic() + SETTLE_S, None
     while True:
-        await asyncio.sleep(SETTLE_POLL_S)
+        await asyncio.sleep(SETTLE_POLL_S if need_still else 1 / RATE_HZ)
         now = time.monotonic()
         tel = arm.telemetry(max_age_s=STALE_S)
         _guard(tel, watch, now, stats, held_pos, held_goal,
@@ -945,7 +1004,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                     for m in ids)
         fresh = prev is not None and all(tel[m]["stamp"] != prev[m]["stamp"] for m in ids)
         still = fresh and all(abs(tel[m]["pos"] - prev[m]["pos"]) <= 6 for m in ids)
-        if echoed and close and still:
+        if echoed and close and (still or not need_still):
             return duration
         if now > deadline:
             worst = max(ids, key=lambda m: abs(tel[m]["pos"] - final[m]))
@@ -981,48 +1040,140 @@ def _kind(route: list[str]) -> str | None:
 
 def _segment_speed(seg: str, max_speed: float) -> tuple[float, bool]:
     """(speed, turbo) for one segment. Turbo: rise and turn on the servos' own profile, the
-    descent streamed at fast. Otherwise the descent is capped at normal: coming down onto a
-    view is where an overshoot would matter."""
+    descent streamed at fast: coming down onto a view is where an overshoot would matter, so it
+    stays on the leash. (With FAST_DESCENT off the descent at fast is capped at normal.)"""
     if seg in PATH_SEGMENTS:
         # Streamed on the leash, which keeps the arm on the line the model checked. (In turbo a
         # straight line that does not end lower than it starts is upgraded, see _go_to_view.)
         return min(max_speed, DIRECT_SPEED_CAP), False
     if seg != "descend":
         return max_speed, max_speed >= SPEED_TURBO
-    return (SPEED_FAST if max_speed >= SPEED_TURBO else min(max_speed, SPEED_NORMAL)), False
+    cap = SPEED_FAST if (FAST_DESCENT or max_speed >= SPEED_TURBO) else SPEED_NORMAL
+    return min(max_speed, cap), False
+
+
+def _blend_plan(segs: dict, present: dict, max_speed: float, ranges, grip: int) -> dict:
+    """{segment: (speed, turbo)} for a blended move, and `segs` with the wrist roll split off.
+
+    M7_FREE: M7 leaves the turn and becomes its own segment "roll", spread over the whole move.
+    ALIGN: the turn (M1, M5) may not start before the rise has cleared CLEAR_HEIGHT_M and has to be
+    done before the descent comes back down to it. If it needs less time than that window, its
+    speed is lowered so it arrives as the window closes. Times are the planned ones; the real arm
+    lags them a little, so the turn ends slightly early rather than late."""
+    plan = {name: _segment_speed(name, max_speed) for name in segs}
+    turn = segs.get("turn")
+    if not turn:
+        return plan
+
+    def planned(name):          # (planned time, furthest joint's travel) of a pitch segment
+        if name not in segs:
+            return 0.0, 0.0
+        start = present if name == "rise" else {**present, **segs.get("rise", {})}
+        dist = max(abs(g - start[m]) for m, g in segs[name].items())
+        speed, turbo = plan[name]
+        return (dist / speed + speed / (TURBO_ACCEL * 100.0) if turbo else _duration(dist, speed)), dist
+
+    (t_rise, _), (t_desc, _) = planned("rise"), planned("descend")
+    if M7_FREE and 7 in turn and len(turn) > 1 and abs(turn[7] - present[7]) <= M7_FREE_MAX:
+        segs["roll"] = {7: turn.pop(7)}
+        whole = max(t_rise + t_desc, MIN_SEGMENT_S)
+        slow = 1.5 * abs(segs["roll"][7] - present[7]) / (0.9 * whole)
+        plan["roll"] = (min(max(slow, 30.0), min(max_speed, SPEED_FAST)), False)
+    if not ALIGN:
+        return plan
+
+    def clear_fraction(start: dict, end: dict, turned: dict, rising: bool) -> float:
+        """How far along the pitch line start -> end the arm is above the clear height: from this
+        fraction on when rising, up to this fraction when descending."""
+        ok = [_height({**turned, **{m: start[m] + (end[m] - start[m]) * k / 20 for m in end}, GRIPPER: grip},
+                      ranges) >= CLEAR_HEIGHT_M for k in range(21)]
+        if rising:
+            return next((k / 20 for k in range(21) if all(ok[k:])), 1.0)
+        return next((k / 20 for k in range(20, -1, -1) if all(ok[:k + 1])), 0.0)
+
+    window = 0.0
+    if "rise" in segs:
+        window += t_rise * (1.0 - _ease_inv(clear_fraction(present, segs["rise"], present, True)))
+    if "descend" in segs:
+        top = {**present, **segs.get("rise", {})}
+        window += t_desc * _ease_inv(clear_fraction(top, segs["descend"], {**present, **turn, **segs.get("roll", {})}, False))
+    dist = max(abs(g - present[m]) for m, g in turn.items())
+    speed, turbo = plan["turn"]
+    natural = dist / speed + speed / (TURBO_ACCEL * 100.0) if turbo else _duration(dist, speed)
+    window = 0.85 * window - 0.4               # arrive and come to rest before the descent gets there
+    if window > 1.1 * natural and dist > SKIP_TOL:
+        slower = max(1.5 * dist / window, 30.0)
+        if slower <= SPEED_FAST:                 # slow enough to stream it on the leash, also in turbo
+            plan["turn"] = (min(slower, speed), False)
+        else:
+            plan["turn"] = (max(dist / max(window - speed / (TURBO_ACCEL * 100.0), 0.2), SPEED_FAST), True)
+    return plan
 
 
 async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx: dict, index0: int = 0) -> float:
     """Run rise / turn / descend with the turn overlapping the other two above CLEAR_HEIGHT_M.
 
-      rise starts at once; the turn starts as soon as the measured pose is above the clear
-      height (or the rise is done); the descent starts when the rise is done but may only go
-      below the clear height once the turn has arrived.
+      rise starts at once; the turn (base yaw M1 and forearm roll M5) starts as soon as the
+      measured pose is above the clear height (or the rise is done); the descent starts when the
+      rise has arrived but may only go below the clear height once the turn has arrived and is
+      standing still. The wrist roll M7 sweeps nothing and runs alongside from start to end
+      (M7_FREE). How fast the turn and the roll run: _blend_plan().
     Each segment keeps its own guards and arrival check. If one fails, all are stopped."""
-    segs = dict(route)
+    segs = {name: dict(goal) for name, goal in route}
     ranges = arm.ranges()
-    grip = arm.telemetry(max_age_s=STALE_S)[GRIPPER]["pos"]
+    tel0 = arm.telemetry(max_age_s=STALE_S)
+    grip = tel0[GRIPPER]["pos"]
+    plan = _blend_plan(segs, {m: tel0[m]["pos"] for m in MOVABLE}, max_speed, ranges, grip)
     tasks: dict[str, asyncio.Future] = {}
+    # Where a joint that no segment is driving right now has to stay: (goal register, position).
+    rest = {m: (tel0[m]["goal"], tel0[m]["pos"]) for m in MOVABLE}
+    seen_done: set[str] = set()
+    drift_limit = TURBO_DRIFT_LIMIT if max_speed >= SPEED_TURBO else DRIFT_LIMIT
     t0 = time.monotonic()
 
     def height(overrides: dict) -> float:     # the measured pose, with these joints replaced
         tel = arm.telemetry(max_age_s=STALE_S)
-        return _height({**{m: tel[m]["pos"] for m in MOVABLE}, **overrides, GRIPPER: grip}, ranges)
+        pose = {**{m: tel[m]["pos"] for m in MOVABLE}, **overrides, GRIPPER: grip}
+        if "roll" not in segs:
+            return _height(pose, ranges)
+        # The wrist roll is on its way and carries the camera a little up or down: count the
+        # lower of where it is and where it is going.
+        return min(_height(pose, ranges), _height({**pose, **segs["roll"]}, ranges))
 
     def start(name: str, **kw):
-        speed, turbo = _segment_speed(name, max_speed)
+        speed, turbo = plan[name]
         others = tuple(m for n, g in segs.items() if n != name for m in g if m not in segs[name])
         tasks[name] = asyncio.ensure_future(_run_segment(
             arm, name, segs[name], speed, env, stats, ctx, {}, turbo=turbo, others=others, **kw))
+
+    def idle_guard():
+        """Joints between segments: the rise's joints before the descent takes them, the turn's
+        before it starts and after it has arrived. Each segment only watches its own joints."""
+        tel = arm.telemetry(max_age_s=STALE_S)
+        for name, t in tasks.items():
+            if t.done() and name not in seen_done:
+                seen_done.add(name)
+                rest.update({m: (tel[m]["goal"], tel[m]["pos"]) for m in segs[name]})
+        busy = {m for n, t in tasks.items() if not t.done() for m in segs[n]}
+        for m in MOVABLE:
+            if m in busy:
+                continue
+            if abs(tel[m]["goal"] - rest[m][0]) > GOAL_MATCH:
+                raise MotionError(OTHER_WRITER.format(m))
+            if abs(tel[m]["pos"] - rest[m][1]) > drift_limit:
+                raise BlockedError(f"motor {m} was pushed off its position while holding still")
 
     async def until(done):
         while True:
             running = [n for n, t in tasks.items() if not t.done()]
             ctx["moving"] = _last["driving"] = tuple(sorted({m for n in running for m in segs[n]}))
-            status.update(phase="+".join(running) or status["phase"], phase_index=index0 + len(tasks))
+            status.update(phase="+".join(running) or status["phase"],
+                          phase_index=index0 + max(1, sum(n in tasks for n, _ in route)))
             for t in tasks.values():
                 if t.done() and not t.cancelled() and t.exception():
                     raise t.exception()
+            if BLEND_IDLE_GUARD:
+                idle_guard()
             if done():
                 return
             await asyncio.sleep(1 / RATE_HZ)
@@ -1031,8 +1182,10 @@ async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx
         return name not in segs or (name in tasks and tasks[name].done())
 
     try:
+        if "roll" in segs:
+            start("roll")
         if "rise" in segs:
-            start("rise")
+            start("rise", need_still=not (HUB_PASS_THROUGH and "descend" in segs))
         if "turn" in segs:
             await until(lambda: finished("rise") or height({}) >= CLEAR_HEIGHT_M)
             start("turn")
@@ -1093,12 +1246,11 @@ async def _inspect(arm, target: str | None = None) -> dict:
              for name, view in raw.items() if not problems[name]}
     out.update(present=present, views=views, env=env)
     if TRANSIT in views:
-        if DIRECT:
-            try:
-                import fk  # noqa: F401  (direct lines are only as good as the geometry model)
-                out["links"] = _Links(views, ranges, present[GRIPPER])
-            except Exception:
-                pass
+        try:
+            import fk  # noqa: F401  (direct lines and "above the clear height" need the geometry model)
+            out["links"] = _Links(views, ranges, present[GRIPPER])
+        except Exception:
+            pass
         out["where"] = locate(present, views, out["links"],
                               prefer=((target,) if target else ()) + tuple(_last["line"]))
     limp = [m for m in MOVABLE if not tel[m]["torque"]]

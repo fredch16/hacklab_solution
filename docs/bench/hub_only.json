@@ -1,0 +1,2015 @@
+{
+ "realistic": true,
+ "virtual_clock": true,
+ "set": [
+  "DIRECT=0"
+ ],
+ "results": {
+  "fast": [
+   {
+    "from": "home",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.77,
+    "solo_pitch": 3.76,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": 0.266,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.6,
+    "solo_pitch": 3.68,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": 0.265,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.27,
+    "solo_pitch": 5.94,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": null,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.2,
+    "solo_pitch": 5.9,
+    "solo_turn": 0,
+    "idle": 0.3,
+    "turn_h": null,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.83,
+    "solo_pitch": 5.42,
+    "solo_turn": 0,
+    "idle": 0.4,
+    "turn_h": null,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.77,
+    "solo_pitch": 3.8,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": 0.266,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.73,
+    "solo_pitch": 3.86,
+    "solo_turn": 0,
+    "idle": 0.22,
+    "turn_h": 0.275,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 8.1,
+    "solo_pitch": 3.2,
+    "solo_turn": 1.28,
+    "idle": 0.46,
+    "turn_h": 0.247,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.0,
+    "solo_pitch": 2.98,
+    "solo_turn": 0.08,
+    "idle": 0.38,
+    "turn_h": 0.275,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.43,
+    "solo_pitch": 2.58,
+    "solo_turn": 0,
+    "idle": 0.2,
+    "turn_h": 0.275,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.77,
+    "solo_pitch": 2.82,
+    "solo_turn": 0.06,
+    "idle": 0.36,
+    "turn_h": 0.263,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.7,
+    "solo_pitch": 5.28,
+    "solo_turn": 0,
+    "idle": 0.42,
+    "turn_h": null,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.7,
+    "solo_pitch": 3.92,
+    "solo_turn": 0,
+    "idle": 0.24,
+    "turn_h": 0.274,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 8.1,
+    "solo_pitch": 3.2,
+    "solo_turn": 1.38,
+    "idle": 0.48,
+    "turn_h": 0.248,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.83,
+    "solo_pitch": 2.94,
+    "solo_turn": 0.08,
+    "idle": 0.34,
+    "turn_h": 0.274,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.47,
+    "solo_pitch": 2.62,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": 0.274,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.8,
+    "solo_pitch": 2.82,
+    "solo_turn": 0.04,
+    "idle": 0.36,
+    "turn_h": 0.263,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 8.17,
+    "solo_pitch": 3.26,
+    "solo_turn": 1.5,
+    "idle": 0.48,
+    "turn_h": 0.25,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.2,
+    "solo_pitch": 5.96,
+    "solo_turn": 0,
+    "idle": 0.22,
+    "turn_h": null,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.9,
+    "solo_pitch": 2.9,
+    "solo_turn": 0.08,
+    "idle": 0.32,
+    "turn_h": 0.26,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.73,
+    "solo_pitch": 2.84,
+    "solo_turn": 0.08,
+    "idle": 0.34,
+    "turn_h": 0.263,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.97,
+    "solo_pitch": 4.68,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": null,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.4,
+    "solo_pitch": 3.74,
+    "solo_turn": 0,
+    "idle": 0.24,
+    "turn_h": 0.312,
+    "min_h": 0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.9,
+    "solo_pitch": 2.96,
+    "solo_turn": 0.06,
+    "idle": 0.32,
+    "turn_h": 0.261,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.17,
+    "solo_pitch": 5.94,
+    "solo_turn": 0,
+    "idle": 0.22,
+    "turn_h": null,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.43,
+    "solo_pitch": 2.46,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": 0.28,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.27,
+    "solo_pitch": 2.4,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": 0.28,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.93,
+    "solo_pitch": 4.64,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": null,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.5,
+    "solo_pitch": 4.12,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": null,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.43,
+    "solo_pitch": 2.5,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": 0.28,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.83,
+    "solo_pitch": 5.62,
+    "solo_turn": 0,
+    "idle": 0.2,
+    "turn_h": null,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.67,
+    "solo_pitch": 2.78,
+    "solo_turn": 0.08,
+    "idle": 0.32,
+    "turn_h": 0.256,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.7,
+    "solo_pitch": 2.78,
+    "solo_turn": 0.08,
+    "idle": 0.3,
+    "turn_h": 0.255,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.6,
+    "solo_pitch": 3.92,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": 0.315,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.6,
+    "solo_pitch": 4.32,
+    "solo_turn": 0,
+    "idle": 0.26,
+    "turn_h": null,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.7,
+    "solo_pitch": 2.84,
+    "solo_turn": 0.02,
+    "idle": 0.3,
+    "turn_h": 0.257,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.7,
+    "solo_pitch": 3.86,
+    "solo_turn": 0,
+    "idle": 0.24,
+    "turn_h": 0.28,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.73,
+    "solo_pitch": 5.28,
+    "solo_turn": 0,
+    "idle": 0.44,
+    "turn_h": null,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 8.2,
+    "solo_pitch": 3.3,
+    "solo_turn": 1.32,
+    "idle": 0.5,
+    "turn_h": 0.247,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 6.03,
+    "solo_pitch": 3.06,
+    "solo_turn": 0.08,
+    "idle": 0.36,
+    "turn_h": 0.279,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.47,
+    "solo_pitch": 2.62,
+    "solo_turn": 0,
+    "idle": 0.24,
+    "turn_h": 0.28,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.83,
+    "solo_pitch": 2.74,
+    "solo_turn": 0.04,
+    "idle": 0.34,
+    "turn_h": 0.262,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 4.0,
+    "solo_pitch": 2.28,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": 0.28,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 4.27,
+    "solo_pitch": 1.44,
+    "solo_turn": 1.18,
+    "idle": 0.28,
+    "turn_h": 0.275,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 4.37,
+    "solo_pitch": 1.4,
+    "solo_turn": 1.26,
+    "idle": 0.3,
+    "turn_h": 0.274,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.73,
+    "solo_pitch": 1.86,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": 0.29,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.73,
+    "solo_pitch": 1.8,
+    "solo_turn": 0,
+    "idle": 0.28,
+    "turn_h": 0.304,
+    "min_h": 0.083,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.3,
+    "solo_pitch": 1.5,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": null,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 4.33,
+    "solo_pitch": 1.54,
+    "solo_turn": 1.24,
+    "idle": 0.28,
+    "turn_h": 0.28,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.27,
+    "solo_pitch": 2.52,
+    "solo_turn": 0,
+    "idle": 0.52,
+    "turn_h": 0.311,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.77,
+    "solo_pitch": 1.74,
+    "solo_turn": 0.68,
+    "idle": 0.46,
+    "turn_h": 0.249,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.87,
+    "solo_pitch": 1.7,
+    "solo_turn": 0.74,
+    "idle": 0.5,
+    "turn_h": 0.248,
+    "min_h": 0.044,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.0,
+    "solo_pitch": 1.98,
+    "solo_turn": 0.16,
+    "idle": 0.4,
+    "turn_h": 0.314,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.0,
+    "solo_pitch": 1.8,
+    "solo_turn": 0.02,
+    "idle": 0.54,
+    "turn_h": 0.313,
+    "min_h": 0.083,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 2.57,
+    "solo_pitch": 1.58,
+    "solo_turn": 0,
+    "idle": 0.62,
+    "turn_h": null,
+    "min_h": -0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.8,
+    "solo_pitch": 1.82,
+    "solo_turn": 0.7,
+    "idle": 0.48,
+    "turn_h": 0.251,
+    "min_h": 0.011,
+    "dip": 0.0
+   }
+  ],
+  "turbo": [
+   {
+    "from": "home",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.73,
+    "solo_pitch": 2.78,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.257,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.73,
+    "solo_pitch": 2.82,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.257,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.47,
+    "solo_pitch": 4.34,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": null,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.47,
+    "solo_pitch": 4.34,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": null,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.0,
+    "solo_pitch": 3.34,
+    "solo_turn": 0,
+    "idle": 0.22,
+    "turn_h": 0.305,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.73,
+    "solo_pitch": 2.46,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.257,
+    "min_h": 0.012,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.6,
+    "solo_pitch": 3.66,
+    "solo_turn": 0,
+    "idle": 0.08,
+    "turn_h": 0.262,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.93,
+    "solo_pitch": 2.48,
+    "solo_turn": 0.14,
+    "idle": 0.16,
+    "turn_h": 0.262,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.44,
+    "solo_turn": 0.1,
+    "idle": 0.12,
+    "turn_h": 0.262,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.33,
+    "solo_pitch": 2.38,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": 0.262,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.97,
+    "solo_pitch": 2.06,
+    "solo_turn": 0.08,
+    "idle": 0.12,
+    "turn_h": 0.262,
+    "min_h": 0.003,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.6,
+    "solo_pitch": 3.38,
+    "solo_turn": 0.14,
+    "idle": 0.14,
+    "turn_h": null,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.6,
+    "solo_pitch": 3.68,
+    "solo_turn": 0,
+    "idle": 0.08,
+    "turn_h": 0.266,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.97,
+    "solo_pitch": 2.52,
+    "solo_turn": 0.14,
+    "idle": 0.16,
+    "turn_h": 0.266,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.48,
+    "solo_turn": 0.1,
+    "idle": 0.12,
+    "turn_h": 0.266,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.44,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": 0.266,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.0,
+    "solo_pitch": 2.08,
+    "solo_turn": 0.08,
+    "idle": 0.14,
+    "turn_h": 0.266,
+    "min_h": 0.002,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.0,
+    "solo_pitch": 2.54,
+    "solo_turn": 0.14,
+    "idle": 0.18,
+    "turn_h": 0.266,
+    "min_h": 0.011,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.43,
+    "solo_pitch": 5.36,
+    "solo_turn": 0,
+    "idle": 0.06,
+    "turn_h": null,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.43,
+    "solo_pitch": 2.48,
+    "solo_turn": 0.1,
+    "idle": 0.14,
+    "turn_h": 0.283,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.4,
+    "solo_pitch": 2.5,
+    "solo_turn": 0.1,
+    "idle": 0.14,
+    "turn_h": 0.283,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.13,
+    "solo_pitch": 4.0,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": null,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.6,
+    "solo_pitch": 3.04,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": 0.312,
+    "min_h": 0.003,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.43,
+    "solo_pitch": 2.5,
+    "solo_turn": 0.08,
+    "idle": 0.14,
+    "turn_h": 0.283,
+    "min_h": 0.012,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.33,
+    "solo_pitch": 5.26,
+    "solo_turn": 0,
+    "idle": 0.06,
+    "turn_h": null,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.33,
+    "solo_pitch": 2.38,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.259,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.33,
+    "solo_pitch": 2.4,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.259,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.1,
+    "solo_pitch": 3.96,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": null,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.67,
+    "solo_pitch": 3.04,
+    "solo_turn": 0,
+    "idle": 0.22,
+    "turn_h": 0.312,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.44,
+    "solo_turn": 0,
+    "idle": 0.14,
+    "turn_h": 0.259,
+    "min_h": 0.012,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.33,
+    "solo_pitch": 5.22,
+    "solo_turn": 0,
+    "idle": 0.06,
+    "turn_h": 0.315,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.44,
+    "solo_turn": 0.1,
+    "idle": 0.14,
+    "turn_h": 0.268,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.42,
+    "solo_turn": 0.1,
+    "idle": 0.14,
+    "turn_h": 0.268,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.07,
+    "solo_pitch": 3.5,
+    "solo_turn": 0,
+    "idle": 0.18,
+    "turn_h": 0.314,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.07,
+    "solo_pitch": 3.68,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": 0.315,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.46,
+    "solo_turn": 0.08,
+    "idle": 0.14,
+    "turn_h": 0.268,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 5.63,
+    "solo_pitch": 3.12,
+    "solo_turn": 0,
+    "idle": 0.06,
+    "turn_h": 0.265,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.6,
+    "solo_pitch": 3.38,
+    "solo_turn": 0.14,
+    "idle": 0.12,
+    "turn_h": null,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.93,
+    "solo_pitch": 2.5,
+    "solo_turn": 0.12,
+    "idle": 0.16,
+    "turn_h": 0.265,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.46,
+    "solo_turn": 0.1,
+    "idle": 0.12,
+    "turn_h": 0.265,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.37,
+    "solo_pitch": 2.44,
+    "solo_turn": 0,
+    "idle": 0.12,
+    "turn_h": 0.265,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.0,
+    "solo_pitch": 2.1,
+    "solo_turn": 0.06,
+    "idle": 0.12,
+    "turn_h": 0.265,
+    "min_h": 0.002,
+    "dip": 0.0
+   },
+   {
+    "from": "home",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.3,
+    "solo_pitch": 1.14,
+    "solo_turn": 0,
+    "idle": 0.18,
+    "turn_h": 0.257,
+    "min_h": 0.07,
+    "dip": 0.0
+   },
+   {
+    "from": "left",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.5,
+    "solo_pitch": 0.44,
+    "solo_turn": 0.48,
+    "idle": 0.18,
+    "turn_h": 0.262,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "right",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.53,
+    "solo_pitch": 0.54,
+    "solo_turn": 0.52,
+    "idle": 0.18,
+    "turn_h": 0.266,
+    "min_h": 0.042,
+    "dip": 0.0
+   },
+   {
+    "from": "top",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 1.83,
+    "solo_pitch": 1.22,
+    "solo_turn": 0,
+    "idle": 0.08,
+    "turn_h": 0.283,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "wide",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 1.93,
+    "solo_pitch": 1.14,
+    "solo_turn": 0,
+    "idle": 0.18,
+    "turn_h": 0.259,
+    "min_h": 0.083,
+    "dip": 0.0
+   },
+   {
+    "from": "close",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 1.63,
+    "solo_pitch": 1.06,
+    "solo_turn": 0,
+    "idle": 0.08,
+    "turn_h": 0.273,
+    "min_h": -0.004,
+    "dip": 0.0
+   },
+   {
+    "from": "side_low",
+    "to": "transit",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn"
+    ],
+    "time": 2.53,
+    "solo_pitch": 0.5,
+    "solo_turn": 0.5,
+    "idle": 0.2,
+    "turn_h": 0.265,
+    "min_h": 0.008,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "home",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 4.07,
+    "solo_pitch": 3.0,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": 0.302,
+    "min_h": 0.072,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "left",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.9,
+    "solo_pitch": 1.94,
+    "solo_turn": 0.26,
+    "idle": 0.16,
+    "turn_h": 0.258,
+    "min_h": 0.048,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "right",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.9,
+    "solo_pitch": 1.92,
+    "solo_turn": 0.26,
+    "idle": 0.16,
+    "turn_h": 0.257,
+    "min_h": 0.045,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "top",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 2.87,
+    "solo_pitch": 1.82,
+    "solo_turn": 0,
+    "idle": 0.36,
+    "turn_h": 0.306,
+    "min_h": 0.08,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "wide",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 2.8,
+    "solo_pitch": 1.76,
+    "solo_turn": 0,
+    "idle": 0.34,
+    "turn_h": 0.31,
+    "min_h": 0.083,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "close",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 2.43,
+    "solo_pitch": 2.1,
+    "solo_turn": 0,
+    "idle": 0.32,
+    "turn_h": null,
+    "min_h": 0.001,
+    "dip": 0.0
+   },
+   {
+    "from": "transit",
+    "to": "side_low",
+    "ok": true,
+    "error": null,
+    "route": [
+     "rise",
+     "turn",
+     "descend"
+    ],
+    "time": 3.97,
+    "solo_pitch": 2.02,
+    "solo_turn": 0.26,
+    "idle": 0.18,
+    "turn_h": 0.258,
+    "min_h": 0.011,
+    "dip": 0.0
+   }
+  ]
+ }
+}

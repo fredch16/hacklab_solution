@@ -249,6 +249,22 @@ async def main():
     print(f"view to view: {n['direct']} direct, {n['arc']} arc, {n['hub']} through the hub")
     check(n["hub"] == 12, "only the twelve moves from or to home still go through the hub")
 
+    # --- and with direct moves switched off: every pair through the hub, blended at fast and turbo ---
+    motion.DIRECT = False
+    for label in ("fast", "turbo"):
+        worst = 9.9
+        for a, b in pairs:
+            arm = SimArm(start=start_pose(a), realistic=True)
+            await settle(arm)
+            r, facts = await watched_move(arm, b, SPEEDS[label])
+            check(r["ok"] and at(arm, b) and r["kind"] == "hub" and r["route"][0] == "rise",
+                  f"hub only, {label} {a} -> {b} arrives: {r['error']}")
+            check(facts["turn_low"] >= motion.CLEAR_HEIGHT_M - 0.01,
+                  f"hub only, {label} {a} -> {b}: M1/M5 never turning below the clear height ({facts['turn_low'] * 100:.1f} cm)")
+            worst = min(worst, facts["turn_low"])
+        print(f"DIRECT off, {label}: {len(pairs)} moves ok through the hub; M1/M5 turn no lower than {worst * 100:.1f} cm")
+    motion.DIRECT = True
+
     # --- unchecked views keep the old behaviour exactly ----------------------------------------------
     motion.view_checked = lambda name: name != "wide"
     slow = SimArm(start=start_pose("top"), realistic=True)
@@ -346,6 +362,178 @@ async def main():
     before = pushed.writes
     check(await motion.stop_hold(pushed) == "confirmed" and pushed.writes == before,
           "direct: after a confirmed abort hold, stop_hold() rewrites nothing")
+
+    # ====== the route through the hub, blended (home, and everything when DIRECT is off) ============
+    # --- the wrist roll sweeps nothing: only the camera point moves when M7 alone changes -----------
+    m7s = [v[7] for v in VIEWS.values()]
+    cam_views = cam_max = others = 0.0
+    for n in VIEWS:
+        for f in (0.0, 0.5, 1.0):
+            pose = {**start_pose(n), **{m: VIEWS[n][m] + (HUB[m] - VIEWS[n][m]) * f for m in PITCH}}
+            for mp in ("viewer", "true_scale"):
+                for lo, hi, far in ((min(m7s), max(m7s), False), (pose[7], pose[7] + motion.M7_FREE_MAX, True)):
+                    p0, p1 = fk.fk({**pose, 7: lo}, SIM_RANGES, mp), fk.fk({**pose, 7: hi}, SIM_RANGES, mp)
+                    for point in motion.CLEAR_POINTS:
+                        d = sum((x - y) ** 2 for x, y in zip(p0[point], p1[point])) ** 0.5
+                        if point != "camera":
+                            others = max(others, d)
+                        elif far:
+                            cam_max = max(cam_max, d)
+                        else:
+                            cam_views = max(cam_views, d)
+    check(others < 1e-6, "M7 alone moves none of the forearm, wrist, gripper or jaw-tip points")
+    check(cam_views < 0.016 and cam_max < 0.035,
+          f"...the camera moves {cam_views * 1000:.0f} mm across all saved views and {cam_max * 1000:.0f} mm at the M7_FREE_MAX limit")
+    print(f"wrist roll alone: camera point moves {cam_views * 1000:.0f} mm across the saved views, "
+          f"{cam_max * 1000:.0f} mm for {motion.M7_FREE_MAX} steps; nothing else moves")
+
+    async def blended(a, b, speed, **flags):
+        """Run a -> b through the hub and time what each joint group did."""
+        saved = {k: getattr(motion, k) for k in flags}
+        for k, v in flags.items():
+            setattr(motion, k, v)
+        arm = SimArm(start=start_pose(a), realistic=True)
+        await settle(arm)
+        ranges = arm.ranges()
+        f = {"roll_low": 9.9, "roll_first": None, "turn_first": None, "roll_after_turn": False, "turn_alone": 0.0,
+             "turn_peak": 0.0, "handover": None}
+
+        async def watch():
+            prev, prev_t, t0 = dict(arm._pos), time.monotonic(), time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                pos = arm.joints()
+                now = time.monotonic()
+                vel = {m: abs(arm._pos[m] - prev[m]) / max(now - prev_t, 1e-6) for m in MOVABLE}
+                prev, prev_t = dict(arm._pos), now
+                turning, pitching = max(vel[1], vel[5]) > MOVING, any(vel[m] > MOVING for m in PITCH)
+                if vel[7] > 8:
+                    f["roll_low"] = min(f["roll_low"], motion._height(pos, ranges))
+                    f["roll_first"] = f["roll_first"] if f["roll_first"] is not None else now - t0
+                    f["roll_after_turn"] = f["roll_after_turn"] or "descend" in (motion.status["phase"] or "")
+                if turning:
+                    f["turn_first"] = f["turn_first"] if f["turn_first"] is not None else now - t0
+                    f["turn_peak"] = max(f["turn_peak"], vel[1], vel[5])
+                    f["turn_alone"] += 0.0 if pitching else 0.01
+                if f["handover"] is None and "descend" in (motion.status["phase"] or ""):
+                    f["handover"] = max(abs(pos[m] - HUB[m]) for m in PITCH)
+
+        w = asyncio.ensure_future(watch())
+        t0 = time.monotonic()
+        r = await go_to_view(arm, b, max_speed=speed)
+        f["time"] = time.monotonic() - t0
+        w.cancel()
+        for k, v in saved.items():
+            setattr(motion, k, v)
+        check(r["ok"] and at(arm, b) and r["kind"] == "hub", f"blended {a} -> {b} {flags}: {r['error']}")
+        return f
+
+    # --- 2a: the wrist roll runs from the first moment to the last ------------------------------------
+    for speed in (motion.SPEED_FAST, motion.SPEED_TURBO):
+        f = await blended("home", "side_low", speed)
+        check(f["roll_first"] is not None and f["roll_first"] < 0.5 and f["roll_first"] < f["turn_first"] - 0.3,
+              f"M7 starts at once ({f['roll_first']:.2f} s), the turn only once it is clear ({f['turn_first']:.2f} s)")
+        check(f["roll_low"] < motion.CLEAR_HEIGHT_M - 0.05 and f["roll_after_turn"],
+              f"M7 turns below the clear height ({f['roll_low'] * 100:.0f} cm) and on into the descent")
+        g = await blended("home", "side_low", speed, M7_FREE=False)
+        check(g["roll_low"] >= motion.CLEAR_HEIGHT_M - 0.01,
+              f"with M7_FREE off it is gated with the turn again ({g['roll_low'] * 100:.0f} cm)")
+    real_read = motion._read_views_file
+    far_roll = RAW["left"][7] + 700
+    motion._read_views_file = lambda path=None: {
+        n: ({**v, "joints": {**v["joints"], "7": far_roll}} if n == "left" else v) for n, v in real_read(path).items()}
+    saved_left = VIEWS["left"]
+    VIEWS["left"] = {**saved_left, 7: far_roll}
+    f = await blended("home", "left", motion.SPEED_FAST)
+    check(f["roll_low"] >= motion.CLEAR_HEIGHT_M - 0.01,
+          f"a wrist roll of more than M7_FREE_MAX stays gated with the turn ({f['roll_low'] * 100:.0f} cm)")
+    VIEWS["left"] = saved_left
+    motion._read_views_file = real_read
+
+    # --- 2b: the turn fills its window instead of racing and waiting; nothing gets slower --------------
+    for a, b in (("home", "top"), ("home", "close"), ("top", "home")):
+        on, off = await blended(a, b, motion.SPEED_FAST), await blended(a, b, motion.SPEED_FAST, ALIGN=False)
+        check(on["turn_peak"] < 0.6 * off["turn_peak"] or off["turn_peak"] < MOVING,
+              f"{a} -> {b}: aligned turn is gentler (peak {on['turn_peak']:.0f} vs {off['turn_peak']:.0f} steps/s)")
+        check(on["time"] <= off["time"] + 0.15, f"{a} -> {b}: aligning costs no time ({on['time']:.2f} vs {off['time']:.2f} s)")
+        check(on["turn_alone"] <= 0.1, f"{a} -> {b}: M1/M5 never turn on their own ({on['turn_alone']:.2f} s)")
+    for a, b in (("home", "left"), ("right", "home")):      # a long turn is what the move waits for: left alone
+        on, off = await blended(a, b, motion.SPEED_FAST), await blended(a, b, motion.SPEED_FAST, ALIGN=False)
+        check(abs(on["time"] - off["time"]) <= 0.15 and on["turn_peak"] > 0.9 * off["turn_peak"],
+              f"{a} -> {b}: a turn the move is waiting for is not slowed")
+
+    # --- 2e: no standstill at the hub, quicker descent at fast, short hops ---------------------------------
+    on, off = await blended("home", "left", motion.SPEED_FAST), await blended("home", "left", motion.SPEED_FAST, HUB_PASS_THROUGH=False)
+    check(on["time"] < off["time"] - 0.2, f"passing through the hub saves time ({on['time']:.2f} vs {off['time']:.2f} s)")
+    check(on["handover"] is not None and on["handover"] <= motion.ARRIVE_TOL,
+          f"the descent only takes over within ARRIVE_TOL of the hub ({on['handover']:.0f} steps)")
+    off = await blended("home", "left", motion.SPEED_FAST, FAST_DESCENT=False)
+    check(on["time"] < off["time"] - 0.5, f"fast descent saves time ({on['time']:.2f} vs {off['time']:.2f} s)")
+    check(motion._duration(5, 800) == 0.2 and motion._duration(60, 800) == 0.45 and motion._duration(2000, 800) == 3.75
+          and motion._duration(200, 800) == motion.MIN_SEGMENT_S, "short hops take as long as they need at slow speed")
+    motion.SHORT_HOPS = False
+    check(motion._duration(5, 800) == motion.MIN_SEGMENT_S, "SHORT_HOPS off: the old minimum")
+    motion.SHORT_HOPS = True
+
+    # --- joints between segments are watched too -----------------------------------------------------------
+    for label, delay, joint in (("before the turn starts", 0.4, 1), ("after the turn has arrived", 5.2, 5)):
+        arm = SimArm(start=start_pose("home"), realistic=True)
+        await settle(arm)
+        task = asyncio.ensure_future(go_to_view(arm, "left", max_speed=motion.SPEED_FAST))
+        await asyncio.sleep(delay)
+        check(joint not in motion._last["driving"], f"motor {joint} is idle {label}")
+        arm.hijack = {joint: arm.joints()[joint] + 200}
+        r = await task
+        check(not r["ok"] and f"something else is commanding motor {joint}" in r["error"] and r["hold"] is not None,
+              f"blended: another writer on an idle joint {label}: {r['error']}")
+    arm = SimArm(start=start_pose("home"), realistic=True)
+    await settle(arm)
+    task = asyncio.ensure_future(go_to_view(arm, "left", max_speed=motion.SPEED_FAST))
+    await asyncio.sleep(0.4)
+    arm._pos[5] += 150
+    arm.stuck = {5}                                           # the forearm roll knocked away and held there
+    r = await task
+    check(not r["ok"] and "motor 5 was pushed off" in r["error"], f"blended: an idle joint pushed away: {r['error']}")
+
+    # --- one group failing stops them all ---------------------------------------------------------------------
+    for joint, word in ((7, "motor 7"), (5, "motor 5"), (3, "motor 3")):
+        arm = SimArm(start=start_pose("home"), realistic=True)
+        arm.stuck = {joint}
+        await settle(arm)
+        r = await go_to_view(arm, "side_low", max_speed=motion.SPEED_FAST)
+        check(not r["ok"] and word in r["error"] and r["hold"] == "confirmed", f"blended: stuck {word} ends the move: {r['error']}")
+        arm.stuck = set()
+        check(await still(arm), f"blended: everything holds after {word} failed")
+
+    # --- Stop anywhere in a blended move: holding, recognised, and the next click works -----------------------
+    seen = set()
+    for speed in (motion.SPEED_FAST, motion.SPEED_TURBO):
+        for a, b in (("home", "side_low"), ("left", "home")):
+            for delay in (0.5, 1.2, 1.9, 2.6, 3.3, 4.2, 5.0):
+                arm = SimArm(start=start_pose(a), realistic=True)
+                await settle(arm)
+                if not await stop_after(arm, b, speed, delay):
+                    continue                                  # the move had already finished
+                check(motion.status["hold"] == "confirmed" and await still(arm), f"blended {a}->{b} stopped at {delay} s: holding")
+                d = await motion.describe(arm, b)
+                where = d["where"]["where"]
+                seen.add(where)
+                check(d["ok"] and where in ("view", "spoke", "hub", "above"),
+                      f"blended {a}->{b} stopped at {delay} s: recognised ({d['where']}, {d['blockers']})")
+                onward = b if delay < 3 else a
+                r = await go_to_view(arm, onward, max_speed=speed)
+                check(r["ok"] and at(arm, onward), f"...and carries on to {onward} from {where}: {r['error']}")
+    check({"spoke", "above"} <= seen, f"stops were recognised on a spoke and above the clear height: {sorted(seen)}")
+    # with the roll left half-way on a view's own spoke, going back down puts it right first
+    arm = SimArm(start=start_pose("home"), realistic=True)
+    await settle(arm)
+    await stop_after(arm, "side_low", motion.SPEED_FAST, 1.0)
+    await still(arm)
+    pose = {**arm.joints(), 7: VIEWS["home"][7] - 100}
+    check(locate(pose, VIEWS)["where"] == "spoke", "a spoke with the wrist roll elsewhere is still that spoke")
+    check([(s, sorted(g)) for s, g in motion.plan_route(pose, "home", VIEWS)] == [("turn", [7]), ("descend", sorted(PITCH))],
+          "back down the same spoke: wrist roll first, then the descent")
+    check(locate({**pose, 7: VIEWS["home"][7] - 500}, VIEWS)["where"] == "unknown", "...but not with the roll anywhere at all")
 
     print(f"ALL OK ({passed} checks)")
 

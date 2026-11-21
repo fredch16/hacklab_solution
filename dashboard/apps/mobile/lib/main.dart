@@ -1,4 +1,4 @@
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -36,6 +36,18 @@ Future<void> main() async {
       addresses: localIpv4Addresses,
       snapshotPayload: payload,
       onMessage: onMessage,
+      advertise: (port, fingerprint) async {
+        try {
+          await const MethodChannel('dev.localvision/discovery').invokeMethod(
+            'advertise',
+            {'port': ?port, 'fingerprint': ?fingerprint},
+          );
+        } on MissingPluginException {
+          // Manual setup is available where the native advertiser is absent.
+        } on PlatformException {
+          // Discovery failures must not interrupt camera or manual pairing.
+        }
+      },
       assetLoader: (name) async {
         try {
           return (await rootBundle.load('assets/dashboard/$name')).buffer

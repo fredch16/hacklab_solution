@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
+
 typedef Clock = DateTime Function();
 
 const pairingCodeTtl = Duration(seconds: 120);
@@ -34,22 +36,30 @@ const maxPendingRequests = 3;
 const maxRequestsPerMinutePerIp = 10;
 
 class PairRequest {
-  PairRequest(this.id, this.secret, this.remoteIp, this.createdAt)
-    : expiresAt = createdAt.add(pairRequestTtl);
+  PairRequest(
+    this.id,
+    this.secret,
+    this.remoteIp,
+    this.createdAt,
+    this.challenge,
+  ) : expiresAt = createdAt.add(pairRequestTtl);
   final String id;
   final String secret;
   final String remoteIp;
   final DateTime createdAt;
   final DateTime expiresAt;
+  final String? challenge;
+  String? proof;
   RequestState state = RequestState.pending;
 }
 
 class PairRequestStatus {
-  const PairRequestStatus(this.state, [this.token]);
+  const PairRequestStatus(this.state, [this.token, this.proof]);
   final RequestState state;
 
   /// Present exactly once, on the poll that consumes an approved request.
   final String? token;
+  final String? proof;
 }
 
 enum CodeStatus { none, active, expired, locked }
@@ -176,7 +186,7 @@ class PairingService {
   }
 
   /// Null when [remoteIp] exceeded 10 creations in the last minute.
-  PairRequest? createPairRequest(String remoteIp) {
+  PairRequest? createPairRequest(String remoteIp, {String? challenge}) {
     final now = _now();
     final times = _creations.putIfAbsent(remoteIp, () => []);
     times.removeWhere((t) => now.difference(t) >= const Duration(minutes: 1));
@@ -187,32 +197,47 @@ class PairingService {
     while (_requests.length >= maxPendingRequests) {
       _requests.removeAt(0);
     }
-    final r = PairRequest(_randomB64(16), _randomB64(32), remoteIp, now);
+    final r = PairRequest(
+      _randomB64(16),
+      _randomB64(32),
+      remoteIp,
+      now,
+      challenge,
+    );
     _requests.add(r);
     _events.add(const PairingEvent());
     return r;
   }
 
   /// A still-pending, unexpired request, for the phone's confirm sheet.
-  PairRequest? lookupRequest(String requestId) {
+  PairRequest? lookupRequest(String requestId, {String? proof}) {
     _prune();
     for (final r in _requests) {
       if (r.state == RequestState.pending &&
-          constantTimeEquals(r.id, requestId)) {
+          constantTimeEquals(r.id, requestId) &&
+          (r.challenge == null
+              ? proof == null
+              : proof != null &&
+                    constantTimeEquals(
+                      r.challenge!,
+                      sha256.convert(utf8.encode(proof)).toString(),
+                    ))) {
         return r;
       }
     }
     return null;
   }
 
-  bool approveRequest(String requestId) =>
-      _decide(requestId, RequestState.approved);
-  bool denyRequest(String requestId) => _decide(requestId, RequestState.denied);
+  bool approveRequest(String requestId, {String? proof}) =>
+      _decide(requestId, RequestState.approved, proof);
+  bool denyRequest(String requestId, {String? proof}) =>
+      _decide(requestId, RequestState.denied, proof);
 
-  bool _decide(String requestId, RequestState to) {
-    final r = lookupRequest(requestId);
+  bool _decide(String requestId, RequestState to, String? proof) {
+    final r = lookupRequest(requestId, proof: proof);
     if (r == null) return false;
     r.state = to;
+    if (to == RequestState.approved) r.proof = proof;
     _events.add(const PairingEvent());
     return true;
   }
@@ -237,7 +262,11 @@ class PairingService {
         return const PairRequestStatus(RequestState.denied);
       case RequestState.approved:
         _requests.remove(found);
-        return PairRequestStatus(RequestState.approved, _issueToken());
+        return PairRequestStatus(
+          RequestState.approved,
+          _issueToken(),
+          found.proof,
+        );
       case RequestState.expired:
         return const PairRequestStatus(RequestState.expired);
     }

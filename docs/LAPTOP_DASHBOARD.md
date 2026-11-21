@@ -32,10 +32,14 @@ If the USB feed is unavailable, check that the real arm server's `/api/state` re
 
 ## Pair the phone
 
-1. Open Local Vision on the Pixel and start its foreground session.
-2. In the laptop dashboard's **Phone connection** form, enter the HTTPS address and SHA-256 certificate fingerprint shown on the phone's **Link** screen. The laptop verifies the certificate before contacting the phone.
-3. Scan the pairing QR code from the phone and approve it, or use the pairing code. Click **Start video** for the phone camera and offline wake/transcription. Both must be on the same LAN.
-4. Keep the phone app in the foreground. A short phone connection loss leaves an ongoing master recording on the phone. Reconnect restores history for display without re-executing commands. Restarting the laptop gateway requires pairing again.
+1. Connect the phone and laptop to the same Wi-Fi. Open Local Vision on the Pixel and tap **Start session**.
+2. Open the laptop dashboard. A single discovered phone is selected automatically. When multiple phones are visible, select the one you want.
+3. On the phone, open **Link → Scan to pair**, scan the laptop QR code, then tap **Approve**. Click **Start video** to see the phone camera and enable offline wake/transcription. Keep Local Vision in the foreground.
+4. If discovery is blocked on the network, open **Connect manually** and enter the HTTPS address and SHA-256 fingerprint from the phone’s **Link** screen. **Find phone again** refreshes discovery if an automatically selected phone changes networks.
+
+Android advertises the active foreground session with DNS-SD on `_localvision._tcp.local.`, including the HTTPS port and the certificate hash. The laptop treats the advertisement as an untrusted connection hint. It generates a one-use random value, puts it in the QR shown on the laptop, and sends only its SHA-256 hash over the network before approval. After the scan and approval, the laptop accepts the pairing token only when the phone returns that value on its pinned TLS connection. Six-digit pairing remains available after manually verifying a certificate fingerprint.
+
+A short phone connection loss leaves an ongoing master recording on the phone. Reconnect restores history for display without re-executing commands. Restarting the laptop gateway requires pairing again.
 
 ## Recording and speech
 

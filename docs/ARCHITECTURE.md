@@ -2,7 +2,7 @@
 
 ## Current capture and command boundary
 
-The laptop hosts the HackLab operator dashboard on loopback. The app on the Pixel owns capture, the audio/video master, wake detection and offline ASR. The laptop verifies the phone certificate and pairs using the existing approval flow. The phone's vision-only WebRTC feed stays peer-to-peer. Station owns the USB camera and publishes frames through `capture_server.py`.
+The laptop hosts the HackLab operator dashboard on loopback. The app on the Pixel owns capture, the audio/video master, wake detection and offline ASR. The laptop discovers active Android sessions with DNS-SD and pairs with a one-use QR proof over pinned TLS. The phone's vision-only WebRTC feed stays peer-to-peer. Station owns the USB camera and publishes frames through `capture_server.py`.
 
 ```mermaid
 flowchart LR

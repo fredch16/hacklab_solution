@@ -1,10 +1,13 @@
 """Loopback dashboard. Phone signaling is pinned HTTPS/WSS; WebRTC media stays peer-to-peer."""
 import argparse
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,6 +15,8 @@ from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from phone_discovery import PhoneDiscovery
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar, Fingerprint, MultipartReader, WSMsgType, web
 
@@ -71,6 +76,10 @@ class Dashboard:
         self.clips, self.arm, self.bridge = clips, arm, bridge
         self.origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
         self.phone = None
+        self.phone_automatic = False
+        self.pair_proof = None
+        self.pair_lock = asyncio.Lock()
+        self.discovery = PhoneDiscovery()
         self.phone_cookies = {}
         self.phone_ws = None
         self.phone_tab = None
@@ -89,8 +98,12 @@ class Dashboard:
     async def lifecycle(self, app):
         async with ClientSession(cookie_jar=DummyCookieJar(), timeout=ClientTimeout(total=12)) as client:
             self.http = client
-            yield
-            await self.end_robot()
+            self.discovery.start()
+            try:
+                yield
+            finally:
+                await self.discovery.close()
+                await self.end_robot()
 
     @web.middleware
     async def protect(self, request, handler):
@@ -118,55 +131,121 @@ class Dashboard:
             })
         return web.FileResponse(ASSETS / name, headers={"Cache-Control": "no-store"})
 
+    async def discovered_phones(self, request):
+        return web.json_response({"phones": [
+            {"id": name, "label": phone.label} for name, phone in sorted(self.discovery.phones.items())
+        ]})
+
     async def phone_target(self, request):
         if request.method == "GET":
-            return web.json_response({"address": self.phone.origin if self.phone else ""})
+            return web.json_response({"address": self.phone.origin if self.phone else "",
+                                      "qr_only": self.phone_automatic})
         try:
             config = await request.json()
-            target = PhoneTarget.parse(config["address"], config["fingerprint"])
+            automatic = "service" in config
+            if automatic:
+                offer = self.discovery.phones.get(config["service"])
+                if offer is None:
+                    return web.json_response({"error": "Phone no longer visible on the LAN."}, status=404)
+                targets = []
+                for address in offer.addresses:
+                    try:
+                        targets.append(PhoneTarget.parse(f"https://{address}:{offer.port}", offer.fingerprint))
+                    except ValueError:
+                        continue
+            else:
+                targets = [PhoneTarget.parse(config["address"], config["fingerprint"])]
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             return web.json_response({"error": str(error) if isinstance(error, ValueError) else "Invalid phone setup."}, status=400)
-        if self.phone_ws is not None or self.phone_connecting:
-            return web.json_response({"error": "Unpair the connected phone first."}, status=409)
-        try:
-            async with self.http.get(target.origin + "/api/v1/session", ssl=target.fingerprint,
-                                     allow_redirects=False, timeout=ClientTimeout(total=4)) as response:
-                if response.status != 200:
-                    raise ValueError("The phone did not accept the connection.")
-        except (ClientError, TimeoutError, ValueError):
-            return web.json_response({"error": "Couldn’t reach the phone with that fingerprint. Check its Link screen and Wi-Fi."}, status=502)
-        if self.phone_ws is not None or self.phone_connecting:
-            return web.json_response({"error": "Unpair the connected phone first."}, status=409)
-        self.phone, self.phone_cookies = target, {}
-        return web.json_response({"ok": True, "address": target.origin})
+        async with self.pair_lock:
+            if self.phone_ws is not None or self.phone_connecting:
+                return web.json_response({"error": "Unpair the connected phone first."}, status=409)
+            for target in targets:
+                try:
+                    async with self.http.get(target.origin + "/api/v1/session", ssl=target.fingerprint,
+                                             allow_redirects=False, timeout=ClientTimeout(total=3)) as response:
+                        if response.status == 200:
+                            break
+                except (ClientError, TimeoutError):
+                    continue
+            else:
+                message = ("Detected a phone but could not connect. Check Wi-Fi and the phone session." if automatic
+                           else "Couldn’t reach the phone with that fingerprint. Check its Link screen and Wi-Fi.")
+                return web.json_response({"error": message}, status=502)
+            if self.phone_ws is not None or self.phone_connecting:
+                return web.json_response({"error": "Unpair the connected phone first."}, status=409)
+            self.phone, self.phone_cookies = target, {}
+            self.phone_automatic, self.pair_proof = automatic, None
+            return web.json_response({"ok": True, "address": target.origin, "qr_only": automatic})
 
     async def phone_http(self, request):
         if PHONE_ROUTES.get(request.path) != request.method:
             raise web.HTTPNotFound()
+        async with self.pair_lock:
+            return await self.proxy_phone(request)
+
+    async def proxy_phone(self, request):
+        path = request.path
         target = self.phone
         if target is None:
-            return web.json_response({"paired": False} if request.path.endswith("/session") else {"error": "PHONE_NOT_SET"},
-                                     status=200 if request.path.endswith("/session") else 409)
+            return web.json_response({"paired": False} if path.endswith("/session") else {"error": "PHONE_NOT_SET"},
+                                     status=200 if path.endswith("/session") else 409)
+        proof = None
+        data = await request.read()
+        if self.phone_automatic:
+            if path == "/api/v1/pair":
+                return web.json_response({"error": "DISCOVERY_REQUIRES_QR"}, status=403)
+            if "lvc_session" not in self.phone_cookies:
+                if path == "/api/v1/session":
+                    return web.json_response({"paired": False})
+                if path not in ("/api/v1/pair/request", "/api/v1/pair/request/status"):
+                    return web.json_response({"error": "PAIRING_REQUIRED"}, status=401)
+            if path == "/api/v1/pair/request":
+                proof = secrets.token_urlsafe(32)
+                data = json.dumps({"challenge": hashlib.sha256(proof.encode()).hexdigest()}).encode()
+            if path == "/api/v1/pair/request/status" and self.pair_proof is None:
+                return web.json_response({"state": "expired"})
         try:
-            async with self.http.request(request.method, target.origin + request.path, ssl=target.fingerprint,
+            async with self.http.request(request.method, target.origin + path, ssl=target.fingerprint,
                                          cookies=self.phone_cookies, headers={"Origin": target.origin,
-                                         "Content-Type": "application/json"}, data=await request.read(),
+                                         "Content-Type": "application/json"}, data=data,
                                          allow_redirects=False) as response:
-                result = await response.read()
-                if self.phone is target:
-                    for name, cookie in response.cookies.items():
-                        if name in PHONE_COOKIES:
-                            if cookie.value:
-                                self.phone_cookies[name] = cookie.value
-                            else:
-                                self.phone_cookies.pop(name, None)
-                    if request.path == "/api/v1/unpair" and response.status == 200:
-                        self.phone_cookies.clear()
-                    elif request.path == "/api/v1/session" and response.status == 200:
-                        if isinstance((status := json.loads(result)), dict) and status.get("paired") is False:
-                            self.phone_cookies.pop("lvc_session", None)
-                return web.Response(status=response.status, body=result, content_type="application/json")
-        except (ClientError, TimeoutError):
+                result = await response.json(content_type=None)
+                if not isinstance(result, dict):
+                    raise ValueError
+                session_cookie_allowed = not self.phone_automatic
+                if self.phone_automatic and path == "/api/v1/pair/request" and response.status == 200:
+                    request_id = result.get("request_id")
+                    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", request_id):
+                        raise ValueError
+                    self.pair_proof = proof
+                    result["qr"] = f"lvc-pair:2:{request_id}:{proof}"
+                if self.phone_automatic and path == "/api/v1/pair/request/status":
+                    stamp = result.pop("proof", None)
+                    if result.get("state") == "approved":
+                        session_cookie_allowed = (isinstance(stamp, str) and stamp.isascii()
+                                                  and hmac.compare_digest(stamp, self.pair_proof)
+                                                  and bool(response.cookies.get("lvc_session"))
+                                                  and bool(response.cookies["lvc_session"].value))
+                        if not session_cookie_allowed:
+                            self.pair_proof = None
+                            return web.json_response({"state": "denied", "error": "QR_PROOF_INVALID"})
+                    if result.get("state") in ("approved", "denied", "expired"):
+                        self.pair_proof = None
+                for name, cookie in response.cookies.items():
+                    if name == "lvc_session" and not session_cookie_allowed:
+                        continue
+                    if name in PHONE_COOKIES:
+                        if cookie.value:
+                            self.phone_cookies[name] = cookie.value
+                        else:
+                            self.phone_cookies.pop(name, None)
+                if path == "/api/v1/unpair" and response.status == 200:
+                    self.phone_cookies.clear()
+                elif path == "/api/v1/session" and response.status == 200 and result.get("paired") is False:
+                    self.phone_cookies.pop("lvc_session", None)
+                return web.json_response(result, status=response.status)
+        except (ClientError, TimeoutError, ValueError):
             return web.json_response({"error": "PHONE_UNREACHABLE"}, status=502)
 
     async def phone_events(self, request):
@@ -403,6 +482,7 @@ def create_app(dashboard):
     app = web.Application(middlewares=[dashboard.protect], client_max_size=16_384)
     app.cleanup_ctx.append(dashboard.lifecycle)
     app.add_routes([
+        web.get("/laptop/discovery", dashboard.discovered_phones),
         web.get("/laptop/phone", dashboard.phone_target), web.post("/laptop/phone", dashboard.phone_target),
         web.get("/api/v1/events", dashboard.phone_events), web.route("*", "/api/v1/{path:.*}", dashboard.phone_http),
         web.get("/laptop/robot/events/{tab}", dashboard.robot_events),

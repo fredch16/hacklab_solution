@@ -1,0 +1,8 @@
+# Phone discovery and QR approval — 22 November 2026
+
+- Flutter analysis passed and all 75 Flutter tests passed, including rejection of a missing or incorrect optical proof. The arm64 debug APK installed successfully on the Pixel 10 Pro XL (Android 17).
+- All 27 TypeScript tests and all six laptop gateway tests passed. The laptop tests used a pinned TLS fixture that forged both the paired status and a session cookie. The gateway refused the session until the fixture returned the exact value generated for QR display. The six-digit code endpoint rejected an automatically discovered target.
+- A loopback multicast test discovered a DNS-SD advertisement via the production listener and removed it after unregister. Chromium 158.0.8127.36 selected a single discovery fixture automatically, showed the QR, left manual fields collapsed, and offered a choice when two fixtures appeared.
+- **Real device:** Pixel 10 Pro XL, Android 17, on the same Wi-Fi as the Ubuntu laptop. The production listener discovered `Local Vision Pixel 10 Pro XL`. The gateway selected the phone's HTTPS endpoint on port 8443 in QR-only mode, then reported `paired: true`; its authenticated snapshot confirmed the model and paired viewer. No manual address or fingerprint was entered in this flow.
+- **NOT TESTED:** discovery on iOS, guest Wi-Fi that blocks multicast, or real phone video after this pairing run.
+- Owner acceptance: open Local Vision and start a session on the Pixel, open the laptop dashboard on the same Wi-Fi, scan its QR from **Link**, approve, and start phone video. Also verify stop-session removes discovery and check manual setup on a network that blocks multicast.

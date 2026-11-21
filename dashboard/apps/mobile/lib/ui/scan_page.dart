@@ -13,6 +13,15 @@ String? parsePairQr(String raw) {
   return m?.group(1);
 }
 
+/// Version 2 carries an optical proof for a phone discovered on the LAN.
+({String id, String? proof})? parseScanPairQr(String raw) {
+  final id = parsePairQr(raw);
+  if (id != null) return (id: id, proof: null);
+  final match = RegExp(r'^lvc-pair:2:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$')
+      .firstMatch(raw.trim());
+  return match == null ? null : (id: match.group(1)!, proof: match.group(2));
+}
+
 /// Full-screen QR scanner. The camera exists only while this page is mounted.
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key, required this.controller});
@@ -74,12 +83,12 @@ class _ScanPageState extends State<ScanPage> {
   Future<void> _onScan(String raw) async {
     if (_busy) return;
     {
-      final id = parsePairQr(raw);
-      if (id == null) {
+      final code = parseScanPairQr(raw);
+      if (code == null) {
         _say('Not a Local Vision pairing code.');
         return;
       }
-      final r = c.pairing.lookupRequest(id);
+      final r = c.pairing.lookupRequest(code.id, proof: code.proof);
       if (r == null) {
         _say('This pairing code expired. Refresh the QR code in the browser.');
         return;
@@ -125,14 +134,14 @@ class _ScanPageState extends State<ScanPage> {
       );
       if (!mounted) return;
       if (approve == true) {
-        if (!c.pairing.approveRequest(id)) {
+        if (!c.pairing.approveRequest(code.id, proof: code.proof)) {
           _say('The request expired before it was approved.');
         } else {
           Navigator.pop(context, true);
           return;
         }
       } else if (approve == false) {
-        c.pairing.denyRequest(id);
+        c.pairing.denyRequest(code.id, proof: code.proof);
         Navigator.pop(context, false);
         return;
       }

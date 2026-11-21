@@ -27,6 +27,8 @@ let dashTimer: number | undefined;
 
 const root = document.getElementById("app") as HTMLElement;
 let laptopPhoneSet = false;
+let laptopQrOnly = false;
+let laptopViewChanged: ((next: View) => void) | undefined;
 let robot: HTMLElement | null = null;
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string | null, ...kids: (Node | string | null)[]): HTMLElementTagNameMap[K] {
@@ -57,6 +59,7 @@ async function start() {
 
 function setView(v: View) {
   view = v;
+  laptopViewChanged?.(v);
   if (v !== "dashboard" && dash) { videoLost(); vs.phase = "idle"; vs.message = ""; clearInterval(dashTimer); dash = null; for (const e of pending.values()) clearTimeout(e.timer); pending.clear(); live = initialLive(); voiceMsg = ""; }
   if (v === "pairing") { if ((!laptop || laptopPhoneSet) && !pairPoll && pairMode === "qr") void requestQr(); } else stopPairing();
   render();
@@ -304,8 +307,8 @@ function pairingView(typed: string) {
   const tls = h("details", "tls", h("summary", null, "Why does my browser say \u201CNot secure\u201D?"),
     h("p", "muted", "Expected. The phone creates its own certificate, so the browser cannot verify it. The connection is still encrypted and never leaves your local network. To be sure you reached your phone, compare the certificate SHA-256 fingerprint in the browser's certificate viewer with the one shown on the phone's Link tab."));
   const body = laptop && !laptopPhoneSet
-    ? h("p", "muted", "Enter the phone’s address and fingerprint above to pair.")
-    : pairMode === "qr" ? qrPanel() : codePanel(typed);
+    ? h("p", "muted", "Start a Local Vision session on your phone on the same Wi-Fi.")
+    : pairMode === "qr" || laptopQrOnly ? qrPanel() : codePanel(typed);
   return h("main", "pair-wrap", brand(), h("section", "card pair", h("h1", null, "Pair this browser"), body, laptop ? null : tls));
 }
 
@@ -320,7 +323,7 @@ function qrPanel() {
   alt.onclick = () => { stopPairing(); pairMode = "code"; pairMsg = ""; render(); };
   const out = h("div", "qr-panel", h("p", "lead", "On the phone: Link \u2192 Scan to pair, then tap Approve."), box, cd, err);
   if (qrDone) out.append(retry);
-  out.append(alt);
+  if (!laptopQrOnly) out.append(alt);
   queueMicrotask(updateCountdown);
   return out;
 }
@@ -626,28 +629,114 @@ async function startLaptop() {
   const pinLabel = h("label", "lbl", "Phone certificate fingerprint"); pinLabel.htmlFor = pin.id;
   const save = h("button", "btn primary", "Connect phone"); save.type = "submit";
   const note = h("p", "muted"); note.setAttribute("role", "status");
+  const devices = h("div", "controls");
+  const again = h("button", "link", "Find phone again");
+  again.hidden = true;
   const form = h("form", "controls", h("div", null, urlLabel, address), h("div", null, pinLabel, pin), save);
-  const setup = h("details", "card phone-setup", h("summary", null, "Phone connection"), form, note);
-  root.before(h("div", "page phone-setup-wrap", setup));
+  const manual = h("details", "phone-manual", h("summary", null, "Connect manually"), form);
+  root.before(h("div", "page phone-setup-wrap",
+    h("section", "card phone-setup", h("h2", "mod", "Phone connection"), note, devices, again, manual)));
+
+  let selecting = false;
+  let scanning = false;
+  let attempted: string | null = null;
+  let renderedChoices = "";
+  type Discovered = { id: string; label: string };
+
+  async function selectPhone(payload: {service: string} | {address: string; fingerprint: string}, label?: string) {
+    if (selecting) return;
+    selecting = true;
+    save.disabled = true;
+    note.textContent = label ? `Connecting to ${label}…` : "Verifying phone…";
+    try {
+      const result = await api("/laptop/phone", "POST", payload);
+      if (result?.status !== 200) {
+        note.textContent = result?.json?.error ?? "Laptop dashboard unavailable.";
+        return;
+      }
+      laptopPhoneSet = true;
+      laptopQrOnly = result.json.qr_only === true;
+      again.hidden = !laptopQrOnly;
+      address.value = result.json.address;
+      pin.value = "";
+      pairMode = "qr";
+      manual.open = false;
+      devices.replaceChildren();
+      note.textContent = label ? `${label} found. Scan the QR code on your phone.` : "Phone verified. Scan the QR code on your phone.";
+      await start();
+    } finally {
+      selecting = false;
+      save.disabled = false;
+    }
+  }
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    void selectPhone({address: address.value, fingerprint: pin.value});
+  };
+
+  async function discoverPhones() {
+    if (laptopPhoneSet || selecting || scanning || document.hidden) return;
+    scanning = true;
+    try {
+      const result = await api("/laptop/discovery");
+      if (selecting || laptopPhoneSet || !result) return;
+      const phones = (result.json?.phones ?? []) as Discovered[];
+      if (phones.length === 1 && phones[0] && attempted !== phones[0].id) {
+        const phone = phones[0];
+        attempted = phone.id;
+        await selectPhone({service: phone.id}, phone.label);
+        if (laptopPhoneSet) return;
+      }
+      const signature = JSON.stringify(phones);
+      if (renderedChoices === signature) return;
+      renderedChoices = signature;
+      if (!phones.length) {
+        attempted = null;
+        note.textContent = "Looking for Local Vision sessions on this Wi-Fi…";
+      } else if (phones.length > 1) {
+        note.textContent = "More than one phone found. Choose the phone you want to pair.";
+      }
+      devices.replaceChildren(...phones.map((phone) => {
+        const button = h("button", "btn", phone.label);
+        button.onclick = () => void selectPhone({service: phone.id}, phone.label);
+        return button;
+      }));
+    } finally {
+      scanning = false;
+    }
+  }
+
+  laptopViewChanged = (next) => {
+    again.hidden = !laptopQrOnly || next === "dashboard";
+    if (next === "dashboard") note.textContent = "Phone paired.";
+    else if (note.textContent === "Phone paired.") note.textContent = "Scan the QR code on your phone to pair again.";
+  };
+
+  again.onclick = () => {
+    if (view === "dashboard") {
+      note.textContent = "Unpair the connected phone before finding another.";
+      return;
+    }
+    stopPairing();
+    laptopPhoneSet = false;
+    laptopQrOnly = false;
+    attempted = null;
+    renderedChoices = "";
+    again.hidden = true;
+    note.textContent = "Looking for Local Vision sessions on this Wi-Fi…";
+    setView("pairing");
+    void discoverPhones();
+  };
+
   const configured = await api("/laptop/phone");
   address.value = configured?.json?.address ?? "";
   laptopPhoneSet = !!address.value;
-  setup.open = !laptopPhoneSet;
-  form.onsubmit = async (event) => {
-    event.preventDefault();
-    save.disabled = true;
-    const result = await api("/laptop/phone", "POST", {address: address.value, fingerprint: pin.value});
-    save.disabled = false;
-    if (result?.status !== 200) {
-      note.textContent = result?.json?.error ?? "Laptop dashboard unavailable.";
-      return;
-    }
-    laptopPhoneSet = true;
-    pin.value = "";
-    note.textContent = "Phone verified. Approve pairing on the phone.";
-    await start();
-  };
+  laptopQrOnly = configured?.json?.qr_only === true;
+  again.hidden = !laptopQrOnly;
+  note.textContent = laptopPhoneSet ? "Phone selected" : "Looking for Local Vision sessions on this Wi-Fi…";
   await start();
+  window.setInterval(() => void discoverPhones(), 1500);
+  void discoverPhones();
 }
 
 if (laptop) void startLaptop();

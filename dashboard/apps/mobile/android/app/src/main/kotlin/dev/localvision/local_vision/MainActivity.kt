@@ -17,6 +17,15 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         cameraChannel = CameraChannel(this, flutterEngine)
+        val advertiser = DiscoveryAdvertiser(applicationContext)
+        discovery = advertiser
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.localvision/discovery")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "advertise") {
+                    advertiser.configure(call.argument<Int>("port"), call.argument<String>("fingerprint"))
+                    result.success(null)
+                } else result.notImplemented()
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.localvision/device")
             .setMethodCallHandler { call, result ->
                 if (call.method == "getDeviceStatus") result.success(deviceStatus())
@@ -45,6 +54,18 @@ class MainActivity : FlutterActivity() {
     }
 
     private var cameraChannel: CameraChannel? = null
+
+    private var discovery: DiscoveryAdvertiser? = null
+
+    override fun onResume() {
+        super.onResume()
+        discovery?.setForeground(true)
+    }
+
+    override fun onPause() {
+        discovery?.setForeground(false)
+        super.onPause()
+    }
 
     override fun onDestroy() {
         cameraChannel?.dispose()

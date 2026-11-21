@@ -13,6 +13,7 @@ import voice_bridge
 
 from laptop_dashboard import Dashboard, PhoneTarget, RecordingLease, create_app
 from mcp_server import Control, SceneStore, build_server
+from phone_discovery import DiscoveredPhone
 
 
 class LaptopDashboardTest(unittest.TestCase):
@@ -115,6 +116,75 @@ class DashboardIntegrationTest(unittest.IsolatedAsyncioTestCase):
             result = await bridge._run("start camera recording", "1" * 32, "start recording", "active")
             self.assertEqual(result, {"ok": True, "command": "recording.start",
                                       "message": "Phone recording started.", "error": None})
+
+    async def test_discovered_phone_cannot_pair_without_the_optical_secret(self):
+        key, cert = self.folder / "key.pem", self.folder / "cert.pem"
+        await asyncio.to_thread(
+            subprocess.run,
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+             "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert)],
+            check=True, capture_output=True,
+        )
+        fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(cert, key)
+        observed = {}
+        proof = "forged"
+
+        async def session(request):
+            return web.json_response({"paired": True})
+
+        async def pair(request):
+            observed.update(await request.json())
+            response = web.json_response({"request_id": "A" * 22, "qr": "untrusted"})
+            response.set_cookie("lvc_pending", "fresh")
+            response.set_cookie("lvc_session", "must-not-be-copied")
+            return response
+
+        async def poll(request):
+            self.assertEqual(request.cookies.get("lvc_pending"), "fresh")
+            response = web.json_response({"state": "approved", "proof": proof})
+            response.set_cookie("lvc_session", "approved")
+            return response
+
+        fake = web.Application()
+        fake.add_routes([web.get("/api/v1/session", session), web.post("/api/v1/pair/request", pair),
+                         web.get("/api/v1/pair/request/status", poll)])
+        phone = await self.serve(fake, tls)
+        dashboard = Dashboard(self.folder, "http://127.0.0.1:9", "http://127.0.0.1:9", 0)
+        base = await self.serve(create_app(dashboard))
+        dashboard.origins = {base}
+        service = "test._localvision._tcp.local."
+        dashboard.discovery.phones[service] = DiscoveredPhone("Test phone", int(phone.rsplit(":", 1)[1]),
+                                                              fingerprint, ("127.0.0.1",))
+
+        async with self.client.get(base + "/laptop/discovery") as r:
+            self.assertEqual(await r.json(), {"phones": [{"id": service, "label": "Test phone"}]})
+        async with self.client.post(base + "/laptop/phone", json={"service": service}) as r:
+            self.assertTrue((await r.json())["qr_only"])
+        async with self.client.get(base + "/api/v1/session") as r:
+            self.assertEqual(await r.json(), {"paired": False})
+        async with self.client.post(base + "/api/v1/pair", json={"code": "123456"}) as r:
+            self.assertEqual(r.status, 403)
+
+        async def request_qr():
+            async with self.client.post(base + "/api/v1/pair/request", json={}) as r:
+                qr = (await r.json())["qr"]
+            self.assertTrue(qr.startswith("lvc-pair:2:" + "A" * 22 + ":"))
+            secret = qr.split(":")[-1]
+            self.assertEqual(observed, {"challenge": hashlib.sha256(secret.encode()).hexdigest()})
+            return secret
+
+        await request_qr()
+        self.assertNotIn("lvc_session", dashboard.phone_cookies)
+        async with self.client.get(base + "/api/v1/pair/request/status") as r:
+            self.assertEqual((await r.json())["error"], "QR_PROOF_INVALID")
+        self.assertNotIn("lvc_session", dashboard.phone_cookies)
+
+        proof = await request_qr()
+        async with self.client.get(base + "/api/v1/pair/request/status") as r:
+            self.assertEqual(await r.json(), {"state": "approved"})
+        self.assertEqual(dashboard.phone_cookies["lvc_session"], "approved")
 
     async def test_robot_closes_and_finalizes_valid_clip_when_view_socket_closes(self):
         jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x48",

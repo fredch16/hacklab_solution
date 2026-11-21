@@ -48,6 +48,7 @@ class LocalServer {
     required this.assetLoader,
     required this.snapshotPayload,
     this.onMessage,
+    this.advertise,
     this.port = defaultPort,
     InternetAddress? bindAddress,
     Clock? clock,
@@ -66,6 +67,7 @@ class LocalServer {
 
   /// Raw text frames from authenticated sockets.
   final void Function(String raw)? onMessage;
+  final Future<void> Function(int? port, String? fingerprint)? advertise;
   final InternetAddress bindAddress;
   int port;
   final Clock _now;
@@ -110,6 +112,7 @@ class LocalServer {
       (_) => pairing.checkExpiry(),
     );
     _events.add(const ServerEvent(ServerEventType.started));
+    await advertise?.call(port, cert.sha256);
   }
 
   Future<void> stop() async {
@@ -118,6 +121,7 @@ class LocalServer {
     _expiryTimer?.cancel();
     pairing.reset(); // closes sockets with 4004
     _http = null;
+    await advertise?.call(null, null);
     await http.close(force: true);
     _events.add(const ServerEvent(ServerEventType.stopped));
   }
@@ -256,8 +260,17 @@ class LocalServer {
       case '/api/v1/pair/request':
         if (!isPost) return _json(res, 405, {'error': 'METHOD_NOT_ALLOWED'});
         if (!originOk()) return _originRejected(res);
+        final body = await _readObject(req);
+        final challenge = body?['challenge'];
+        if (body == null ||
+            (challenge != null &&
+                (challenge is! String ||
+                    !RegExp(r'^[a-f0-9]{64}$').hasMatch(challenge)))) {
+          return _json(res, 400, {'error': 'BAD_REQUEST'});
+        }
         final pr = pairing.createPairRequest(
           req.connectionInfo!.remoteAddress.address,
+          challenge: challenge as String?,
         );
         if (pr == null) {
           return _json(res, 429, {
@@ -282,7 +295,7 @@ class LocalServer {
           res.headers.add('Set-Cookie', _sessionCookie(st.token!));
           res.headers.add('Set-Cookie', _pendingCookie('', 0));
         }
-        return _json(res, 200, {'state': st.state.name});
+        return _json(res, 200, {'state': st.state.name, 'proof': ?st.proof});
       case '/api/v1/unpair':
         if (!isPost) return _json(res, 405, {'error': 'METHOD_NOT_ALLOWED'});
         if (!originOk()) return _originRejected(res);
@@ -368,15 +381,21 @@ class LocalServer {
       '$_pendingName=$value; Max-Age=$maxAge; Path=/api/v1/pair; HttpOnly; Secure; SameSite=Strict';
 
   Future<String?> _readCode(HttpRequest req) async {
+    final body = await _readObject(req);
+    final code = body?['code'];
+    return code is String && RegExp(r'^\d{6}$').hasMatch(code) ? code : null;
+  }
+
+  Future<Map<String, Object?>?> _readObject(HttpRequest req) async {
     final chunks = <int>[];
     await for (final c in req) {
       chunks.addAll(c);
       if (chunks.length > 4096) return null;
     }
+    if (chunks.isEmpty) return {};
     try {
-      final j = jsonDecode(utf8.decode(chunks));
-      final code = j is Map ? j['code'] : null;
-      return code is String && RegExp(r'^\d{6}$').hasMatch(code) ? code : null;
+      final value = jsonDecode(utf8.decode(chunks));
+      return value is Map<String, Object?> ? value : null;
     } catch (_) {
       return null;
     }

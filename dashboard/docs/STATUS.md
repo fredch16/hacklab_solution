@@ -1,6 +1,6 @@
 # Project status — Local Vision Console (demo)
 
-HackLab now runs the [laptop operator dashboard](../../docs/LAPTOP_DASHBOARD.md) with separate phone and robot camera views. See [cutover evidence](../../docs/evidence/laptop-dashboard-2026-11-22.md) for the owner acceptance gate.
+HackLab now runs the [laptop operator dashboard](../../docs/LAPTOP_DASHBOARD.md) with separate phone and robot camera views and automatic Android discovery followed by QR approval. See [cutover evidence](../../docs/evidence/laptop-dashboard-2026-11-22.md) for the owner acceptance gate.
 
 _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any agent or human picking up the work._
 

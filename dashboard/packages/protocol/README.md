@@ -25,6 +25,12 @@ Both `apps/mobile` (server) and `apps/dashboard` (browser client) implement exac
 4. On Approve the request becomes `approved`. The **next status poll carrying the matching `lvc_pending` secret** receives `{"state":"approved"}` together with `Set-Cookie: lvc_session=…` (same rules as code pairing, replaces existing viewer → 4001) and `lvc_pending` cleared. Knowing `request_id` alone (e.g. photographing the QR) is not enough to obtain the session. Single use.
 5. In-app API: `PairingService.createPairRequest(remoteIp)`, `.pairRequestStatus(secret)`, `.approveRequest(requestId)`, `.denyRequest(requestId)`, `.lookupRequest(requestId)` (for the confirm sheet).
 
+### Discovered phones (QR version 2)
+
+The laptop discovers a provisional HTTPS endpoint through `_localvision._tcp.local.` DNS-SD and pins its advertised certificate hash for the connection. The laptop generates 32 random bytes encoded as an unpadded base64url proof. It passes only the lowercase hex SHA-256 of that text as `{"challenge":"…"}` in the pairing request. The laptop displays `lvc-pair:2:<request_id>:<proof>`. The phone verifies the proof hash before it offers approval and requires the same proof to approve the pending request.
+
+On the authenticated pending-cookie poll after approval the phone returns `{"state":"approved","proof":"…"}` with the session cookie. The laptop checks the proof before it stores the cookie or permits an event socket. It strips the proof from the browser response. The original 120-second expiry, one-use poll, and approval behavior apply. QR v1 and code pairing still work for manually verified connections.
+
 ## Pairing code (fallback)
 
 - Browser shows it behind a small "Can't scan? Use a code" link. Phone: **Link → Use a code instead**.

@@ -1279,6 +1279,24 @@ async def _inspect(arm, target: str | None = None) -> dict:
     return out
 
 
+async def _fresh_again(arm, timeout_s: float = 1.0):
+    """Checking a direct line with the geometry model keeps the event loop busy (half a second the
+    first time in a process, when it loads the link meshes), and on the real arm the task that
+    receives joint data cannot run meanwhile. Nothing has been commanded yet at this point: give
+    that task a moment, so the move does not refuse itself over data that is only late because
+    we were busy. If the data stays stale, that is the usual refusal."""
+    deadline = _now() + timeout_s
+    while True:
+        await asyncio.sleep(0)
+        try:
+            arm.joints(max_age_s=STALE_S)
+            return
+        except RuntimeError:
+            if _now() > deadline:
+                raise
+        await asyncio.sleep(0.02)
+
+
 def _log_move(record: dict):
     try:
         with LOG_PATH.open("a") as f:
@@ -1380,6 +1398,7 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
                 max_speed = min(max_speed, SPEED_FIRST)
             route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start, links=links,
                                direct=not allow_unknown_start)
+            await _fresh_again(arm)
             result["route"] = [seg for seg, _ in route]
             result["kind"] = _kind(result["route"])
             status.update(route=result["route"], kind=result["kind"], phase_count=len(route))

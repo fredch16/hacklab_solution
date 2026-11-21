@@ -145,6 +145,7 @@ Tested: Stop during a direct move, an arc, a turbo direct move and at seven mome
 - **Self-collision** is not modelled beyond the centre-line distance.
 - **The simulated response** is a first-order lag with gain 2.8/s, an acceleration limit and 20 steps of shoulder sag. The three moves I compared with the real log were within 30% (see "The benchmark"), but it has no gravity, no load, no overshoot and no current. `FAST_DESCENT` and turbo direct could overshoot on the real arm; the simulation cannot show that.
 - **The idle-joint guard** could abort a real blended move if a held joint is shaken more than 60 steps (100 in turbo).
+- **Planning a direct line blocks the event loop**: about 0.5 s the first time in a process (the link meshes are loaded), 0.02–0.1 s per new pair after that, nothing once a pair is cached. On the real arm the task that receives joint data cannot run meanwhile, so a move waits up to 1 s for fresh data after planning, before it commands anything (`_fresh_again`). The simulation cannot show whether that is enough; if the first click on a new pair is refused with "joint data is stale", click again. A Stop pressed during that half second is handled after it.
 - Unchecked views were not changed and were tested only for that.
 
 ## If something looks wrong on the real arm

@@ -48,6 +48,8 @@ Joint values are raw encoder steps (0–4095, 4096 per turn) keyed by motor id. 
 
 Targets are clamped 30 steps inside each joint's calibrated range. The gripper is never written.
 
+A servo fault (any status bit except the voltage bit) refuses and ends moves. The one exception is opt-in: with `IGNORE_OVERLOAD = True` (Motion settings: "Ignore a servo's overload flag"; off after every restart) the overload bit 0x20 alone is ignored. The servo's own protection is untouched and every other guard stays; moves that ran with the bit set carry `overload_ignored` (motor: samples) in `motion_log.jsonl`.
+
 `describe()["where"]` says where the arm is: `view`, `hub`, `spoke` (between a view and the hub), `between` (on a direct line or arc between `view` and `to`, after a Stop), `above` (a blended move stopped while turning, above the clear height) or `unknown`. A move can start from all but `unknown`.
 
 ## Speeds and blending

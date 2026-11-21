@@ -5,7 +5,7 @@ their goals. Lets motion, the web UI, the director and voice run end to end with
 
 Faults can be injected for tests: `stuck` (motors that don't move), `stale` (no fresh data),
 `fail_writes`, `mirror` (pretend Station is mirroring a leader onto this arm), `load` (pretend
-PWM load per motor), `hijack` (another writer keeps overwriting these goals) and `echo_delay`
+PWM load per motor), `status` (pretend servo status byte per motor), `hijack` (another writer keeps overwriting these goals) and `echo_delay`
 (written goals show up in telemetry late, as they do on the real bus).
 
 By default a joint glides to its goal at its speed ceiling with no lag, which is optimistic.
@@ -74,6 +74,7 @@ class SimArm:
         self.fail_writes = False
         self.mirror: str | None = None
         self.load: dict[int, int] = {}                # pretend PWM load per motor (0-1000)
+        self.status: dict[int, int] = {}              # pretend status byte per motor (0x20 = overload)
         self.hijack: dict[int, int] = {}              # another writer keeps forcing these goals
         self.echo_delay = 0.0                         # seconds until a written goal shows in telemetry
         self._echo: list[tuple[float, dict[int, float]]] = [(0.0, dict(self._goal))]
@@ -131,7 +132,7 @@ class SimArm:
             self._echo.pop(0)
         shown = self._echo[0][1] if self.echo_delay else self._goal
         return {m: {"pos": pos[m], "goal": int(round(shown[m])), "load": self.load.get(m, 0),
-                    "current": 0, "status": 0, "torque": self._torque[m], "temp": 30, "voltage": 12.0,
+                    "current": 0, "status": self.status.get(m, 0), "torque": self._torque[m], "temp": 30, "voltage": 12.0,
                     "read_error": "", "stamp": next(_stamps)} for m in pos}
 
     def ranges(self) -> dict[int, tuple[int, int]]:

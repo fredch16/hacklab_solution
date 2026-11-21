@@ -861,7 +861,7 @@ def part_b():
         r = get("/api/extras")
         check(r[0] == 200 and isinstance(r[1]["mcp"]["up"], bool), f"GET /api/extras: {r}")
         r = get("/api/settings")
-        check(r[0] == 200 and set(r[1]["settings"]) == {"DIRECT", "ARC", "BLEND", "CLEAR_HEIGHT_M", "SPEED_TURBO"} and r[1]["settings"]["SPEED_TURBO"]["min"] == 1000,
+        check(r[0] == 200 and set(r[1]["settings"]) == {"DIRECT", "ARC", "IGNORE_OVERLOAD", "BLEND", "CLEAR_HEIGHT_M", "SPEED_TURBO"} and r[1]["settings"]["SPEED_TURBO"]["min"] == 1000,
               f"GET /api/settings: {r[0]}")
         for bad in ({"SPEED_TURBO": 100}, {"CLEAR_HEIGHT_M": 2}, {"BLEND": "on"}, {"UNKNOWN": 1}, {}):
             r = post("/api/settings", bad) if bad else send(connect(), "POST", "/api/settings", {})

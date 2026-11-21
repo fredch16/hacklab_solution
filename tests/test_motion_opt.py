@@ -543,6 +543,59 @@ async def main():
           "back down the same spoke: wrist roll first, then the descent")
     check(locate({**pose, 7: VIEWS["home"][7] - 500}, VIEWS)["where"] == "unknown", "...but not with the roll anywhere at all")
 
+    # --- a servo's overload flag (status 0x20): a fault, unless IGNORE_OVERLOAD says to carry on -------
+    check(motion.IGNORE_OVERLOAD is False, "ignoring the overload flag is off by default")
+    flagged = SimArm(start=start_pose("right"), realistic=True)
+    await settle(flagged)
+    flagged.status = {2: 0x20}
+    before = flagged.writes
+    r = await go_to_view(flagged, "top", max_speed=motion.SPEED_SLOW)
+    check(not r["ok"] and r["error"] == "motor 2 reports a fault (status 0x20)" and flagged.writes == before,
+          f"overload flag before a move: refused, nothing written ({r['error']})")
+    try:
+        await motion.engage(flagged)
+        check(False, "Hold here must refuse on a fault")
+    except motion.MotionError as e:
+        check("status 0x20" in str(e), "...and Hold here refuses too, as before")
+    mid = SimArm(start=start_pose("right"), realistic=True)
+    await settle(mid)
+    task = asyncio.ensure_future(go_to_view(mid, "top", max_speed=motion.SPEED_NORMAL))
+    await asyncio.sleep(1.5)
+    mid.status = {2: 0x20}
+    r = await task
+    check(not r["ok"] and "status 0x20" in r["error"] and r["hold"] == "confirmed", f"overload flag during a move: stopped and held ({r['error']})")
+    motion.IGNORE_OVERLOAD = True
+    r = await go_to_view(flagged, "top", max_speed=motion.SPEED_NORMAL)
+    check(r["ok"] and at(flagged, "top"), f"with IGNORE_OVERLOAD a move starts and arrives with the flag set: {r['error']}")
+    await motion.engage(flagged)
+    check(True, "...and Hold here works")
+    again = SimArm(start=start_pose("right"), realistic=True)
+    await settle(again)
+    task = asyncio.ensure_future(go_to_view(again, "top", max_speed=motion.SPEED_NORMAL))
+    await asyncio.sleep(1.5)
+    again.status = {2: 0x20}
+    r = await task
+    check(r["ok"] and at(again, "top"), f"...also when the flag comes up in the middle: {r['error']}")
+    for bits, what in ((0x04, "overheat"), (0x08, "overcurrent"), (0x24, "overload together with overheat")):
+        other = SimArm(start=start_pose("right"), realistic=True)
+        other.status = {2: bits}
+        r = await go_to_view(other, "top", max_speed=motion.SPEED_NORMAL)
+        check(not r["ok"] and f"status 0x{bits:02x}" in r["error"] and other.writes == 0, f"any other fault bit still refuses ({what})")
+    weak = SimArm(start=start_pose("right"), realistic=True)       # the servo really did give up: the other guards catch it
+    await settle(weak)
+    weak.status = {2: 0x20}
+    task = asyncio.ensure_future(go_to_view(weak, "top", max_speed=motion.SPEED_NORMAL))
+    await asyncio.sleep(1.0)
+    weak.stuck = {2}
+    r = await task
+    check(not r["ok"] and "motor 2 is not following" in r["error"] and r["hold"] == "confirmed",
+          f"ignoring the flag does not hide a joint that stops following: {r['error']}")
+    hot = SimArm(start=start_pose("right"), realistic=True)
+    hot.status, hot.load = {2: 0x20}, {2: 950}
+    r = await go_to_view(hot, "top", max_speed=motion.SPEED_NORMAL)
+    check(not r["ok"] and "full effort" in r["error"], f"...nor a joint pushing at full effort: {r['error']}")
+    motion.IGNORE_OVERLOAD = False
+
     print(f"ALL OK ({passed} checks)")
 
 

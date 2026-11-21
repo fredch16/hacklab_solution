@@ -129,6 +129,11 @@ LOAD_LIMIT = 800       # PWM duty 0-1000: this high for FAULT_S means the joint 
 GOAL_MATCH = 8         # steps: a goal register this close to something we wrote is ours
 GOAL_HISTORY_S = 0.6   # how far back a read-back goal may lag our writes
 STATUS_IGNORE = 0x01   # voltage bit; not a motion fault
+STATUS_OVERLOAD = 0x20 # the servo's own overload protection has tripped (Feetech status bit 5)
+IGNORE_OVERLOAD = False   # True: that bit alone neither refuses nor ends a move. Only our reaction
+                          # changes: whatever the servo does to protect itself it still does, and every
+                          # other guard stays (other fault bits, load, current, temperature, leash, drift,
+                          # a joint going limp). Each move that ran with the bit set says so in the log.
 
 
 # The clock every wait and timeout in this module reads. Always time.monotonic on the real arm;
@@ -725,13 +730,18 @@ async def _abort_hold(arm, keep_within: int, moving: tuple = ()) -> str:
             return "unconfirmed"
 
 
+def _fault_bits(status_byte: int) -> int:
+    """The bits of a servo's status byte that count as a fault right now."""
+    return status_byte & ~(STATUS_IGNORE | (STATUS_OVERLOAD if IGNORE_OVERLOAD else 0))
+
+
 def _basic_problems(arm, tel) -> list[str]:
     """Problems with the arm itself, independent of any saved view."""
     out = []
     if tuple(sorted(tel)) != EXPECTED_MOTORS:
         return [f"expected motors 1-8 on the bus, found {sorted(tel)}"]
     for m in MOVABLE:
-        if tel[m]["status"] & ~STATUS_IGNORE:
+        if _fault_bits(tel[m]["status"]):
             out.append(f"motor {m} reports a fault (status 0x{tel[m]['status']:02x})")
         if tel[m].get("read_error"):
             out.append(f"motor {m} is not answering: {tel[m]['read_error']}")
@@ -831,8 +841,13 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
         t = tel[m]
         if not t["torque"]:
             raise MotionError(f"motor {m} went limp during the move")
-        if t["status"] & ~STATUS_IGNORE:
+        if _fault_bits(t["status"]):
             raise MotionError(f"motor {m} reports a fault (status 0x{t['status']:02x})")
+        if t["status"] & STATUS_OVERLOAD:       # only reached with IGNORE_OVERLOAD: keep a record
+            seen = stats.setdefault("overload_ignored", {})
+            if m not in seen:
+                logger.warning("motor %s reports overload (status 0x%02x); carrying on, IGNORE_OVERLOAD is set", m, t["status"])
+            seen[m] = seen.get(m, 0) + 1        # samples with the bit set
         watch.check(("read", m), bool(t.get("read_error")), now,
                     f"motor {m} is not answering: {t.get('read_error')}")
         stats["max_current"][m] = max(stats["max_current"].get(m, 0), t["current"])

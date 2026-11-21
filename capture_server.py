@@ -79,6 +79,13 @@ SETTINGS = {
                     "path but lifted in the middle, instead of going all the way up through transit. Only the "
                     "geometry model vouches for these: watch the first run of each pair. Off: those pairs go "
                     "through transit."},
+    "IGNORE_OVERLOAD": {"type": "bool", "label": "Ignore a servo's overload flag",
+                        "help": "A servo sets its overload flag (status 0x20) when its own protection trips. "
+                                "Normally that ends the move and nothing starts until the flag is gone, which "
+                                "takes Go limp and Hold here. On: that one flag is ignored and moves carry on. "
+                                "The servo still protects itself, and every other check stays: other faults, "
+                                "load, current, temperature, not following, pushed away. Watch the shoulder's "
+                                "temperature in the joint table while this is on."},
     "BLEND": {"type": "bool", "label": "Blend the turn into rise and descent",
               "help": "At Fast and Turbo the arm starts turning while it is still rising, and starts coming down "
                       "while it is still turning, but only high above the desk. Off: strictly rise, then turn, "

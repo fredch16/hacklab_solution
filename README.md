@@ -25,7 +25,7 @@ The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. 
 | M0 arm + camera from our code | ✅ joints read, camera frames grabbed, torque control works on the real arms |
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
 | M2 move to a view | 🟢 **works on the real arm**: 10 supervised moves on 21 Nov between transit, `top`, `wide` and `right`, from the web page at `/control`. Still to do: `left`, `close`, `side_low`, `home`, the Stop and block tests, normal speed. Details and data in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
-| M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
+| M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `CLAUDE_API_KEY` for a real run |
 | M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Spoken arm requests (stop, go to a checked view, status, list views) go from the dashboard through `voice_bridge.py` to MCP, with Claude interpreting free phrasing. A voice page on the PC (`http://127.0.0.1:8210/`) does the same without a phone; with it, four spoken moves ran on the real arm on 21 Nov. The phone path is tested on the simulated arm only. See [docs/VOICE.md](docs/VOICE.md). |
 
 Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration, moving to another computer) · **[docs/VOICE.md](docs/VOICE.md)** (voice control: how to start it, what you can say, what is tested) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_OPT.md](docs/MOTION_OPT.md)** (direct moves between checked views, benchmark) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (current Android capture and dashboard, MCP handoff, previous planning context) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
@@ -38,7 +38,7 @@ Two **NormaCore ElRobot** arms (8 servos each, 7+1 DoF; *not* SO-101s as origina
 
 1. **Station** v0.1.0-beta.10 (`station-macos-arm64.zip` from https://github.com/norma-core/norma-core/releases). Copy [`config/station.yaml`](config/station.yaml) next to the binary (camera resolution settings), then `./station --web --tcp`. Web UI: http://localhost:8889.
 2. **Python**: the arm scripts use only the standard library (`python3 joints.py` works as-is). For the Claude director: `uv sync` (Python 3.13 + `anthropic`).
-3. **Claude**: `export ANTHROPIC_API_KEY=...` (HackLab credits).
+3. **Claude**: copy [`.env.example`](.env.example) to a local `.env` and fill in `CLAUDE_API_KEY` (HackLab credits). The bridge loads it at startup. A dashboard key overrides it immediately for that bridge process. [Credential setup for people and agents](docs/VOICE.md#configure-the-claude-key)
 
 The Station Python client, protobufs and the ElRobot URDF/manuals are vendored in `vendor/normacore/` (MIT, matching beta.10).
 
@@ -56,7 +56,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
 | `python3 arm_view.py` | M2 | **Watch the arm move as a stick figure** (side/top/front) at http://localhost:8896; follows the server on :8891 (sim) or `--source http://localhost:8890` (real arm). Read-only |
 | `.venv/bin/python mcp_server.py` (`--arm-url http://127.0.0.1:8891` for `--sim`) | M3 | **MCP server** camera-arm on localhost:8200/mcp for Claude: views, moves (through the web server), status, stop, camera still, scene. See [docs/MCP.md](docs/MCP.md) |
-| `.venv/bin/python voice_bridge.py` | M4 | **Voice**: turns spoken or typed requests into MCP calls; voice page at http://127.0.0.1:8210/. Needs `mcp_server.py` running and, for free phrasing, `ANTHROPIC_API_KEY`. See [docs/VOICE.md](docs/VOICE.md) |
+| `.venv/bin/python voice_bridge.py` | M4 | **Voice**: turns spoken or typed requests into MCP calls; voice page at http://127.0.0.1:8210/. Needs `mcp_server.py` running and, for free phrasing, a configured Claude key. See [docs/VOICE.md](docs/VOICE.md) |
 | `python3 calib_file.py show` / `export` / `install` | M0 | Carry Station's calibration to another computer. See [docs/HARDWARE.md](docs/HARDWARE.md#running-the-same-arms-from-another-computer) |
 | `python3 framing.py top 0.6 0.55 0.3 0.25` | M5 | **Framing preview** (stage 2): where the camera would go to frame a box from a view; never moves. See [docs/FRAMING.md](docs/FRAMING.md) |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |

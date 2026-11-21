@@ -10,7 +10,7 @@ The Pixel 10 Pro XL is the first target. Maintain shared Dart UI/domain code and
 
 One camera (the phone) in this MVP. Do not add robot USB cameras, calibration suites, robotics control, ROS, autonomous actions, agents/LLMs, remote cloud services, or full-resolution video streaming to this component. Complex command handling and any future MCP client belong on the dashboard side of the hackathon integration.
 
-For the HackLab deployment, read [the laptop dashboard guide](../docs/LAPTOP_DASHBOARD.md). The laptop gateway serves both views and owns the USB camera recording through Station. Android retains its single camera and microphone owners and native master recording. The laptop browser gates robot recording on a visible, live feed.
+For the HackLab deployment, read [the laptop dashboard guide](../docs/LAPTOP_DASHBOARD.md). The laptop gateway serves both views and owns the USB camera recording through Station. Android retains its single camera and microphone owners and native master recording. The laptop browser gates robot recording on a visible, live feed. Follow the [Claude credential setup](../docs/VOICE.md#configure-the-claude-key) for the PC voice bridge. Keep the real key in the ignored local file or dashboard override.
 
 ## 2. Vertical slices are mandatory
 

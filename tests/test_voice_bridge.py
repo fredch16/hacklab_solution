@@ -10,7 +10,7 @@ phrasing through a scripted interpreter.
 
     .venv/bin/python tests/test_voice_bridge.py --live   # the real Anthropic API, nothing else
 
---live sends a list of loosely worded requests to Claude (needs ANTHROPIC_API_KEY, in the
+--live sends a list of loosely worded requests to Claude (needs CLAUDE_API_KEY, in the
 environment or in .env) and prints what each one maps to and how long it took. No arm, no MCP.
 """
 import json, os, sys, threading, time, urllib.error, urllib.request
@@ -157,7 +157,7 @@ def part_a_claude():
     assert pfa({"action": "none", "view": ""}) is None and pfa(None) is None
     assert pfa({"action": "go_to_view", "view": "gone"}) is None
     # credentials decide whether the step exists at all
-    saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    saved = {k: os.environ.pop(k, None) for k in ("CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     try:
         assert vb.make_interpreter("auto", vb.LLM_MODEL) is None and vb.make_interpreter("off", vb.LLM_MODEL) is None
         try:
@@ -167,6 +167,20 @@ def part_a_claude():
             pass
         import tempfile
         env = Path(tempfile.mkdtemp()) / ".env"
+        env.write_text('CLAUDE_API_KEY="Enter your key"\n')
+        vb.load_env(env)
+        assert vb.make_interpreter("auto", vb.LLM_MODEL) is None
+        os.environ.pop("CLAUDE_API_KEY", None)
+        env.write_text("CLAUDE_API_KEY=local-default-for-test\n")
+        vb.load_env(env)
+        startup = vb.make_interpreter("auto", vb.LLM_MODEL)
+        assert startup and startup.client.api_key == "local-default-for-test"
+        bridge = vb.Bridge("http://127.0.0.1:9/mcp", interpreter=startup, llm_model=vb.LLM_MODEL)
+        bridge.set_claude_key("dashboard-override-for-test")
+        assert bridge.interpreter.client.api_key == "dashboard-override-for-test"
+        bridge.set_claude_key(None)
+        assert bridge.interpreter.client.api_key == "local-default-for-test"
+        os.environ.pop("CLAUDE_API_KEY", None)
         env.write_text("# comment\nexport ANTHROPIC_API_KEY='sk-test-123'\nOTHER = x\n")
         vb.load_env(env)
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-test-123"
@@ -175,6 +189,7 @@ def part_a_claude():
         vb.load_env(env)
         assert os.environ["ANTHROPIC_API_KEY"] == "from-the-shell", "the environment wins over .env"
     finally:
+        os.environ.pop("CLAUDE_API_KEY", None)
         os.environ.pop("ANTHROPIC_API_KEY", None)
         os.environ.pop("OTHER", None)
         os.environ.update({k: v for k, v in saved.items() if v is not None})

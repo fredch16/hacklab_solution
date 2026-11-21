@@ -5,7 +5,7 @@
 
 Every step is printed as heard -> decided -> moved and appended to events.jsonl
 ({"t", "kind", "text"}), which the overlay (E) and voice confirmation (D) read.
-Needs ANTHROPIC_API_KEY.
+Needs CLAUDE_API_KEY in the environment or in the repository-local .env.
 """
 
 import argparse
@@ -17,6 +17,7 @@ from pathlib import Path
 import anthropic
 
 import motion
+from claude_config import claude_api_key, load_env
 from motion import go_to_view, view_descriptions, view_names
 from station_arm import run
 
@@ -61,7 +62,7 @@ class Director:
         self.arm = arm
         self.model = model
         self.effort = effort
-        self.client = anthropic.AsyncAnthropic()
+        self.client = anthropic.AsyncAnthropic(api_key=claude_api_key())
         self.messages: list = []
         self.current: str | None = None
         names = view_names()
@@ -117,6 +118,7 @@ class Director:
 
 
 async def main(args):
+    load_env(Path(__file__).resolve().parent / ".env")
     if args.sim:
         from sim_arm import SimArm
         if not view_names():

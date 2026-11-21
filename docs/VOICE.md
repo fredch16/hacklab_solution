@@ -23,7 +23,21 @@ On the Mac with the arm, after Station, `capture_server.py` and `mcp_server.py` 
 
 The log should end with `free phrasing: Claude (claude-haiku-5-5)`. Then open **http://127.0.0.1:8210/** in Chrome or Safari on the same Mac and allow the microphone.
 
-The API key is read from `ANTHROPIC_API_KEY`, in the environment or in a file `.env` next to `voice_bridge.py` (`ANTHROPIC_API_KEY=sk-ant-...`). `.env` is gitignored: every computer needs its own. Without a key the bridge still runs, with the fixed phrases only. `--llm off` turns the Claude step off, `--llm-model` picks another model.
+## Configure the Claude key
+
+From the HackLab repository root, create a private `.env` from [`.env.example`](../.env.example) if you don't already have one:
+
+```bash
+test -e .env || install -m 600 .env.example .env
+```
+
+Open `.env` in a local editor and replace `Enter your key` with your Claude API key on the `CLAUDE_API_KEY` line. The voice bridge and CLI director load that file when they start. A `CLAUDE_API_KEY` already exported in the shell takes priority over the value in the file. Existing Anthropic environment variable names still work when no Claude key is configured.
+
+To set a key without restarting the bridge, open **Claude API key settings** from the laptop dashboard. A key saved there takes effect immediately and overrides the startup key for that bridge process. **Remove session key** restores the startup credential. Restarting the bridge clears the dashboard override and reloads the local file.
+
+For agents, verify the ignored path with `git check-ignore .env` and use only placeholder keys in tests. Keep real keys out of diffs, command output, browser fixtures, and commits. Commit only the template. Treat the template placeholder as unconfigured.
+
+Without a configured key, the bridge handles the fixed phrases. `--llm off` disables Claude, and `--llm-model` selects the model.
 
 ## The PC voice page
 

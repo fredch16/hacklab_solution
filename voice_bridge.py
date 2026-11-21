@@ -24,7 +24,7 @@ browser bundle never see MCP. A small local grammar comes first and needs no net
 
 What the grammar cannot place ("yo claude show me the thing from da top") goes to Claude, which
 picks ONE of those four actions or none (class Interpreter). That step is on when an Anthropic
-credential is found (set on the local voice page, or ANTHROPIC_API_KEY in the environment or .env), and
+credential is found (set on the local voice page, or CLAUDE_API_KEY in the environment or .env), and
 `--llm off` turns it off. It sends the transcript text and the view names/descriptions to the
 Anthropic API: no audio, no images. The model only chooses; the policy stays here: the same
 checked-views rule, the same four tools, and a failed or slow call falls back to the grammar's answer.
@@ -53,6 +53,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from mcp import Client
+
+from claude_config import claude_api_key, load_env
 
 log = logging.getLogger("voice_bridge")
 
@@ -564,25 +566,16 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
     return Handler
 
 
-def load_env(path: Path) -> None:
-    """KEY=VALUE lines of a .env file into the environment; what is already set wins."""
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return
-    for line in lines:
-        key, sep, value = line.strip().removeprefix("export ").partition("=")
-        if sep and key.strip() and not key.startswith("#"):
-            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
-
-
 def make_interpreter(mode: str, model: str) -> Interpreter | None:
     """mode: 'off', 'on' (fail without a credential) or 'auto' (on when a credential is found)."""
     if mode == "off":
         return None
+    key = claude_api_key()
+    if key:
+        return Interpreter(model, api_key=key)
     if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         if mode == "on":
-            raise SystemExit("--llm on needs ANTHROPIC_API_KEY (environment, or .env next to voice_bridge.py)")
+            raise SystemExit("--llm on needs CLAUDE_API_KEY (environment, or .env next to voice_bridge.py)")
         return None
     return Interpreter(model)
 
@@ -596,7 +589,7 @@ def main(argv=None):
                    help="extra browser origin allowed to call (the phone's LAN https origin is allowed by default)")
     p.add_argument("--llm", choices=["auto", "on", "off"], default="auto",
                    help="let Claude interpret what the local grammar cannot place (default: on when "
-                        "ANTHROPIC_API_KEY is set; sends the transcript text to the Anthropic API)")
+                        "CLAUDE_API_KEY is set; sends the transcript text to the Anthropic API)")
     p.add_argument("--llm-model", default=LLM_MODEL)
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
@@ -612,7 +605,7 @@ def main(argv=None):
     log.info("voice bridge on http://%s:%d -> %s", args.host, args.port, args.mcp_url)
     log.info("voice mode on this PC: http://127.0.0.1:%d/", args.port)
     log.info("free phrasing: %s", f"Claude ({bridge.interpreter.model})" if bridge.interpreter else
-             "off, local grammar only" + ("" if args.llm == "off" else " (no ANTHROPIC_API_KEY found)"))
+             "off, local grammar only" + ("" if args.llm == "off" else " (no Claude key configured)"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

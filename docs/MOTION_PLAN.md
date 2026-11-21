@@ -1,6 +1,6 @@
 # Motion plan: getting to a saved view without breaking the arm
 
-**Version 5** (after council round 3). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 97 checks; `tests/test_server_sim.py`). **Nothing here has run on the real arm yet.**
+**Version 6** (after council round 3 and Sol's re-check). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 101 checks; `tests/test_server_sim.py`). **Nothing here has run on the real arm yet.**
 Background: [HARDWARE.md](HARDWARE.md), [MOTION.md](MOTION.md).
 
 ## Goal
@@ -11,7 +11,7 @@ Click a view in the web UI → the follower arm (ElRobot, 7 joints + gripper, ca
 
 | Reviewer | Round 1 (design v1) | Round 2 (built code, v3) | Round 3 (v4) | Final verdict |
 |---|---|---|---|---|
-| GPT-6.2 Sol | 3/10 | 4/10 | 5/10 | No: five fixes first (all implemented in v5, not re-reviewed) |
+| GPT-6.2 Sol | 3/10 | 4/10 | 5/10 | Re-check of v5: 6/10, still no (1 of 5 items fully fixed, 4 partly). Those gaps are fixed in v6; shipped without a further Sol round |
 | Gemini 4 Neon | 5/10 | 6/10 | 8/10 | Yes, once the Stop-error message on the page was fixed (done) |
 | Claude Fable 5.2 | 6/10 | 7/10 | 8/10 | Yes, no must-fix; conditions are in the test protocol |
 

@@ -85,6 +85,9 @@ def lead_limit(peak_speed: float) -> float:
 
 
 _move_lock = asyncio.Lock()
+# What the current/last move did, for stop_hold(): did it send any goal, which joints was its
+# current segment driving, and how did its own abort hold end.
+_last = {"wrote": False, "driving": (), "hold": None}
 
 # Live state of the current/last move, for UIs to poll. Updated in place, never replaced.
 status = {"moving": False, "view": None, "phase": None, "phase_index": 0, "phase_count": 0,
@@ -301,18 +304,21 @@ async def _torque(arm, on: bool, ids):
         raise MotionError(f"Station rejected a command: {e!r}")
 
 
-async def _confirm(arm, goals: dict[int, int], torque: bool | None = None):
-    """Wait until the arm reports these goal registers (and torque state) on two different
-    fresh reads in a row, so a look-alike value still on its way through does not count.
-    Raises if it doesn't."""
+async def _confirm(arm, before: dict, goals: dict[int, int] | None = None, torque: bool | None = None,
+                   ids=MOVABLE):
+    """Wait until the arm shows the commanded state: every joint in `ids` read again since the
+    command (`before` is the telemetry taken just before it), without a read error, with the
+    goal registers in `goals` and the torque state `torque`, on two different reads in a row,
+    so a look-alike value still on its way through does not count. Raises if it doesn't."""
     deadline = time.monotonic() + CONFIRM_S
     seen = None         # per-motor read stamps of the last sample that matched
     while True:
         tel = arm.telemetry(max_age_s=STALE_S)
-        if (all(abs(tel[m]["goal"] - g) <= GOAL_MATCH for m, g in goals.items())
-                and (torque is None or all(tel[m]["torque"] == torque for m in goals))):
-            stamps = {m: tel[m]["stamp"] for m in goals}
-            if seen is not None and all(stamps[m] != seen[m] for m in goals):
+        if (all(m in tel and not tel[m].get("read_error") and tel[m]["stamp"] != before[m]["stamp"] for m in ids)
+                and all(abs(tel[m]["goal"] - g) <= GOAL_MATCH for m, g in (goals or {}).items())
+                and (torque is None or all(tel[m]["torque"] == torque for m in ids))):
+            stamps = {m: tel[m]["stamp"] for m in ids}
+            if seen is not None and all(stamps[m] != seen[m] for m in ids):
                 return
             seen = seen or stamps
         else:
@@ -333,7 +339,10 @@ async def hold(arm, keep_within: int = FREEZE_TOL, moving: tuple = ()):
     is energised. Raises (MotionError / RuntimeError) when the hold cannot be written or
     confirmed: the caller must tell the user it is unconfirmed."""
     tel = arm.telemetry(max_age_s=STALE_S)
-    held = [m for m in MOVABLE if m in tel and tel[m]["torque"]]
+    missing = [m for m in MOVABLE if m not in tel]
+    if missing:
+        raise MotionError(f"no data from motor {missing[0]}; cannot tell whether the arm is holding")
+    held = [m for m in MOVABLE if tel[m]["torque"]]
     if not held:
         return "limp"           # nothing is energised, so there is nothing to hold
     # For a joint that was being driven, the register read-back lags our writes and the last
@@ -342,8 +351,8 @@ async def hold(arm, keep_within: int = FREEZE_TOL, moving: tuple = ()):
              if m in moving or abs(tel[m]["goal"] - tel[m]["pos"]) > keep_within}
     if goals:
         await _write(arm, goals)
-    # Confirmed only when fresh samples show every rewritten joint with its new goal.
-    await _confirm(arm, {m: goals.get(m, tel[m]["goal"]) for m in held})
+    # Confirmed only when reads taken after this point show every joint with the goal it should have.
+    await _confirm(arm, tel, {m: goals.get(m, tel[m]["goal"]) for m in held}, ids=held)
     return "confirmed"
 
 
@@ -352,13 +361,18 @@ async def _abort_hold(arm, keep_within: int, moving: tuple = ()) -> str:
 
     With stale data or a dead link we cannot hold and must not guess a position: every goal we
     sent was within the leash of where the arm was, so not writing is the safe choice."""
-    try:
-        return await asyncio.shield(hold(arm, keep_within, moving))
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.error("HOLD NOT CONFIRMED: %s", e)
-        return "unconfirmed"
+    inner = asyncio.ensure_future(hold(arm, keep_within, moving))
+    while True:
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            # Being cancelled again must not leave this hold running behind our back (its write
+            # could land after someone has let the arm go limp): see it through, it is bounded.
+            if inner.done():
+                raise
+        except Exception as e:
+            logger.error("HOLD NOT CONFIRMED: %s", e)
+            return "unconfirmed"
 
 
 def _basic_problems(arm, tel) -> list[str]:
@@ -412,19 +426,30 @@ async def engage(arm):
     if goals:
         await _write(arm, goals, speed=SPEED_FIRST, accel=SERVO_ACCEL)
     await _torque(arm, True, MOVABLE)
-    await _confirm(arm, {m: goals.get(m, tel[m]["goal"]) for m in MOVABLE}, torque=True)
+    await _confirm(arm, tel, {m: goals.get(m, tel[m]["goal"]) for m in MOVABLE}, torque=True)
 
 
 async def release(arm):
     """Go limp (joints 1-7; the gripper is never written). The arm drops: someone must hold it."""
     if status["moving"]:
         raise MotionError("the arm is moving; press Stop first")
+    before = arm.telemetry(max_age_s=STALE_S)
     await _torque(arm, False, MOVABLE)
-    deadline = time.monotonic() + CONFIRM_S
-    while any(arm.telemetry(max_age_s=STALE_S)[m]["torque"] for m in MOVABLE):
-        if time.monotonic() > deadline:
-            raise MotionError("could not confirm the arm is limp")
-        await asyncio.sleep(0.05)
+    try:    # limp only counts on reads taken after the command, error-free, from all seven joints
+        await _confirm(arm, before, torque=False)
+    except (MotionError, RuntimeError) as e:
+        raise MotionError(f"could not confirm the arm is limp ({e})")
+
+
+async def stop_hold(arm):
+    """The hold a controller issues after it has stopped (cancelled) a move, or found one crashed.
+
+    If the move's own abort already held the arm, or the move never commanded anything, this is
+    a plain hold(): resting joints keep their goals. Only when the move wrote goals and its own
+    hold did not go through are the joints it was driving stopped where they are."""
+    if _last["wrote"] and _last["hold"] not in ("confirmed", "limp"):
+        return await hold(arm, RELAX_TOL, moving=_last["driving"])
+    return await hold(arm)
 
 
 # ---------------------------------------------------------------- execution
@@ -478,20 +503,30 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     `planned` gives, for joints an earlier segment moved, where they are supposed to be."""
     tel = arm.telemetry(max_age_s=STALE_S)
     ids = sorted(goal)
-    if all(abs(goal[m] - tel[m]["pos"]) <= SKIP_TOL for m in ids):
-        # Nothing to do, but only if the joints are really resting there: look again.
-        await asyncio.sleep(SETTLE_POLL_S)
-        again = arm.telemetry(max_age_s=STALE_S)
-        if (all(abs(goal[m] - again[m]["pos"]) <= SKIP_TOL for m in ids)
-                and all(again[m]["stamp"] != tel[m]["stamp"] for m in ids)):
-            return 0.0
-        tel = again
-    start = {m: tel[m]["pos"] for m in ids}
-    dist = max(abs(goal[m] - start[m]) for m in ids)
+    watch = _Watch()
     # A held joint must stay near its planned place (e.g. the hub during a turn), not merely
     # near wherever it happened to be when this segment started.
     held_pos = {m: planned.get(m, tel[m]["pos"]) for m in MOVABLE if m not in goal}
     held_goal = {m: tel[m]["goal"] for m in MOVABLE if m not in goal}
+
+    def resting_at_goal(t):   # at the goal, and its own goal register is right there too
+        return all(abs(goal[m] - t[m]["pos"]) <= SKIP_TOL and abs(t[m]["goal"] - goal[m]) <= HELD_GOAL_TOL
+                   for m in ids)
+
+    if resting_at_goal(tel):
+        # Nothing to do, but only if the joints are really resting there: guard both looks,
+        # and the second must be a newer read that has not moved.
+        _guard(tel, watch, time.monotonic(), stats, held_pos, held_goal)
+        await asyncio.sleep(SETTLE_POLL_S)
+        again = arm.telemetry(max_age_s=STALE_S)
+        _guard(again, watch, time.monotonic(), stats, held_pos, held_goal)
+        if (resting_at_goal(again)
+                and all(again[m]["stamp"] != tel[m]["stamp"] for m in ids)
+                and all(abs(again[m]["pos"] - tel[m]["pos"]) <= 6 for m in ids)):
+            return 0.0
+        tel = again
+    start = {m: tel[m]["pos"] for m in ids}
+    dist = max(abs(goal[m] - start[m]) for m in ids)
     duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours
     leash = lead_limit(peak_speed)
@@ -501,7 +536,6 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         return {m: min(max(int(round(start[m] + (goal[m] - start[m]) * k)), env[m][0]), env[m][1]) for m in ids}
 
     s, last, stalled_since, first = 0.0, time.monotonic(), None, True
-    watch = _Watch()
     cmd = dict(start)
     sent: deque = deque()                                    # (time, goals) we wrote recently
     while True:
@@ -530,7 +564,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         last = now
         status["progress"] = s
         if stalled_since is None:           # over the leash nothing is sent, not even a repeat
-            ctx["wrote"] = True
+            ctx["wrote"] = _last["wrote"] = True
             if first:
                 await _write(arm, cmd, speed=servo_speed, accel=SERVO_ACCEL)
                 first = False
@@ -699,12 +733,14 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
         # Until a waypoint is sent, a refusal must not write anything.
         # "moving": the joints the current segment is driving (empty between segments).
         ctx = {"wrote": False, "moving": ()}
+        _last.update(wrote=False, driving=(), hold=None)
 
         async def abort(reason: str, blocked: bool = False):
             result["error"] = reason
             if ctx["wrote"]:
                 result["hold"] = await _abort_hold(arm, RELAX_TOL if blocked else FREEZE_TOL,
                                                    ctx["moving"])
+                _last["hold"] = result["hold"]
                 if result["hold"] == "unconfirmed":
                     result["error"] = f"{reason}; HOLD NOT CONFIRMED"
 
@@ -731,10 +767,10 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
                     if abs(now[m] - expect[m]) > ARRIVE_TOL:
                         raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
                                           "needs it to be; not continuing")
-                ctx["moving"] = tuple(goal)
+                ctx["moving"] = _last["driving"] = tuple(goal)
                 result["duration"] += await _run_segment(arm, seg, goal, max_speed, env, stats, ctx,
                                                          {m: expect[m] for m in moved})
-                ctx["moving"] = ()
+                ctx["moving"] = _last["driving"] = ()
                 expect.update(goal)
                 moved |= set(goal)
             result["ok"] = True

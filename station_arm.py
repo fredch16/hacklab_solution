@@ -253,9 +253,9 @@ class Arm:
         """
         from target.gen_python.protobuf.drivers.motors_mirroring import mirroring
         nothing_yet = (ErrQueueNotFound, ErrEntryNotFound)     # Station has never linked anything
-        # The queue also carries command echoes, so the newest entry is not always a state:
-        # walk back a few entries to the newest one that has a state payload.
-        for back in range(1, 6):
+
+        async def entry_at(back: int):
+            """The entry `back` places from the end, or None when there is none. Raises when unsure."""
             qr = self.client.read_from_tail("inference/mirroring", bytes([back]), 1, 1, 4)
             try:
                 entry = await asyncio.wait_for(qr.data.get(), timeout_s)
@@ -264,24 +264,44 @@ class Arm:
             if entry is None:
                 err = qr.err
                 if err in nothing_yet or isinstance(err, nothing_yet):
-                    if back == 1:
-                        return None             # empty queue: nothing was ever linked
-                    break                       # ran out of entries without finding a state
+                    return None
                 # No entry and no "not found" answer is not proof of anything: refuse, don't guess.
                 raise RuntimeError(f"could not read Station's mirroring state: {err!r}")
-            try:
-                envelope = mirroring.RxEnvelopeReader(entry.Data)
-                if getattr(envelope, "_state_buf", None) is None:
-                    continue                    # a command echo; look at the entry before it
-                for link in envelope.get_state().get_mirroring() or []:
-                    targets = [t.get_id().get_unique_id() for t in (link.get_targets() or [])]
-                    if self.bus_serial in targets:
-                        # Readers give "" for a missing id: never return a falsy source.
-                        return link.get_source().get_id().get_unique_id() or "unknown"
-                return None                     # a real state that does not target this arm
-            except Exception as e:              # an entry we cannot decode must not read as "not mirrored"
-                raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
-        raise RuntimeError("could not find Station's mirroring state in its last entries")
+            return entry
+
+        def newest_id(entry):
+            return bytes(entry.ID.ID) if entry is not None else None
+
+        for _ in range(3):                      # retry if Station appended while we were reading
+            newest = await entry_at(1)
+            if newest is None:
+                return None                     # empty queue: nothing was ever linked
+            verdict, found = None, False
+            # The queue also carries command echoes, so the newest entry is not always a state:
+            # walk back a few entries to the newest one that has a state payload.
+            for back in range(1, 6):
+                entry = newest if back == 1 else await entry_at(back)
+                if entry is None:
+                    break
+                try:
+                    envelope = mirroring.RxEnvelopeReader(entry.Data)
+                    if getattr(envelope, "_state_buf", None) is None:
+                        continue                # a command echo; look at the entry before it
+                    found = True
+                    for link in envelope.get_state().get_mirroring() or []:
+                        targets = [t.get_id().get_unique_id() for t in (link.get_targets() or [])]
+                        if self.bus_serial in targets:
+                            # Readers give "" for a missing id: never return a falsy source.
+                            verdict = link.get_source().get_id().get_unique_id() or "unknown"
+                    break
+                except Exception as e:          # an entry we cannot decode must not read as "not mirrored"
+                    raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
+            if newest_id(await entry_at(1)) != newest_id(newest):
+                continue                        # the tail moved under us: look again
+            if not found:
+                raise RuntimeError("could not find Station's mirroring state in its last entries")
+            return verdict
+        raise RuntimeError("Station's mirroring state keeps changing; cannot tell if the arm is linked")
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         """Calibrated (min, max) per motor id, as Station reports them."""

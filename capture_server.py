@@ -429,8 +429,9 @@ class State:
     async def _hold(self, active: bool = False) -> tuple[str, str | None]:
         """motion.hold(): ("confirmed" | "limp", None), or ("unconfirmed", why) when it could not be confirmed.
 
-        active: a move was running (STOP, or a crashed move). Then a joint may be pushing against
-        something, so only goals within RELAX_TOL of the joint are kept; an idle STOP keeps the default.
+        active: a move was running (STOP, or a crashed move). If that move sent goals and its own hold
+        did not go through, the joints it was driving are stopped where they are; otherwise, and for an
+        idle STOP, resting joints keep their goals.
 
         On a bus whose read-back lags, commands accepted earlier (the move's last waypoints, a torque
         command) can still land after motion.hold() has compared the registers. So the answer only counts
@@ -438,7 +439,10 @@ class State:
         try:
             deadline = time.monotonic() + HOLD_CONFIRM_S
             while True:
-                result = (await (motion.hold(self.arm, keep_within=motion.RELAX_TOL) if active
+                # After a move: motion.stop_hold() knows whether that move sent any goal and whether its
+                # own abort hold went through, so a Stop during the pre-move checks, or after a hold that
+                # is already confirmed, leaves resting joints alone.
+                result = (await (motion.stop_hold(self.arm) if active
                                  else motion.hold(self.arm))) or "confirmed"
                 before = self._registers()
                 await asyncio.sleep(HOLD_SETTLE_S)

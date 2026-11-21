@@ -216,7 +216,7 @@ def part_a():
     check(go("wide")["started"], "admission reopens once the cleanup is done")
     st.call(st.stop())
 
-    # --- stopping an active move relaxes joints that push (RELAX_TOL); an idle STOP keeps the default
+    # --- stopping an active move relaxes the joints it was driving; an idle STOP keeps the default
     fresh_arm()
     tolerances = []
 
@@ -228,7 +228,10 @@ def part_a():
     go()
     time.sleep(0.5)
     st.call(st.stop())
-    check(tolerances and tolerances[-1] == motion.RELAX_TOL, f"active STOP ends with hold(keep_within=RELAX_TOL): {tolerances}")
+    # The move's own abort stops the driven joints (RELAX_TOL); once that hold is confirmed, the
+    # server's follow-up hold is a plain one that leaves resting joints alone (no second sag).
+    check(tolerances and tolerances[0] == motion.RELAX_TOL and tolerances[-1] == motion.FREEZE_TOL,
+          f"active STOP: the move relaxes its joints, the server's follow-up hold is plain: {tolerances}")
     tolerances.clear()
     st.call(st.stop())
     motion.hold = real_hold

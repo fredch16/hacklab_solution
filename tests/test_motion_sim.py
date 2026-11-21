@@ -312,6 +312,41 @@ async def main():
     await motion.hold(sag)
     check(abs(sag._goal[2] - sag._pos[2]) <= 1, "hold pulls back a goal that is far from the joint")
 
+    # --- the controller's hold after stopping a move (stop_hold) ----------------------------
+    idle = SimArm(start={**VIEWS["top"], 8: 1279})
+    idle._goal[2] = idle._pos[2] + 35; idle.stuck = {2}       # resting 35 steps short under load
+    idle.mirror = "5B61033001"                                # so the move is refused before any goal
+    r = await go_to_view(idle, "wide", max_speed=FAST)
+    before = idle.writes
+    check(not r["ok"] and await motion.stop_hold(idle) == "confirmed" and idle.writes == before,
+          "Stop during the pre-move checks leaves a resting joint's goal alone")
+    idle.mirror = None; idle.stuck = set(); idle._goal[2] = idle._pos[2]
+    task = asyncio.create_task(go_to_view(idle, "wide", max_speed=400))
+    await asyncio.sleep(0.6); task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0.3); before = idle.writes
+    check(motion.status["hold"] == "confirmed" and await motion.stop_hold(idle) == "confirmed"
+          and idle.writes == before, "after a confirmed abort hold, the controller's hold rewrites nothing")
+
+    gone = SimArm(); real_tel = gone.telemetry
+    gone.telemetry = lambda max_age_s=0.5: {m: t for m, t in real_tel(max_age_s).items() if m != 4}
+    try:
+        await motion.hold(gone); check(False, "hold must fail when a joint has no data")
+    except motion.MotionError as e:
+        check("motor 4" in str(e), "hold reports a joint without data instead of skipping it")
+
+    sticky = SimArm()
+    async def ignore_torque(enable, motor_ids=None):          # the arm never actually goes limp
+        pass
+    sticky.set_torque = ignore_torque
+    try:
+        await motion.release(sticky); check(False, "release must fail when torque stays on")
+    except motion.MotionError as e:
+        check("could not confirm the arm is limp" in str(e), "Go limp is only reported once the arm is really limp")
+
     # --- unchecked views are forced to slow speed ----------------------------------------
     motion.view_checked = lambda name: name != "wide"
     motion.SPEED_FIRST = 100

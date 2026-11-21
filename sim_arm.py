@@ -17,8 +17,13 @@ shoulder rests `sag` steps away from its goal. Timing only: no gravity, no load 
 """
 
 import asyncio
+import itertools
 import math
 import time
+
+# The clock the simulated joints move by. tests/virtual_time.py points it at a simulated clock.
+_now = time.monotonic
+_stamps = itertools.count(1)       # every telemetry read is a new sample, whatever the clock says
 
 # Follower 5B79016329 calibration, snapshot from docs/HARDWARE.md.
 SIM_RANGES = {1: (1105, 2991), 2: (1071, 3025), 3: (924, 3172), 4: (897, 3199),
@@ -59,7 +64,7 @@ class SimArm:
         self.sag = dict(REAL_SAG if sag is None else sag) if realistic else {}
         self._accel = {m: REAL_ACCEL for m in self._pos}   # acceleration register per motor
         self._vel = {m: 0.0 for m in self._pos}            # steps/s, realistic mode only
-        self._t = time.monotonic()
+        self._t = _now()
         self._torque = {m: True for m in self._pos}
         self.writes = 0
         self.written_ids: set[int] = set()            # every motor id a goal was ever written to
@@ -83,7 +88,7 @@ class SimArm:
         return all(on for m, on in self._torque.items() if m != max(self._torque))
 
     def _advance(self):
-        now = time.monotonic()
+        now = _now()
         dt, self._t = now - self._t, now
         if self.realistic:
             return self._advance_realistic(dt)
@@ -121,13 +126,13 @@ class SimArm:
     def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
         pos = self.joints(max_age_s)
         # The goal register as telemetry shows it: the newest write that is at least echo_delay old.
-        cutoff = time.monotonic() - self.echo_delay
+        cutoff = _now() - self.echo_delay
         while len(self._echo) > 1 and self._echo[1][0] <= cutoff:
             self._echo.pop(0)
         shown = self._echo[0][1] if self.echo_delay else self._goal
         return {m: {"pos": pos[m], "goal": int(round(shown[m])), "load": self.load.get(m, 0),
                     "current": 0, "status": 0, "torque": self._torque[m], "temp": 30, "voltage": 12.0,
-                    "read_error": "", "stamp": time.monotonic_ns()} for m in pos}
+                    "read_error": "", "stamp": next(_stamps)} for m in pos}
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         return {m: SIM_RANGES.get(m, (0, 4095)) for m in self._pos}
@@ -156,7 +161,7 @@ class SimArm:
                 self._accel[m] = accel[m] if isinstance(accel, dict) else accel
         for m, g in self.hijack.items():
             self._goal[m] = float(g)
-        self._echo.append((time.monotonic(), dict(self._goal)))
+        self._echo.append((_now(), dict(self._goal)))
 
     async def settled(self, tolerance: int = 8, timeout_s: float = 3.0) -> dict[int, int]:
         await asyncio.sleep(0.1)

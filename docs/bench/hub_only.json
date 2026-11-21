@@ -610,10 +610,10 @@
      "turn",
      "descend"
     ],
-    "time": 4.6,
+    "time": 4.57,
     "solo_pitch": 3.92,
     "solo_turn": 0,
-    "idle": 0.32,
+    "idle": 0.3,
     "turn_h": 0.315,
     "min_h": -0.004,
     "dip": 0.0
@@ -823,10 +823,10 @@
      "turn"
     ],
     "time": 2.73,
-    "solo_pitch": 1.86,
+    "solo_pitch": 1.78,
     "solo_turn": 0,
     "idle": 0.28,
-    "turn_h": 0.29,
+    "turn_h": 0.297,
     "min_h": 0.08,
     "dip": 0.0
    },
@@ -891,11 +891,11 @@
      "turn",
      "descend"
     ],
-    "time": 4.27,
-    "solo_pitch": 2.52,
-    "solo_turn": 0,
-    "idle": 0.52,
-    "turn_h": 0.311,
+    "time": 4.87,
+    "solo_pitch": 3.38,
+    "solo_turn": 0.26,
+    "idle": 0.86,
+    "turn_h": 0.313,
     "min_h": 0.072,
     "dip": 0.0
    },
@@ -910,10 +910,10 @@
      "descend"
     ],
     "time": 4.77,
-    "solo_pitch": 1.74,
-    "solo_turn": 0.68,
-    "idle": 0.46,
-    "turn_h": 0.249,
+    "solo_pitch": 1.86,
+    "solo_turn": 0.88,
+    "idle": 0.34,
+    "turn_h": 0.254,
     "min_h": 0.048,
     "dip": 0.0
    },
@@ -928,10 +928,10 @@
      "descend"
     ],
     "time": 4.87,
-    "solo_pitch": 1.7,
-    "solo_turn": 0.74,
-    "idle": 0.5,
-    "turn_h": 0.248,
+    "solo_pitch": 1.86,
+    "solo_turn": 0.88,
+    "idle": 0.34,
+    "turn_h": 0.252,
     "min_h": 0.044,
     "dip": 0.0
    },
@@ -945,10 +945,10 @@
      "turn",
      "descend"
     ],
-    "time": 3.0,
-    "solo_pitch": 1.98,
-    "solo_turn": 0.16,
-    "idle": 0.4,
+    "time": 3.6,
+    "solo_pitch": 2.26,
+    "solo_turn": 0.52,
+    "idle": 0.64,
     "turn_h": 0.314,
     "min_h": 0.08,
     "dip": 0.0
@@ -963,11 +963,11 @@
      "turn",
      "descend"
     ],
-    "time": 3.0,
-    "solo_pitch": 1.8,
-    "solo_turn": 0.02,
-    "idle": 0.54,
-    "turn_h": 0.313,
+    "time": 3.6,
+    "solo_pitch": 2.1,
+    "solo_turn": 0.32,
+    "idle": 0.84,
+    "turn_h": 0.314,
     "min_h": 0.083,
     "dip": 0.0
    },
@@ -981,10 +981,10 @@
      "turn",
      "descend"
     ],
-    "time": 2.57,
-    "solo_pitch": 1.58,
+    "time": 3.17,
+    "solo_pitch": 1.94,
     "solo_turn": 0,
-    "idle": 0.62,
+    "idle": 1.22,
     "turn_h": null,
     "min_h": -0.001,
     "dip": 0.0
@@ -1000,10 +1000,10 @@
      "descend"
     ],
     "time": 4.8,
-    "solo_pitch": 1.82,
-    "solo_turn": 0.7,
-    "idle": 0.48,
-    "turn_h": 0.251,
+    "solo_pitch": 1.96,
+    "solo_turn": 0.88,
+    "idle": 0.34,
+    "turn_h": 0.256,
     "min_h": 0.011,
     "dip": 0.0
    }
@@ -1095,7 +1095,7 @@
     "solo_pitch": 3.34,
     "solo_turn": 0,
     "idle": 0.22,
-    "turn_h": 0.305,
+    "turn_h": 0.307,
     "min_h": 0.001,
     "dip": 0.0
    },
@@ -1419,7 +1419,7 @@
     "solo_pitch": 3.04,
     "solo_turn": 0,
     "idle": 0.12,
-    "turn_h": 0.312,
+    "turn_h": 0.314,
     "min_h": 0.003,
     "dip": 0.0
    },
@@ -1613,8 +1613,8 @@
      "turn",
      "descend"
     ],
-    "time": 4.07,
-    "solo_pitch": 3.5,
+    "time": 4.1,
+    "solo_pitch": 3.52,
     "solo_turn": 0,
     "idle": 0.18,
     "turn_h": 0.314,
@@ -1984,12 +1984,12 @@
      "turn",
      "descend"
     ],
-    "time": 2.43,
-    "solo_pitch": 2.1,
+    "time": 2.63,
+    "solo_pitch": 2.26,
     "solo_turn": 0,
-    "idle": 0.32,
+    "idle": 0.36,
     "turn_h": null,
-    "min_h": 0.001,
+    "min_h": 0.0,
     "dip": 0.0
    },
    {

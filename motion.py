@@ -1,17 +1,22 @@
-"""M2: move the follower arm to a saved view through a taught transit pose, in three ordered steps.
+"""M2: move the follower arm to a saved view.
 
     await go_to_view(arm, "top")  ->  {"ok": bool, "view": str, "error": str | None, ...}
 
-Design and rationale: docs/MOTION_PLAN.md. In short:
+Design and rationale: docs/MOTION_PLAN.md; the direct moves and speed-ups: docs/MOTION_OPT.md.
 
-  * Every move runs on a fixed network. Each view has a "spoke" to the hub (the transit pose's
-    pitch configuration):  rise (all four pitch joints together, view -> hub)
-                           turn (base yaw + both rolls, at the hub)
-                           descend (all four pitch joints together, hub -> view)
+  * Between two checked views a move is one straight line of all seven joints ("direct"), when
+    the geometry model shows that line stays clear of the desk and of the arm itself (see
+    direct_plan). If only the straight line fails, the same line lifted in the middle ("arc").
+  * Every other move runs on a fixed network. Each view has a "spoke" to the hub (the transit
+    pose's pitch configuration):  rise (all four pitch joints together, view -> hub)
+                                  turn (base yaw + both rolls, at the hub)
+                                  descend (all four pitch joints together, hub -> view)
     Moving the pitch joints together keeps the arm between two poses a person taught; moving
     the shoulder on its own does not (from `home` it drives the gripper into the table).
-  * A move only starts when the arm is somewhere on that network (at a view, on a spoke, at the
-    hub). Anywhere else it refuses, unless the caller explicitly asks to recover to transit.
+    At fast and turbo the turn overlaps rise and descent above CLEAR_HEIGHT_M ("blended").
+  * A move only starts when the arm is somewhere it recognises (at a view, on a spoke, at the
+    hub, on a direct line, or stopped mid-turn above the clear height: see locate). Anywhere
+    else it refuses, unless the caller explicitly asks to recover to transit.
   * The arm must already be holding (torque on). A move never switches torque on or off.
   * The gripper (motor 8, the camera mount) is never written.
   * While moving: goals are streamed in small steps and a goal is only sent if it is within a
@@ -70,8 +75,9 @@ HUB_PASS_THROUGH = True   # blended: the descent takes over as soon as the rise 
 BLEND_IDLE_GUARD = True   # blended: joints no segment is driving at the moment keep their goal and place
                           # (another writer / pushed away), as they always did on a move in sequence
 FAST_DESCENT = True    # at fast the descent runs at fast too (as it already does in turbo), not at normal
-SHORT_HOPS = True      # a segment of a few steps takes as long as that hop needs at slow speed,
-                       # not MIN_SEGMENT_S: only the minimum duration changes, no guard
+SHORT_HOPS = False     # True: a segment of a few steps takes as long as that hop needs at slow speed,
+                       # not MIN_SEGMENT_S (only the minimum duration changes, no guard). Off because
+                       # tests/test_server_sim.py counts on a 40-step correction lasting 0.8 s
 CLEAR_POINTS = ("j5_forearm_roll", "j6_wrist_pitch", "j7_wrist_roll", "j8_gripper", "jaw_tip", "camera")
 ABOVE_SLACK_M = 0.02   # a stopped blended move counts as "above the clear height" down to this much under it
 # Direct moves: between two checked poses, at every speed, all seven joints go together along
@@ -123,6 +129,12 @@ LOAD_LIMIT = 800       # PWM duty 0-1000: this high for FAULT_S means the joint 
 GOAL_MATCH = 8         # steps: a goal register this close to something we wrote is ours
 GOAL_HISTORY_S = 0.6   # how far back a read-back goal may lag our writes
 STATUS_IGNORE = 0x01   # voltage bit; not a motion fault
+
+
+# The clock every wait and timeout in this module reads. Always time.monotonic on the real arm;
+# tests/virtual_time.py points it at a simulated clock so simulated moves do not take real time.
+# (time.time() is only used for timestamps in the move log.)
+_now = time.monotonic
 
 
 def lead_limit(peak_speed: float) -> float:
@@ -366,6 +378,7 @@ def _line_problem(a: dict, b: dict, hub: dict, lift: float, ranges, grip: int) -
     import fk
     n = DIRECT_SAMPLES
     poses = [{**_path_pose(a, b, hub, lift, i / n), GRIPPER: grip} for i in range(n + 1)]
+    worst = None                                   # (how far below its end poses, part, how low)
     for mapping in ("viewer", "true_scale"):
         gaps = [fk.self_clearance(p, ranges, mapping) for p in poses]
         if min(gaps[0], gaps[-1]) < DIRECT_SELF_CLEAR_M:
@@ -378,9 +391,11 @@ def _line_problem(a: dict, b: dict, hub: dict, lift: float, ranges, grip: int) -
             ends = min(heights[0][part], heights[-1][part])
             low = min(h[part] for h in heights)
             # Close to the desk the allowance shrinks: a part resting 1 cm up may dip 5 mm, not 1 cm.
-            if low < ends - min(DIRECT_DIP_M, max(ends, 0.0) / 2):
-                return (f"{part.replace('mesh:', '')} would dip to {low * 100:.1f} cm, "
-                        f"{(ends - low) * 100:.1f} cm below where it is at the end poses")
+            if low < ends - min(DIRECT_DIP_M, max(ends, 0.0) / 2) and (worst is None or ends - low > worst[0]):
+                worst = (ends - low, part, low)
+    if worst:
+        return (f"{worst[1].replace('mesh:', '')} would dip to {worst[2] * 100:.1f} cm, "
+                f"{worst[0] * 100:.1f} cm below where it is at the end poses")
     return None
 
 
@@ -637,7 +652,7 @@ async def _confirm(arm, before: dict, goals: dict[int, int] | None = None, torqu
     command (`before` is the telemetry taken just before it), without a read error, with the
     goal registers in `goals` and the torque state `torque`, on two different reads in a row,
     so a look-alike value still on its way through does not count. Raises if it doesn't."""
-    deadline = time.monotonic() + CONFIRM_S
+    deadline = _now() + CONFIRM_S
     seen = None         # per-motor read stamps of the last sample that matched
     while True:
         tel = arm.telemetry(max_age_s=STALE_S)
@@ -650,7 +665,7 @@ async def _confirm(arm, before: dict, goals: dict[int, int] | None = None, torqu
             seen = seen or stamps
         else:
             seen = None
-        if time.monotonic() > deadline:
+        if _now() > deadline:
             raise MotionError("the arm did not confirm the command")
         await asyncio.sleep(0.05)
 
@@ -869,10 +884,10 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     if resting_at_goal(tel):
         # Nothing to do, but only if the joints are really resting there: guard both looks,
         # and the second must be a newer read that has not moved.
-        _guard(tel, watch, time.monotonic(), stats, held_pos, held_goal)
+        _guard(tel, watch, _now(), stats, held_pos, held_goal)
         await asyncio.sleep(SETTLE_POLL_S)
         again = arm.telemetry(max_age_s=STALE_S)
-        _guard(again, watch, time.monotonic(), stats, held_pos, held_goal)
+        _guard(again, watch, _now(), stats, held_pos, held_goal)
         if (resting_at_goal(again)
                 and all(again[m]["stamp"] != tel[m]["stamp"] for m in ids)
                 and all(abs(again[m]["pos"] - tel[m]["pos"]) <= 6 for m in ids)):
@@ -920,12 +935,12 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         expected = far / peak_speed + peak_speed / (TURBO_ACCEL * 100)
         ctx["wrote"] = _last["wrote"] = True
         await _write(arm, final, speed=speeds, accel=accels)
-        t0 = best_t = time.monotonic()
+        t0 = best_t = _now()
         sent.append((t0, final))
         best = far
         while True:
             await asyncio.sleep(1 / RATE_HZ)
-            now = time.monotonic()
+            now = _now()
             tel = arm.telemetry(max_age_s=STALE_S)
             _guard(tel, watch, now, stats, held_pos, held_goal, hard=tuple(ids), drift_limit=TURBO_DRIFT_LIMIT)
             watch.check("foreign", now - t0 > GOAL_HISTORY_S
@@ -942,11 +957,11 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                 raise BlockedError(f"motor {worst} stopped making progress {left} steps from its goal; it may be blocked")
             if now - t0 > 2 * expected + 2:
                 raise BlockedError(f"'{name}' is taking far longer than it should; stopping")
-        cmd, duration = final, time.monotonic() - t0
-    s, last, stalled_since, first = (1.0 if turbo else 0.0), time.monotonic(), None, True
+        cmd, duration = final, _now() - t0
+    s, last, stalled_since, first = (1.0 if turbo else 0.0), _now(), None, True
     cmd = cmd if turbo else dict(start)
     while not turbo:
-        now = time.monotonic()
+        now = _now()
         tel = arm.telemetry(max_age_s=STALE_S)               # raises if any motor's data is stale
         _guard(tel, watch, now, stats, held_pos, held_goal)
         while sent and now - sent[0][0] > GOAL_HISTORY_S:
@@ -979,7 +994,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                 first = False
             else:
                 await _write(arm, cmd)
-            sent.append((time.monotonic(), cmd))
+            sent.append((_now(), cmd))
         if s >= 1.0:
             break
         await asyncio.sleep(1 / RATE_HZ)
@@ -987,10 +1002,10 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     # Arrived? On two different fresh samples: the final goal read back, every moved joint close
     # to it and standing still. All guards stay on until then.
     final = cmd
-    deadline, prev = time.monotonic() + SETTLE_S, None
+    deadline, prev = _now() + SETTLE_S, None
     while True:
         await asyncio.sleep(SETTLE_POLL_S if need_still else 1 / RATE_HZ)
-        now = time.monotonic()
+        now = _now()
         tel = arm.telemetry(max_age_s=STALE_S)
         _guard(tel, watch, now, stats, held_pos, held_goal,
                drift_limit=TURBO_DRIFT_LIMIT if turbo else DRIFT_LIMIT)
@@ -1129,7 +1144,7 @@ async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx
     rest = {m: (tel0[m]["goal"], tel0[m]["pos"]) for m in MOVABLE}
     seen_done: set[str] = set()
     drift_limit = TURBO_DRIFT_LIMIT if max_speed >= SPEED_TURBO else DRIFT_LIMIT
-    t0 = time.monotonic()
+    t0 = _now()
 
     def height(overrides: dict) -> float:     # the measured pose, with these joints replaced
         tel = arm.telemetry(max_age_s=STALE_S)
@@ -1201,7 +1216,7 @@ async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx
         await asyncio.gather(*tasks.values(), return_exceptions=True)
         raise
     ctx["moving"] = _last["driving"] = ()
-    return time.monotonic() - t0
+    return _now() - t0
 
 
 async def _inspect(arm, target: str | None = None) -> dict:

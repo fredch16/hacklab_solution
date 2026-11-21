@@ -1,18 +1,22 @@
 """Motion layer on the simulated 8-motor arm, using the real views.json.
 
-    python3 tests/test_motion_sim.py
+    python3 tests/test_motion_sim.py                          # simulated time, a few seconds
+    MOTION_TEST_REALTIME=1 python3 tests/test_motion_sim.py   # the same on the real clock (~75 s)
 
 Covers: limits and clamping, where-is-the-arm classification, route planning (order of joint
 groups), a full tour, the gripper never being written, and every refusal/abort path:
 limp arm, mirroring, unknown pose, stuck joint, stale data, failed writes, Stop, double start.
 """
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import motion
+import virtual_time
 from motion import (MOVABLE, PITCH, TRANSIT, TURN, clamp_pose, envelope, go_to_view,
                     locate, plan_route)
 from sim_arm import SIM_RANGES, SimArm
@@ -104,13 +108,13 @@ async def main():
     # --- a tour on the simulated arm ---------------------------------------------
     arm = SimArm()
     check(at(arm, "home", 80), "sim starts at home")
-    t0 = time.monotonic()
+    t0 = virtual_time.now()
     for name in ["top", "left", "right", "close", "side_low", "wide", TRANSIT, "home"]:
         r = await go_to_view(arm, name, max_speed=FAST)
         check(r["ok"], f"move to {name}: {r['error']}")
         if name != TRANSIT:
             check(at(arm, name), f"arrived at {name}")
-    print(f"tour of 8 moves ok in {time.monotonic() - t0:.1f}s; last route {r['route']}")
+    print(f"tour of 8 moves ok in {virtual_time.now() - t0:.1f}s; last route {r['route']}")
     check(8 not in arm.written_ids, "the gripper was never written")
     check(arm.joints()[8] == motion.load_views()["home"][8], "the gripper did not move")
     j = arm.joints()
@@ -337,7 +341,7 @@ async def main():
                         overlapped = overlapped or pitching
                     await asyncio.sleep(0.01)
             w = asyncio.create_task(watch_blend())
-            t0 = time.monotonic()
+            t0 = virtual_time.now()
             r = await go_to_view(blend, b, max_speed=speed)
             w.cancel()
             check(r["ok"] and at(blend, b), f"blended {label} {a}->{b} arrives: {r['error']}")
@@ -345,7 +349,7 @@ async def main():
                   f"{label} {a}->{b}: never turning below the clear height (lowest {low_while_turning*100:.0f} cm)")
             if (a, b) == ("top", "right"):
                 check(overlapped, f"{label}: the turn really overlaps the rise or descent")
-                print(f"blended {label} {a}->{b}: {time.monotonic() - t0:.1f}s, lowest while turning {low_while_turning*100:.0f} cm")
+                print(f"blended {label} {a}->{b}: {virtual_time.now() - t0:.1f}s, lowest while turning {low_while_turning*100:.0f} cm")
     jam = SimArm(); jam.stuck = {5}                           # the turn fails while the rise is still going
     r = await go_to_view(jam, "right", max_speed=motion.SPEED_FAST)
     check(not r["ok"] and "motor 5" in r["error"] and r["hold"] == "confirmed" and await still(jam),
@@ -369,10 +373,10 @@ async def main():
 
     # --- turbo: rise and turn on the servos' own profile -------------------------------------
     quick = SimArm()
-    t0 = time.monotonic()
+    t0 = virtual_time.now()
     r = await go_to_view(quick, "left", max_speed=motion.SPEED_TURBO)
     check(r["ok"] and at(quick, "left") and r["route"] == ["rise", "turn", "descend"],
-          f"turbo move arrives ({time.monotonic() - t0:.1f}s): {r['error']}")
+          f"turbo move arrives ({virtual_time.now() - t0:.1f}s): {r['error']}")
     check(8 not in quick.written_ids, "turbo never writes the gripper either")
     jam = SimArm(); jam.stuck = {3}
     r = await go_to_view(jam, "top", max_speed=motion.SPEED_TURBO)
@@ -434,9 +438,9 @@ async def main():
     motion.view_checked = lambda name: name != "wide"
     motion.SPEED_FIRST = 100
     arm = SimArm(start={**VIEWS[TRANSIT], 8: 1279})
-    t0 = time.monotonic()
+    t0 = virtual_time.now()
     r = await go_to_view(arm, "wide", max_speed=FAST)
-    slow_took = time.monotonic() - t0
+    slow_took = virtual_time.now() - t0
     dist = max(abs(VIEWS["wide"][m] - VIEWS[TRANSIT][m]) for m in PITCH)
     check(r["ok"] and slow_took > 1.5 * dist / motion.SPEED_FIRST * 0.8,
           f"unchecked view ran at first-run speed ({slow_took:.1f}s)")
@@ -444,4 +448,8 @@ async def main():
     print(f"ALL OK ({passed} checks)")
 
 
-asyncio.run(main())
+# Simulated time by default (tests/virtual_time.py): the suite takes a few seconds instead of over a
+# minute and every sleep and timeout in it is exact. MOTION_TEST_REALTIME=1 runs it on the real clock.
+t_start = time.perf_counter()
+virtual_time.run(main(), realtime=bool(os.environ.get("MOTION_TEST_REALTIME")))
+print(f"({time.perf_counter() - t_start:.0f} s of real time)")

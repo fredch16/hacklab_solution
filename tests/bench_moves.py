@@ -8,8 +8,9 @@
 
 Runs on the simulated arm only (sim_arm.SimArm), never on Station. By default the simulated arm
 answers like the real one (lag, acceleration limit, shoulder sag: SimArm(realistic=True)) and the
-clock is virtual (tests/virtual_time.py), so the whole table takes seconds and is the same on
-every run. `--ideal` uses the lag-free arm, `--realtime` the real clock.
+clock is simulated (tests/virtual_time.py), so the whole table takes seconds and is the same on
+every run. All times are simulated seconds. `--ideal` uses the lag-free arm, `--realtime` the
+real clock, `--check-clock` runs a few moves on both clocks to show they agree.
 
 Every view counts as checked here (otherwise unchecked views crawl at first-run speed);
 `--as-saved` uses the flags in views.json instead.
@@ -68,11 +69,11 @@ async def run_move(a: str, b: str, speed: float, realistic: bool) -> dict:
     samples = []                                  # (moving pitch, moving turn, moving M1/M5, pose)
 
     async def watch():
-        prev, prev_t = dict(arm._pos), time.monotonic()
+        prev, prev_t = dict(arm._pos), virtual_time.now()
         while True:
             await asyncio.sleep(SAMPLE_S)
             arm.joints()
-            now = time.monotonic()
+            now = virtual_time.now()
             dt = max(now - prev_t, 1e-6)
             vel = {m: abs(arm._pos[m] - prev[m]) / dt for m in prev}
             prev, prev_t = dict(arm._pos), now
@@ -82,9 +83,9 @@ async def run_move(a: str, b: str, speed: float, realistic: bool) -> dict:
 
     start_pose = arm.joints()
     watcher = asyncio.ensure_future(watch())
-    t0 = time.monotonic()
+    t0 = virtual_time.now()
     r = await motion.go_to_view(arm, b, max_speed=speed)
-    took = time.monotonic() - t0
+    took = virtual_time.now() - t0
     watcher.cancel()
     end_pose = arm.joints()
     solo_pitch = sum(dt for p, t, _, dt, _ in samples if p and not t)
@@ -117,6 +118,25 @@ async def bench(pairs, speeds, realistic: bool, quiet: bool = False) -> dict:
     if not quiet:
         print(file=sys.stderr)
     return out
+
+
+CLOCK_CHECK = [("top", "wide"), ("right", "top"), ("home", "left"), ("wide", "transit")]
+
+
+def check_clock(pairs, speeds, realistic: bool) -> int:
+    """The same moves on the simulated clock and on the real one: the durations must agree."""
+    worst = 0.0
+    print("move, speed: simulated s | real s | difference")
+    for label in speeds:
+        for a, b in pairs:
+            sim = virtual_time.run(run_move(a, b, SPEEDS[label], realistic))
+            real = virtual_time.run(run_move(a, b, SPEEDS[label], realistic), realtime=True)
+            diff = (real["time"] - sim["time"]) / sim["time"] * 100
+            worst = max(worst, abs(diff))
+            print(f"{a} -> {b}, {label}: {sim['time']:.2f} | {real['time']:.2f} | {diff:+.1f}%"
+                  f"   route {'>'.join(sim['route'])}{'' if sim['route'] == real['route'] else ' vs ' + '>'.join(real['route'])}")
+    print(f"largest difference {worst:.1f}%")
+    return 0 if worst <= 5 else 1
 
 
 def _cm(v) -> str:
@@ -181,7 +201,9 @@ def main():
     p.add_argument("--speeds", nargs="+", default=list(SPEEDS), choices=list(SPEEDS))
     p.add_argument("--pairs", nargs="+", metavar="FROM:TO", help="only these moves (default: all)")
     p.add_argument("--ideal", action="store_true", help="lag-free simulated arm instead of the realistic one")
-    p.add_argument("--realtime", action="store_true", help="real clock (slow) instead of the virtual one")
+    p.add_argument("--realtime", action="store_true", help="real clock (slow) instead of the simulated one")
+    p.add_argument("--check-clock", action="store_true",
+                   help="run a few moves on both clocks and compare the durations (takes their real time once)")
     p.add_argument("--as-saved", action="store_true", help="use the checked flags in views.json")
     p.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="set a motion.py constant")
     p.add_argument("--json", metavar="FILE", help="write the results here")
@@ -199,13 +221,15 @@ def main():
         setattr(motion, name, json.loads(value.lower()) if value.lower() in ("true", "false") else float(value)
                 if "." in value else int(value))
     pairs = [tuple(x.split(":", 1)) for x in args.pairs] if args.pairs else all_pairs()
-    job = bench(pairs, args.speeds, realistic=not args.ideal)
     virtual = not args.realtime and virtual_time.works()
+    if args.check_clock:
+        return check_clock(pairs if args.pairs else CLOCK_CHECK, args.speeds if args.speeds != list(SPEEDS) else ["fast"],
+                           not args.ideal)
     t0 = time.perf_counter()
-    results = virtual_time.run(job) if virtual else asyncio.run(job)
+    results = virtual_time.run(bench(pairs, args.speeds, realistic=not args.ideal), realtime=not virtual)
     baseline = json.loads(Path(args.compare).read_text())["results"] if args.compare else None
     print(f"simulated arm ({'ideal' if args.ideal else 'realistic response'}), "
-          f"{'virtual' if virtual else 'real'} clock, {'checked flags from views.json' if args.as_saved else 'every view counted as checked'}"
+          f"{'simulated' if virtual else 'real'} clock, {'checked flags from views.json' if args.as_saved else 'every view counted as checked'}"
           f"{', ' + ' '.join(args.set) if args.set else ''}; computed in {time.perf_counter() - t0:.0f} s")
     print("times in s, heights in cm; turn-h = lowest height at which M1 or M5 was moving")
     print(table(results, baseline, args.markdown))

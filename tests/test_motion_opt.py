@@ -11,6 +11,7 @@ route), Stop in the middle of each kind of move (holding, recognised by locate()
 a joint failing mid-move, and the old guards on the new kinds of move.
 """
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -79,12 +80,12 @@ async def watched_move(arm, target, speed, plan=None, start=None):
                 for n in (start, target)]
 
     async def watch():
-        prev, prev_t = dict(arm._pos), time.monotonic()
+        prev, prev_t = dict(arm._pos), virtual_time.now()
         n = 0
         while True:
             await asyncio.sleep(0.01)
             pos = arm.joints()
-            now = time.monotonic()
+            now = virtual_time.now()
             vel = {m: abs(arm._pos[m] - prev[m]) / max(now - prev_t, 1e-6) for m in (1, 5)}
             prev, prev_t = dict(arm._pos), now
             if max(vel.values()) > MOVING:
@@ -269,11 +270,11 @@ async def main():
     motion.view_checked = lambda name: name != "wide"
     slow = SimArm(start=start_pose("top"), realistic=True)
     await settle(slow)
-    t0 = time.monotonic()
+    t0 = virtual_time.now()
     r = await go_to_view(slow, "wide", max_speed=motion.SPEED_TURBO)
     check(r["ok"] and r["route"] == ["rise", "turn", "descend"] and r["kind"] == "hub" and at(slow, "wide"),
           "unchecked view: through the hub")
-    check(time.monotonic() - t0 > 20 and slow.writes > 300, "...at first-run speed, streamed")
+    check(virtual_time.now() - t0 > 20 and slow.writes > 300, "...at first-run speed, streamed")
     motion.view_checked = lambda name: True
 
     # --- Stop in the middle of a direct move, an arc and a turbo direct move ---------------------------
@@ -399,11 +400,11 @@ async def main():
              "turn_peak": 0.0, "handover": None}
 
         async def watch():
-            prev, prev_t, t0 = dict(arm._pos), time.monotonic(), time.monotonic()
+            prev, prev_t, t0 = dict(arm._pos), virtual_time.now(), virtual_time.now()
             while True:
                 await asyncio.sleep(0.01)
                 pos = arm.joints()
-                now = time.monotonic()
+                now = virtual_time.now()
                 vel = {m: abs(arm._pos[m] - prev[m]) / max(now - prev_t, 1e-6) for m in MOVABLE}
                 prev, prev_t = dict(arm._pos), now
                 turning, pitching = max(vel[1], vel[5]) > MOVING, any(vel[m] > MOVING for m in PITCH)
@@ -419,9 +420,9 @@ async def main():
                     f["handover"] = max(abs(pos[m] - HUB[m]) for m in PITCH)
 
         w = asyncio.ensure_future(watch())
-        t0 = time.monotonic()
+        t0 = virtual_time.now()
         r = await go_to_view(arm, b, max_speed=speed)
-        f["time"] = time.monotonic() - t0
+        f["time"] = virtual_time.now() - t0
         w.cancel()
         for k, v in saved.items():
             setattr(motion, k, v)
@@ -469,11 +470,14 @@ async def main():
           f"the descent only takes over within ARRIVE_TOL of the hub ({on['handover']:.0f} steps)")
     off = await blended("home", "left", motion.SPEED_FAST, FAST_DESCENT=False)
     check(on["time"] < off["time"] - 0.5, f"fast descent saves time ({on['time']:.2f} vs {off['time']:.2f} s)")
-    check(motion._duration(5, 800) == 0.2 and motion._duration(60, 800) == 0.45 and motion._duration(2000, 800) == 3.75
-          and motion._duration(200, 800) == motion.MIN_SEGMENT_S, "short hops take as long as they need at slow speed")
-    motion.SHORT_HOPS = False
-    check(motion._duration(5, 800) == motion.MIN_SEGMENT_S, "SHORT_HOPS off: the old minimum")
+    check(motion._duration(5, 800) == motion.MIN_SEGMENT_S and motion._duration(2000, 800) == 3.75,
+          "SHORT_HOPS is off by default: the old minimum segment time")
     motion.SHORT_HOPS = True
+    check(motion._duration(5, 800) == 0.2 and motion._duration(60, 800) == 0.45 and motion._duration(2000, 800) == 3.75
+          and motion._duration(200, 800) == motion.MIN_SEGMENT_S, "SHORT_HOPS on: short hops take as long as they need at slow speed")
+    hop = await blended("home", "top", motion.SPEED_FAST)
+    motion.SHORT_HOPS = False
+    check(hop["time"] <= (await blended("home", "top", motion.SPEED_FAST))["time"] + 0.05, "...and moves still arrive, no slower")
 
     # --- joints between segments are watched too -----------------------------------------------------------
     for label, delay, joint in (("before the turn starts", 0.4, 1), ("after the turn has arrived", 5.2, 5)):
@@ -540,8 +544,6 @@ async def main():
 
 if __name__ == "__main__":
     t0 = time.perf_counter()
-    if virtual_time.works():
-        virtual_time.run(main())
-    else:                                        # no virtual clock on this Python: the same checks, in real time
-        asyncio.run(main())
+    # Simulated time by default; MOTION_TEST_REALTIME=1 runs the same checks on the real clock (slow).
+    virtual_time.run(main(), realtime=bool(os.environ.get("MOTION_TEST_REALTIME")))
     print(f"({time.perf_counter() - t0:.0f} s)")

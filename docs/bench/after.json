@@ -50,11 +50,11 @@
      "turn",
      "descend"
     ],
-    "time": 11.57,
-    "solo_pitch": 9.66,
-    "solo_turn": 0.54,
-    "idle": 1.36,
-    "turn_h": 0.314,
+    "time": 11.85,
+    "solo_pitch": 9.64,
+    "solo_turn": 0.58,
+    "idle": 1.62,
+    "turn_h": null,
     "min_h": 0.07,
     "dip": 0.0
    },
@@ -68,10 +68,10 @@
      "turn",
      "descend"
     ],
-    "time": 11.57,
+    "time": 11.85,
     "solo_pitch": 9.66,
-    "solo_turn": 0.52,
-    "idle": 1.38,
+    "solo_turn": 0.58,
+    "idle": 1.6,
     "turn_h": null,
     "min_h": 0.07,
     "dip": 0.0
@@ -86,10 +86,10 @@
      "turn",
      "descend"
     ],
-    "time": 10.28,
+    "time": 10.78,
     "solo_pitch": 8.7,
-    "solo_turn": 0.4,
-    "idle": 1.18,
+    "solo_turn": 0.44,
+    "idle": 1.64,
     "turn_h": 0.314,
     "min_h": 0.003,
     "dip": 0.0
@@ -318,11 +318,11 @@
      "turn",
      "descend"
     ],
-    "time": 11.57,
+    "time": 11.85,
     "solo_pitch": 9.62,
-    "solo_turn": 0.54,
-    "idle": 1.4,
-    "turn_h": 0.314,
+    "solo_turn": 0.58,
+    "idle": 1.64,
+    "turn_h": null,
     "min_h": 0.072,
     "dip": 0.0
    },
@@ -416,11 +416,11 @@
      "turn",
      "descend"
     ],
-    "time": 11.57,
+    "time": 11.85,
     "solo_pitch": 9.62,
-    "solo_turn": 0.52,
-    "idle": 1.42,
-    "turn_h": 0.314,
+    "solo_turn": 0.58,
+    "idle": 1.64,
+    "turn_h": null,
     "min_h": 0.072,
     "dip": 0.0
    },
@@ -514,10 +514,10 @@
      "turn",
      "descend"
     ],
-    "time": 10.28,
+    "time": 10.78,
     "solo_pitch": 8.68,
-    "solo_turn": 0.4,
-    "idle": 1.2,
+    "solo_turn": 0.44,
+    "idle": 1.66,
     "turn_h": 0.314,
     "min_h": -0.004,
     "dip": 0.0
@@ -709,10 +709,10 @@
      "rise",
      "turn"
     ],
-    "time": 7.73,
+    "time": 7.87,
     "solo_pitch": 6.04,
-    "solo_turn": 0.82,
-    "idle": 0.86,
+    "solo_turn": 0.86,
+    "idle": 0.96,
     "turn_h": 0.314,
     "min_h": 0.07,
     "dip": 0.0
@@ -823,10 +823,10 @@
      "turn",
      "descend"
     ],
-    "time": 8.27,
-    "solo_pitch": 6.0,
-    "solo_turn": 0.82,
-    "idle": 1.44,
+    "time": 9.03,
+    "solo_pitch": 6.02,
+    "solo_turn": 0.84,
+    "idle": 2.16,
     "turn_h": 0.314,
     "min_h": 0.072,
     "dip": 0.0
@@ -1748,11 +1748,11 @@
      "turn",
      "descend"
     ],
-    "time": 4.3,
-    "solo_pitch": 2.54,
-    "solo_turn": 0.04,
-    "idle": 0.52,
-    "turn_h": 0.311,
+    "time": 4.9,
+    "solo_pitch": 3.4,
+    "solo_turn": 0.3,
+    "idle": 0.86,
+    "turn_h": 0.313,
     "min_h": 0.072,
     "dip": 0.0
    },
@@ -1940,7 +1940,7 @@
     "solo_pitch": 3.34,
     "solo_turn": 0,
     "idle": 0.2,
-    "turn_h": 0.305,
+    "turn_h": 0.307,
     "min_h": 0.001,
     "dip": 0.0
    },

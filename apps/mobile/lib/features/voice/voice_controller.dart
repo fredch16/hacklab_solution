@@ -7,15 +7,18 @@ import '../connectivity/signaling.dart';
 import '../recording/recording_controller.dart' show MessageSenderFn;
 import 'voice_commands.dart';
 
-final _phraseChars = RegExp(r"^[A-Za-z' ]+$");
+final _wakeNameChars = RegExp(r"^[A-Za-z' ]{2,40}$");
+final _wakeNameLetter = RegExp(r'[A-Za-z]');
 
-/// Wake phrase rule shared with the phone engine: 2-40 chars, letters, spaces, apostrophes.
-/// Returns the normalised phrase, or null when invalid.
+/// Validate the full phrase sent by the dashboard and normalize the fixed prefix.
 String? validateWakePhrase(String? raw) {
-  final p = raw?.trim().replaceAll(RegExp(r'\s+'), ' ');
-  if (p == null || p.length < 2 || p.length > 40 || !_phraseChars.hasMatch(p))
+  final phrase = raw?.trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (phrase == null || !phrase.toLowerCase().startsWith('hey ')) return null;
+  final name = phrase.substring(4);
+  if (!_wakeNameChars.hasMatch(name) || !_wakeNameLetter.hasMatch(name)) {
     return null;
-  return p;
+  }
+  return 'hey $name';
 }
 
 const _voiceKeys = [

@@ -66,7 +66,10 @@ void main() {
 
   test('wake phrase validation', () {
     expect(validateWakePhrase('  hey   robot '), 'hey robot');
-    expect(validateWakePhrase("don't stop"), "don't stop");
+    expect(validateWakePhrase("don't stop"), isNull);
+    expect(validateWakePhrase(' Hey   ELi '), 'hey ELi');
+    expect(validateWakePhrase('hey Elrobot'), 'hey Elrobot');
+    expect(validateWakePhrase('hey'), isNull);
     expect(validateWakePhrase('a'), isNull);
     expect(validateWakePhrase('hey robot 2'), isNull);
     expect(validateWakePhrase('x' * 41), isNull);

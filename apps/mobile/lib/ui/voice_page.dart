@@ -10,10 +10,12 @@ String voiceStateLabel(String state, String? error) => switch (state) {
   'listening' => 'Voice · Listening for the wake phrase',
   'wake_detected' => 'Voice · Wake phrase heard',
   'recognizing' => 'Voice · Transcribing',
+  'cooling_down' => 'Voice · Getting ready to listen',
   'muted' => 'Voice · Muted',
   'error' => switch (error) {
     'PERMISSION_MIC' => 'Voice · Microphone permission needed',
     'MODEL_MISSING' => 'Voice · Speech models are missing',
+    'VOICE_PROCESSING_FAILED' => 'Voice · Restart the stream to retry',
     'INVALID_WAKE_PHRASE' => 'Voice · This wake phrase cannot be used',
     _ => 'Voice · Error',
   },
@@ -61,7 +63,7 @@ class VoicePage extends StatelessWidget {
                   const Padding(
                     padding: EdgeInsets.only(top: 4),
                     child: Text(
-                      'Set a wake phrase in the dashboard.',
+                      'Set a wake name in the dashboard.',
                       style: TextStyle(color: Tok.textSecondary, fontSize: 14),
                     ),
                   ),

@@ -1,6 +1,5 @@
 package dev.localvision.local_vision
 
-import java.io.File
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -52,27 +51,32 @@ class VoiceLogicTest {
 
     @Test fun phraseValidation() {
         assertEquals("hey robot", WakePhrase.validate("  hey   robot "))
-        assertEquals("don't stop", WakePhrase.validate("don't stop"))
+        assertNull(WakePhrase.validate("don't stop"))
+        assertEquals("hey ELi", WakePhrase.validate(" Hey   ELi "))
+        assertEquals("hey Elrobot", WakePhrase.validate("hey Elrobot"))
+        assertEquals("hey Elrobot", WakePhrase.fromSaved("Elrobot"))
+        assertEquals("hey Robot", WakePhrase.fromSaved("HEY Robot"))
+        assertNull(WakePhrase.fromSaved(null))
+        assertNull(WakePhrase.validate("hey"))
+        assertNull(WakePhrase.validate("hey ''"))
         assertNull(WakePhrase.validate("a"))
         assertNull(WakePhrase.validate(""))
         assertNull(WakePhrase.validate(null))
         assertNull(WakePhrase.validate("hey robot 2"))
         assertNull(WakePhrase.validate("héy robot"))
-        assertNull(WakePhrase.validate("x".repeat(41)))
-        assertNotNull(WakePhrase.validate("x".repeat(40)))
+        assertNull(WakePhrase.validate("hey " + "x".repeat(41)))
+        assertNotNull(WakePhrase.validate("hey " + "x".repeat(40)))
     }
 
-    private val assets = File("src/main/assets/voice/kws")
-
-    @Test fun tokenizesLikeTheModelsOwnKeywordFile() {
-        val vocab = WakePhrase.loadVocab(File(assets, "bpe.vocab").readLines().asSequence())
-        val allowed = WakePhrase.tokensOf(File(assets, "tokens.txt").readLines())
-        // reference tokenization from the model package (keywords.txt via sentencepiece)
-        assertEquals(listOf("▁HE", "LL", "O", "▁WORLD"), WakePhrase.tokenize("hello world", vocab, allowed))
-        assertEquals(listOf("▁GO", "▁HOME"), WakePhrase.tokenize("go home", vocab, allowed))
-        assertEquals(listOf("▁PLAY", "▁MU", "S", "IC"), WakePhrase.tokenize("Play Music", vocab, allowed))
-        assertNotNull(WakePhrase.tokenize("hey robot", vocab, allowed))
-        assertNull(WakePhrase.tokenize("héy", vocab, allowed))
+    @Test fun derivesPronunciationsForArbitraryNamesAndKeepsTheHeyPrefix() {
+        val file = java.io.File("src/main/assets/voice/kws-phone/cmu-lts.bin")
+        val lexicon = mapOf("HEY" to "HH EY1", "ROBOT" to "R OW1 B AA2 T", "ELI" to "IY1 L AY0", "EL" to "EH1 L")
+        val pronunciation = WakePronunciation(lexicon, file.readBytes())
+        assertEquals("HH EY1 R OW1 B AA2 T", pronunciation.phrases("hey Robot").first())
+        assertTrue("HH EY1 EH1 L IY0" in pronunciation.phrases("hey Eli"))
+        assertTrue("HH EY1 EH1 L R AH0 B AA1 T" in pronunciation.phrases("hey Elrobot"))
+        assertEquals(listOf("HH EY1 Z AO1 R B OW0"), pronunciation.phrases("hey Zorbo"))
+        assertEquals(listOf("HH EY1 N AH0 V IH1 R OW0"), pronunciation.phrases("hey Naviro"))
     }
 
     // ---- resampler ----
@@ -111,5 +115,30 @@ class VoiceLogicTest {
         val joined = a + b
         assertTrue(abs(joined.size - whole.size) <= 1)
         for (i in 0 until minOf(joined.size, whole.size)) assertEquals(whole[i].toDouble(), joined[i].toDouble(), 1e-4)
+    }
+
+    @Test fun wakeComesFromTheSpotterAndCommandsRearm() {
+        val flow = VoiceFlow("hey robot")
+        assertTrue(flow.onText("hey robot").isEmpty())
+        repeat(3) { attempt ->
+            val now = attempt * 3000L
+            assertEquals(listOf(VoiceFlow.Action.Wake("hey robot")), flow.onWake(now))
+            assertTrue(flow.onWake(now + 100).isEmpty())
+            assertEquals(listOf(VoiceFlow.Action.Partial("start recording")), flow.onText("start recording"))
+            assertTrue(flow.onVad(now + 400, true).isEmpty())
+            assertEquals(listOf(VoiceFlow.Action.End("silence")), flow.onVad(now + 1400, false))
+            assertTrue(flow.onWake(now + 1500).isEmpty())
+            assertEquals(listOf(VoiceFlow.Action.Rearm), flow.onClock(now + 2400))
+        }
+    }
+
+    @Test fun wakeReplayKeepsTheLatestAudioAcrossChunks() {
+        val replay = WakeAudio(4)
+        replay.append(floatArrayOf(1f, 2f, 3f))
+        assertEquals(listOf(1f, 2f, 3f), replay.samples().toList())
+        replay.append(floatArrayOf(4f, 5f, 6f))
+        assertEquals(listOf(3f, 4f, 5f, 6f), replay.samples().toList())
+        replay.clear()
+        assertTrue(replay.samples().isEmpty())
     }
 }

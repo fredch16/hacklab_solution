@@ -69,7 +69,10 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
             }
         }
         EventChannel(messenger, "dev.localvision/camera_events").setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(args: Any?, s: EventChannel.EventSink) { sink = s }
+            override fun onListen(args: Any?, s: EventChannel.EventSink) {
+                sink = s
+                s.success(mapOf("event" to "voice", "voice" to voice.snapshot()))
+            }
             override fun onCancel(args: Any?) { sink = null }
         })
         main.postDelayed(tick, 1000)

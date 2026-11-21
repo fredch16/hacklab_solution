@@ -1,5 +1,5 @@
 import { qrCanvas } from "./qr.js";
-import { popupReduce, popupView, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakePhrase, voiceStatus } from "./voice.js";
+import { popupReduce, popupView, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakeName, voiceStatus, wakeName } from "./voice.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import { applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent, initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, commandErrorMessage, formatAudio, formatBytes as fmtBytes, formatElapsed, formatProfile, liveElapsed, recordingStateLabel, warningMessage, UNAVAILABLE, } from "./state.js";
 let view = "boot";
@@ -269,6 +269,10 @@ function connect() {
                 live = initialLive();
             state = next;
             live = mergeSnapshotVoice(live, next.snapshot?.voice);
+            const voiceState = next.snapshot?.voice.state;
+            if (popup?.phase === "listening" && (voiceState === "muted" || voiceState === "unavailable" || voiceState === "error")) {
+                setPopup(null);
+            }
             if (view === "dashboard")
                 render();
         }
@@ -437,117 +441,100 @@ function patch(el, nodes) {
             el.querySelector(`[data-focus="${f}"]`)?.focus();
     }
 }
-// ---- voice popup ----
+// ---- voice assistant overlay (page-level, independent of the dashboard DOM) ----
 let popup = null, popupTimer, popupHold = false;
+const ov = (() => {
+    const scrim = h("div", "vscrim"), bar = h("div", "vbar"), title = h("p", "ptitle"), sub = h("p", "psub"), text = h("p", "ptext"), res = h("p", "pres"), ann = h("div", "sr-only");
+    scrim.hidden = bar.hidden = true;
+    scrim.setAttribute("aria-hidden", "true");
+    bar.setAttribute("aria-hidden", "true");
+    ann.setAttribute("aria-live", "polite");
+    ann.setAttribute("role", "status");
+    const dots = h("div", "vdots", ...[0, 1, 2, 3].map(() => h("span", "dot")), h("span", "vdone"));
+    dots.setAttribute("aria-hidden", "true");
+    const x = h("button", "pclose", "\u00D7");
+    x.type = "button";
+    x.setAttribute("aria-label", "Dismiss voice assistant");
+    const sheet = h("section", "vsheet", x, dots, h("div", "pbody", title, sub, text, res), ann);
+    sheet.hidden = true;
+    sheet.setAttribute("role", "group");
+    sheet.setAttribute("aria-label", "Voice assistant");
+    const arm = () => { clearTimeout(popupTimer); if (popup?.phase === "done" && !popupHold)
+        popupTimer = window.setTimeout(() => setPopup(null), 4000); };
+    const hold = () => { popupHold = true; clearTimeout(popupTimer); };
+    const release = () => { popupHold = false; arm(); };
+    sheet.addEventListener("mouseenter", hold);
+    sheet.addEventListener("focusin", hold);
+    sheet.addEventListener("mouseleave", release);
+    sheet.addEventListener("focusout", release);
+    x.onclick = () => setPopup(null);
+    document.body.append(scrim, bar, sheet);
+    return { scrim, bar, sheet, dots, title, sub, text, res, ann, arm };
+})();
 function setPopup(p) {
     const changed = p !== popup;
     popup = p;
-    if (changed) {
-        clearTimeout(popupTimer);
-        if (p && p.phase === "done" && !popupHold)
-            popupTimer = window.setTimeout(() => setPopup(null), 4000);
-    }
-    renderPopup();
-}
-const svgEl = (tag, attrs, cls) => {
-    const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [k, v] of Object.entries(attrs))
-        e.setAttribute(k, v);
-    if (cls)
-        e.setAttribute("class", cls);
-    return e;
-};
-function buildOrb() {
-    const svg = svgEl("svg", { viewBox: "0 0 64 64", width: "64", height: "64" }, "orb");
-    svg.setAttribute("aria-hidden", "true");
-    for (const n of [1, 2, 3])
-        svg.append(svgEl("circle", { cx: "32", cy: "32", r: "16" }, `ring r${n}`));
-    svg.append(svgEl("circle", { cx: "32", cy: "32", r: "16" }, "core"));
-    svg.append(svgEl("rect", { x: "28", y: "22", width: "8", height: "14", rx: "4" }, "mic"));
-    svg.append(svgEl("path", { d: "M25 32a7 7 0 0 0 14 0M32 39v4" }, "mic-line"));
-    return svg;
-}
-function renderPopup() {
-    const d = dash;
-    if (!d)
-        return;
-    d.pop.hidden = !popup;
+    if (changed)
+        ov.arm();
+    ov.scrim.hidden = ov.sheet.hidden = ov.bar.hidden = !popup;
     if (!popup)
         return;
     const v = popupView(popup);
-    d.pop.classList.toggle("anim", v.animating);
-    d.popTitle.textContent = v.title;
-    d.popSub.textContent = v.subtitle ?? "";
-    d.popSub.hidden = !v.subtitle;
-    d.popText.replaceChildren(v.stable ? document.createTextNode(v.stable) : "", ...(v.tail ? [h("span", "tail", v.tail)] : []));
-    if (!v.stable && !v.tail && v.animating)
-        d.popText.replaceChildren(h("span", "tail", "Say your command\u2026"));
-    d.popRes.hidden = !v.result;
-    d.popRes.className = `pres ${v.result?.kind ?? ""}`;
-    d.popRes.textContent = v.result?.text ?? "";
-    if (d.popAnnounce.textContent !== v.announce)
-        d.popAnnounce.textContent = v.announce;
+    ov.sheet.dataset.mode = ov.bar.dataset.mode = v.mode;
+    ov.title.textContent = v.title;
+    ov.sub.textContent = v.subtitle ?? "";
+    ov.sub.hidden = !v.subtitle;
+    ov.text.replaceChildren(...(v.stable ? [document.createTextNode(v.stable)] : []), ...(v.tail ? [h("span", "tail", v.tail)] : []));
+    if (!v.stable && !v.tail && v.mode === "wake")
+        ov.text.replaceChildren(h("span", "tail", "Say your command\u2026"));
+    ov.dots.lastElementChild.textContent = v.glyph;
+    ov.res.hidden = !v.result;
+    ov.res.className = `pres ${v.result?.kind ?? ""}`;
+    ov.res.textContent = v.result?.text ?? "";
+    if (ov.ann.textContent !== v.announce)
+        ov.ann.textContent = v.announce;
 }
 function buildDash() {
     const hdr = h("header", "top"), stale = h("div"), status = h("p", "cam-status"), overlay = h("div", "vp-text");
-    const popTitle = h("p", "ptitle"), popSub = h("p", "psub"), popText = h("p", "ptext"), popRes = h("p", "pres"), popAnnounce = h("div", "sr-only");
-    popAnnounce.setAttribute("aria-live", "polite");
-    popAnnounce.setAttribute("role", "status");
-    const x = h("button", "pclose", "\u00D7");
-    x.type = "button";
-    x.setAttribute("aria-label", "Dismiss voice popup");
-    x.onclick = () => setPopup(null);
-    const pop = h("div", "vpop", x, buildOrb(), h("div", "pbody", popTitle, popSub, popText, popRes));
-    pop.hidden = true;
-    pop.setAttribute("role", "group");
-    pop.setAttribute("aria-label", "Voice command");
-    const hold = () => { popupHold = true; clearTimeout(popupTimer); };
-    const release = () => { popupHold = false; if (popup?.phase === "done") {
-        clearTimeout(popupTimer);
-        popupTimer = window.setTimeout(() => setPopup(null), 4000);
-    } };
-    pop.addEventListener("mouseenter", hold);
-    pop.addEventListener("focusin", hold);
-    pop.addEventListener("mouseleave", release);
-    pop.addEventListener("focusout", release);
-    const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay), pop, popAnnounce);
+    const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay));
     const controls = h("div", "controls"), tags = h("div", "tags"), metrics = h("div"), phone = h("div");
     const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
     const recs = h("div", "contents");
     const recBox = h("div", "contents"), otherBox = h("div", "contents");
-    const vStatus = h("div"), vMute = h("div"), vMsg = h("div"), vLive = h("div"), vList = h("ul", "recs"), vAnnounce = h("div", "sr-only");
+    const vStatus = h("div"), vMute = h("div"), vMsg = h("div"), vList = h("ul", "recs"), vAnnounce = h("div", "sr-only");
     vAnnounce.setAttribute("aria-live", "polite");
     const wakeInput = h("input", "txt");
     wakeInput.id = "wake-input";
     wakeInput.type = "text";
-    wakeInput.maxLength = 40;
+    wakeInput.maxLength = 44;
     wakeInput.autocomplete = "off";
     wakeInput.spellcheck = false;
     wakeInput.setAttribute("aria-describedby", "wake-help wake-msg");
-    const wl = h("label", "lbl", "Wake phrase");
+    const wl = h("label", "lbl", "Wake name");
     wl.htmlFor = "wake-input";
     const saveBtn = h("button", "btn", "Save");
     saveBtn.type = "submit";
     saveBtn.dataset.focus = "wake-save";
-    const help = h("p", "muted", "English only. 2\u201340 letters, spaces or apostrophes. Two words or 6+ letters work best.");
+    const help = h("p", "muted", "Say “Hey” followed by the name.");
     help.id = "wake-help";
     vMsg.id = "wake-msg";
-    const form = h("form", "wake-form", wl, h("div", "controls", wakeInput, saveBtn), help, vMsg);
+    const form = h("form", "wake-form", wl, h("div", "controls", h("span", null, "Hey"), wakeInput, saveBtn), help, vMsg);
     wakeInput.oninput = () => { phraseDirty = true; updateDash(); };
     form.onsubmit = (e) => {
         e.preventDefault();
-        const c = validateWakePhrase(wakeInput.value);
+        const c = validateWakeName(wakeInput.value);
         if (!c.ok) {
             voiceMsg = "";
             phraseNote = c.error;
             updateDash();
             return;
         }
-        phraseNote = c.warning;
+        phraseNote = "";
+        wakeInput.value = wakeName(c.normalized);
         sendCommand("voice.settings.set", { wake_phrase: c.normalized }, "voice");
         phraseDirty = false;
     };
-    const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, vLive, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
+    const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
     const rail = h("aside", "rail", recBox, voiceCard, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
     const title = h("h2", null, "Stop recording?");
     title.id = "dlg-t";
@@ -563,7 +550,7 @@ function buildDash() {
     clearInterval(dashTimer);
     dashTimer = window.setInterval(() => { if (state.snapshot?.recording.state === "recording")
         updateDash(); }, 1000);
-    return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, pop, popTitle, popSub, popText, popRes, popAnnounce, recBox, vStatus, vMute, vMsg, vLive, vList, vAnnounce, wakeInput, saveBtn, otherBox, recs, dlg, grid };
+    return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, recBox, vStatus, vMute, vMsg, vList, vAnnounce, wakeInput, saveBtn, otherBox, recs, dlg, grid };
 }
 const BUSY_REC = ["starting", "recording", "stopping", "finalizing"];
 function recordingCard(s, offline) {
@@ -612,23 +599,16 @@ function updateVoice(d, snap, offline) {
     patch(d.vMute, [mb]);
     if (v.wake_phrase !== lastPhrase) {
         lastPhrase = v.wake_phrase;
-        if (!phraseDirty && v.wake_phrase != null)
-            d.wakeInput.value = v.wake_phrase;
+        if (!phraseDirty)
+            d.wakeInput.value = wakeName(v.wake_phrase ?? "");
     }
-    const chk = validateWakePhrase(d.wakeInput.value);
+    const chk = validateWakeName(d.wakeInput.value);
     d.saveBtn.disabled = offline || isPending("voice");
     patch(d.vMsg, [
         ...(voiceMsg ? [banner("bad", "\u2715", voiceMsg)] : []),
-        ...(phraseDirty && !chk.ok && d.wakeInput.value ? [banner("warn", "!", chk.error ?? "")] : []),
-        ...(phraseDirty && chk.warning ? [banner("warn", "!", chk.warning)] : []),
+        ...(phraseDirty && !chk.ok && d.wakeInput.value ? [banner("warn", "!", chk.error)] : []),
         ...(!phraseDirty && phraseNote ? [banner("warn", "!", phraseNote)] : []),
     ]);
-    const nodes = [];
-    if (live.wake)
-        nodes.push(banner("ok", "\u2605", `Wake detected${live.wake.phrase ? ` \u2014 \u201C${live.wake.phrase}\u201D` : ""}`));
-    if (live.partial)
-        nodes.push(h("p", "partial", live.partial.text || "\u2026"));
-    patch(d.vLive, nodes);
     const list = live.transcripts;
     patch(d.vList, list.length ? list.map((t) => h("li", null, h("strong", null, t.text || "(no speech)"), h("span", "muted tnum", `${formatLocal(t.started_utc)} \u00B7 ${endReasonLabel(t.end_reason)}`), ...(commandBadge(t, live.commands[t.id]) ? [h("span", "pill neutral cmd", commandBadge(t, live.commands[t.id]))] : []))) : [h("li", "muted", "No transcripts yet.")]);
     const top = list[0];

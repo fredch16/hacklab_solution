@@ -154,17 +154,17 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 ## Slices 3–4 — voice (locked owner decisions, see ADR 0004)
 
 ### Commands browser → phone (reply `command.result`)
-- `voice.settings.set` `{"wake_phrase": "hey robot"}` — 2–40 chars, letters/spaces/apostrophes only, ≥ 2 words or ≥ 6 letters recommended (browser warns; phone validates `INVALID_WAKE_PHRASE`). Applies immediately (KWS reloads keywords; state `loading_model` briefly). Persisted on the phone (prefs) across sessions.
+- `voice.settings.set` `{"wake_phrase": "hey Robot"}` — the full phrase begins with the fixed `hey ` prefix. The editable name uses 2–40 characters with English letters, spaces or apostrophes and contains at least one letter. Applies immediately while streaming and is persisted on the phone.
 - `voice.mute` / `voice.unmute` `{}` — mute stops wake detection/transcription only; **never** affects recording audio.
 
 ### Snapshot `voice` (replaces "not_started")
 ```json
-"voice": {"state":"unavailable|loading_model|listening|wake_detected|recognizing|muted|error",
-          "error":null|"MODEL_MISSING|PERMISSION_MIC|VOICE_INTERRUPTED|INVALID_WAKE_PHRASE",
-          "wake_phrase":"hey robot"|null, "language":"en", "model":{"kws":"<name>","asr":"<name>","vad":"silero"}|null,
+"voice": {"state":"unavailable|loading_model|listening|wake_detected|recognizing|cooling_down|muted|error",
+          "error":null|"MODEL_MISSING|PERMISSION_MIC|VOICE_INTERRUPTED|VOICE_PROCESSING_FAILED|INVALID_WAKE_PHRASE",
+          "wake_phrase":"hey robot"|null, "language":"en", "model":{"kws":"<name>"|null,"asr":"<name>","vad":"silero"}|null,
           "transcripts":[{"id","text","started_utc","ended_utc","end_reason":"silence|max_duration|no_speech|cancelled"}]}
 ```
-`transcripts` = this session only, newest first, max 50; `id` equals the events' `utterance_id`. No phrase set → state `unavailable` with reason shown ("Set a wake phrase in the dashboard").
+`transcripts` = this session only, newest first, max 50; `id` equals the events' `utterance_id`. No phrase set → state `unavailable` with reason shown ("Set a wake name in the dashboard").
 
 ### Events phone → browser
 - `voice.wake_detected` `{"utterance_id","phrase","timestamp_utc"}`
@@ -179,4 +179,4 @@ End of command: VAD silence ≥ 1.0 s after speech started, or 15 s since wake (
   - contains "stop recording" (also "end recording") → `recording.stop` (no confirmation for voice)
   - otherwise → no action.
   Emit `voice.command` `{"utterance_id","command":"recording.start|recording.stop|none","ok":bool,"error":null|"<CODE>"}`; snapshot transcripts gain `"command": "recording.start"|"recording.stop"|null`.
-- Wake word verification is done by the owner in the real world; automated checks only cover logic (unit tests).
+- Wake word verification is done by the owner in the real world; automated checks cover the logic and supplied audio fixtures.

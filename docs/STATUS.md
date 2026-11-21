@@ -13,7 +13,7 @@ _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any ag
 | Slice 0 — phone app shell, embedded HTTPS/WSS server, pairing | ✅ QR pairing (browser shows QR, phone scans + Approve), 6-digit code fallback, revoke/replace, live device status (battery/charging instant, thermal, storage, network) |
 | Slice 1 — camera → WebRTC → browser | ✅ Camera starts when the browser clicks **Start video**; H.264 hardware encoder, 640×360 ~25–30 fps, ~0.6–1.3 Mbps, RTT ~26–31 ms over the phone hotspot |
 | Slice 2 — local recording while streaming | ✅ Record/Stop from browser (confirm on stop) and phone; best effort 1080p ~60 fps HEVC + AAC 48 kHz stereo → `Movies/LocalVision` |
-| Slices 3–4 — wake word + command transcription | ⚠️ Implemented; first owner test: wake triggered once then stopped, needed many tries. Rework in progress: continuous streaming ASR with fuzzy wake-phrase matching (replaces the 3.3M KWS model), no silent audio drops. **Needs owner re-test.** |
+| Slices 3–4 — wake word + command transcription | ⚠️ Fixed **Hey** prefix with a name entered in dashboard Settings. Dedicated offline Zipformer spotter with local pronunciation for new names. The Pixel clip test passed the Alexa-versus-Google demo criterion. See [wake regression evidence](evidence/slice-03-wake-2026-11-21.md). **Owner microphone, streaming and recording acceptance pending.** |
 | Voice commands | Static demo rules: "start/begin (the) recording", "record" → start; "stop/end (the) recording" → stop |
 | Dashboard voice overlay | ✅ Assistant-style overlay (bottom sheet, animated bars/waveform, glowing light bar, live text, command result chip), fixed a CSS bug that hid it on desktop |
 | Slice 5 — original file download over LAN | ⏳ Not started |
@@ -24,7 +24,7 @@ _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any ag
 - Pairing: **QR shown in browser, scanned by phone**, code as fallback.
 - Camera starts only on browser **Start video**; stops when video stops.
 - Recording: started/stopped from the **web dashboard** (and phone); separate from Start video; browser may start and stop; **always with audio**; saved to **Movies/LocalVision**; quality best effort (no settings UI).
-- Voice: wake phrase **typed in the dashboard** (persisted on phone); **English only**; command ends after **~1 s silence**, 15 s cap, 5 s no-speech; transcripts **session-only, in memory**; listening **starts with the video stream**; must run simultaneously with streaming and recording; no audio leaves the phone.
+- Voice: fixed **Hey** plus a name **typed in the dashboard** (persisted on phone); **English only**; command ends after **~1 s silence**, 15 s cap, 5 s no-speech; transcripts **session-only, in memory**; listening **starts with the video stream**; must run simultaneously with streaming and recording; no audio leaves the phone.
 - Dashboard: wake word shows a bold assistant-style popup (like "Hey Google"/Alexa).
 - Commits: author **Ajay Chodankar <achodankar28@gmail.com>** (repo-local git config).
 
@@ -50,10 +50,10 @@ Kotlin unit tests: `cd apps/mobile/android && ./gradlew :app:testDebugUnitTest`.
 Phone joins a public Wi-Fi (client isolation — PC↔phone impossible there) **and** runs its **hotspot**; the PC is on the hotspot (phone `10.181.249.119`, PC `10.181.249.x`). Dashboard: `https://10.181.249.119:8443`. adb over wireless debugging (mDNS serial `adb-59110DLCQ0037P-…`).
 
 ## Known issues / open items
-- Voice accuracy & repeated wake — rework pending owner re-test (see table).
+- Voice false wake rate, latency and repeated wake under load — owner re-test pending (see table).
 - Not owner-tested yet: revoke flow in browser, WAN-disabled offline run, PC Wi-Fi drop/reconnect, camera-permission-denied path, A/V sync (clap test), low-storage auto-stop.
 - Certificate regenerates when the phone's Wi-Fi/hotspot IP set changes (browser warning again).
-- `minSdk` 30 (Android 11+). APK ~230 MB debug (models + WebRTC).
+- `minSdk` 30 (Android 11+). APK ~270 MB debug (models + WebRTC).
 - Dev-only: `apps/dashboard/dev/server.mjs` is a mock phone for UI work; not shipped.
 
 ## Next

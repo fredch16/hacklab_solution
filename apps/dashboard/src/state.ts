@@ -294,7 +294,7 @@ export function commandErrorMessage(code: string | null | undefined, message?: s
     DEVICE_IN_USE: "The camera is in use by another app.",
     CAPABILITY_UNSUPPORTED: "The phone does not support that camera mode.",
     CAMERA_FAILED: "The camera failed on the phone.",
-    INVALID_WAKE_PHRASE: "The phone rejected that wake phrase. Use 2\u201340 letters, spaces or apostrophes.",
+    INVALID_WAKE_PHRASE: "The phone rejected that wake name. Use 2–40 characters with English letters, spaces or apostrophes.",
     MODEL_MISSING: "The voice model is missing on the phone.",
     VOICE_INTERRUPTED: "Voice was interrupted on the phone.",
   };

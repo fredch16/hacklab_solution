@@ -3,35 +3,25 @@ import { commandErrorMessage } from "./state.js";
 
 export interface VoiceTranscript { id: string; text: string; started_utc: string | null; ended_utc: string | null; end_reason: string | null; command?: string | null }
 export interface LiveVoice {
-  wake: { utteranceId: string; phrase: string | null } | null;
-  partial: { utteranceId: string; text: string } | null;
   transcripts: VoiceTranscript[]; // newest first
   commands: Record<string, { command: string | null; ok: boolean; error: string | null }>; // voice.command results by utterance id
 }
 export const MAX_TRANSCRIPTS = 50;
-export const initialLive = (): LiveVoice => ({ wake: null, partial: null, transcripts: [], commands: {} });
+export const initialLive = (): LiveVoice => ({ transcripts: [], commands: {} });
 
 const ts = (t: VoiceTranscript) => Date.parse(t.started_utc ?? t.ended_utc ?? "") || 0;
 const newestFirst = (list: VoiceTranscript[]) => [...list].sort((a, b) => ts(b) - ts(a)).slice(0, MAX_TRANSCRIPTS);
 
-/** Apply a phone->browser voice.* event. Unknown types are ignored. */
+/** Fold finals and command results from phone->browser voice.* events into the transcript list. (Wake/partials drive the popup only.) */
 export function applyVoiceEvent(live: LiveVoice, type: string, p: any): LiveVoice {
   const id = typeof p?.utterance_id === "string" ? p.utterance_id : null;
   switch (type) {
-    case "voice.wake_detected":
-      return id ? { ...live, wake: { utteranceId: id, phrase: p.phrase ?? null }, partial: null } : live;
-    case "voice.transcript.partial":
-      // a late partial for an utterance that already has its final must not resurrect the partial line
-      if (!id || typeof p.text !== "string" || live.transcripts.some((t) => t.id === id)) return live;
-      return { ...live, partial: { utteranceId: id, text: p.text } };
     case "voice.transcript.final": {
       if (!id) return live;
       const t: VoiceTranscript = { id, text: String(p.text ?? ""), started_utc: p.started_utc ?? null, ended_utc: p.ended_utc ?? null, end_reason: p.end_reason ?? null };
       return {
-        wake: live.wake?.utteranceId === id ? null : live.wake,
-        partial: live.partial?.utteranceId === id ? null : live.partial,
+        ...live,
         transcripts: newestFirst([t, ...live.transcripts.filter((x) => x.id !== id)]),
-        commands: live.commands,
       };
     }
     case "voice.command":
@@ -48,20 +38,12 @@ export function commandBadge(t: VoiceTranscript, ev?: LiveVoice["commands"][stri
   return command === "recording.start" ? "\u25B6 Started recording" : command === "recording.stop" ? "\u25A0 Stopped recording" : null;
 }
 
-/** Fold a snapshot's voice block in: snapshot transcripts win by id; transient wake/partial clear when voice is idle. */
-export function mergeSnapshotVoice(live: LiveVoice, snap: { state?: string | null; transcripts?: VoiceTranscript[] | null } | null | undefined): LiveVoice {
+/** Fold a snapshot's voice block in: snapshot transcripts win by id. */
+export function mergeSnapshotVoice(live: LiveVoice, snap: { transcripts?: VoiceTranscript[] | null } | null | undefined): LiveVoice {
   if (!snap) return live;
   const byId = new Map(live.transcripts.map((t) => [t.id, t]));
   for (const t of snap.transcripts ?? []) byId.set(t.id, t);
-  const transcripts = newestFirst([...byId.values()]);
-  const active = snap.state === "wake_detected" || snap.state === "recognizing";
-  const done = (id: string | undefined) => !!id && byId.has(id);
-  return {
-    wake: active && live.wake && !done(live.wake.utteranceId) ? live.wake : null,
-    partial: active && live.partial && !done(live.partial.utteranceId) ? live.partial : null,
-    transcripts,
-    commands: live.commands,
-  };
+  return { ...live, transcripts: newestFirst([...byId.values()]) };
 }
 
 export function endReasonLabel(r: string | null | undefined): string {
@@ -79,6 +61,7 @@ const ERR: Record<string, string> = {
   MODEL_MISSING: "The voice model is missing on the phone.",
   PERMISSION_MIC: "Microphone permission is not granted on the phone.",
   VOICE_INTERRUPTED: "Voice was interrupted — the microphone may be in use by another app.",
+  VOICE_PROCESSING_FAILED: "Voice processing stopped. Restart the video stream to retry.",
   INVALID_WAKE_PHRASE: "The phone rejected the wake phrase.",
 };
 export function voiceStatus(v: { state?: string | null; error?: string | null; wake_phrase?: string | null } | null | undefined): VoiceStatus {
@@ -86,28 +69,30 @@ export function voiceStatus(v: { state?: string | null; error?: string | null; w
     case "listening": return { icon: "◉", text: "Listening", detail: null, sev: "ok" };
     case "wake_detected": return { icon: "★", text: "Wake detected", detail: null, sev: "ok" };
     case "recognizing": return { icon: "…", text: "Recognizing…", detail: null, sev: "ok" };
+    case "cooling_down": return { icon: "…", text: "Getting ready to listen", detail: null, sev: "neutral" };
     case "muted": return { icon: "✕", text: "Muted", detail: "Wake detection and transcription are off.", sev: "neutral" };
     case "loading_model": return { icon: "↻", text: "Loading model…", detail: null, sev: "warn" };
     case "error": return { icon: "!", text: "Error", detail: (v.error && ERR[v.error]) || (v.error ? `Voice error (${v.error}).` : "Voice failed on the phone."), sev: "bad" };
-    case "unavailable": return { icon: "–", text: "Unavailable", detail: v.wake_phrase ? "Starts with the video stream." : "Set a wake phrase in the dashboard.", sev: "neutral" };
+    case "unavailable": return { icon: "–", text: "Unavailable", detail: v.wake_phrase ? "Starts with the video stream." : "Set a wake name in the dashboard.", sev: "neutral" };
     default: return { icon: "–", text: "Unavailable", detail: null, sev: "neutral" };
   }
 }
 
-const COMMON = new Set(["hey", "hi", "hello", "ok", "okay", "yes", "no", "stop", "go", "start", "help"]);
-export interface PhraseCheck { ok: boolean; normalized: string; error: string | null; warning: string | null }
-/** Mirrors the contract: 2-40 chars, letters/spaces/apostrophes. Phone remains the authority. */
-export function validateWakePhrase(raw: string): PhraseCheck {
-  const normalized = raw.trim().replace(/\s+/g, " ");
-  const bad = (error: string): PhraseCheck => ({ ok: false, normalized, error, warning: null });
-  if (normalized.length < 2) return bad("Enter at least 2 characters.");
-  if (normalized.length > 40) return bad("Use at most 40 characters.");
-  if (!/^[A-Za-z' ]+$/.test(normalized)) return bad("Use letters, spaces and apostrophes only (English).");
-  const words = normalized.split(" ").length, letters = normalized.replace(/[^A-Za-z]/g, "").length;
-  let warning: string | null = null;
-  if (words < 2 && letters < 6) warning = "Short single words trigger by accident. Use two words or at least 6 letters.";
-  else if (COMMON.has(normalized.toLowerCase())) warning = "This is a very common word and may trigger by accident.";
-  return { ok: true, normalized, error: null, warning };
+export type WakeNameCheck =
+  | { ok: true; normalized: string }
+  | { ok: false; error: string };
+
+export function wakeName(value: string): string {
+  return value.trim().replace(/\s+/g, " ").replace(/^hey(?: |$)/i, "");
+}
+
+export function validateWakeName(raw: string): WakeNameCheck {
+  const name = wakeName(raw);
+  if (name.length < 2 || name.length > 40) return { ok: false, error: "Enter a name with 2–40 characters." };
+  if (!/^[A-Za-z' ]+$/.test(name) || !/[A-Za-z]/.test(name)) {
+    return { ok: false, error: "Use English letters, spaces or apostrophes." };
+  }
+  return { ok: true, normalized: `hey ${name}` };
 }
 
 // ---------- Voice popup state machine ----------
@@ -128,14 +113,14 @@ export function popupReduce(p: Popup | null, type: string, e: any): Popup | null
 }
 
 export interface PopupView {
-  title: string; subtitle: string | null; stable: string; tail: string; animating: boolean;
+  title: string; subtitle: string | null; stable: string; tail: string; mode: "wake" | "recognizing" | "done"; glyph: string;
   result: { kind: "rec" | "neutral" | "bad"; text: string } | null; announce: string;
 }
 export function popupView(p: Popup): PopupView {
   if (p.phase === "listening") {
     const m = /^(.*?)(\S+)$/.exec(p.text.trimEnd());
     const stable = m ? (m[1] as string) : "", tail = m ? (m[2] as string) : "";
-    return { title: "Listening…", subtitle: p.phrase ? `Wake phrase “${p.phrase}”` : null, stable, tail, animating: true, result: null, announce: "Listening" };
+    return { title: "Listening…", subtitle: p.phrase ? `Wake phrase “${p.phrase}”` : null, stable, tail, mode: stable || tail ? "recognizing" : "wake", glyph: "", result: null, announce: "Listening" };
   }
   const none = p.text === "" || p.endReason === "no_speech";
   let result: PopupView["result"] = null;
@@ -147,5 +132,5 @@ export function popupView(p: Popup): PopupView {
       : c.command === "recording.stop" ? { kind: "neutral", text: "■ Stopping recording" }
       : { kind: "neutral", text: "No matching command" };
   }
-  return { title: none ? "No command" : "Heard", subtitle: null, stable: none ? "" : p.text, tail: "", animating: false, result, announce: [none ? "" : p.text, result?.text].filter(Boolean).join(". ") || "Didn’t hear a command" };
+  return { title: none ? "No command" : "Heard", subtitle: null, stable: none ? "" : p.text, tail: "", mode: "done", glyph: result?.kind === "bad" ? "!" : none || result?.text === "No matching command" ? "\u2013" : "\u2713", result, announce: [none ? "" : p.text, result?.text].filter(Boolean).join(". ") || "Didn’t hear a command" };
 }

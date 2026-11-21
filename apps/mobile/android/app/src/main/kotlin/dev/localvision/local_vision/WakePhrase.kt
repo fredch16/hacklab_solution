@@ -1,15 +1,35 @@
 package dev.localvision.local_vision
 
+import java.util.Locale
+
 /** Wake phrase rules and on-device BPE tokenization for the open-vocabulary keyword spotter. */
 object WakePhrase {
-    private val allowed = Regex("^[A-Za-z' ]+$")
+    private val allowed = Regex("^[A-Za-z' ]{2,40}$")
+    private val space = Regex("\\s+")
+    private const val PREFIX = "hey "
 
-    /** Normalised phrase (single spaces) or null when invalid: 2-40 chars, letters/spaces/apostrophes. */
+    /** Validate the full phrase sent by the paired dashboard. */
     fun validate(raw: String?): String? {
-        val p = raw?.trim()?.replace(Regex("\\s+"), " ") ?: return null
-        if (p.length !in 2..40 || !allowed.matches(p)) return null
-        return p
+        val phrase = raw?.trim()?.replace(space, " ") ?: return null
+        if (!phrase.startsWith(PREFIX, ignoreCase = true)) return null
+        val name = phrase.substring(PREFIX.length)
+        if (!allowed.matches(name) || name.none { it.isLetter() }) return null
+        return PREFIX + name
     }
+
+    /** Saved phrases from before the fixed prefix are reused as the editable name. */
+    fun fromSaved(raw: String?): String? {
+        val saved = raw?.trim() ?: return null
+        if (saved.equals("hey", ignoreCase = true)) return null
+        return if (saved.startsWith(PREFIX, ignoreCase = true)) validate(saved) else validate(PREFIX + saved)
+    }
+
+    fun loadPronunciations(lines: Sequence<String>): Map<String, String> =
+        lines.mapNotNull { line ->
+            val key = line.substringBefore(' ')
+            val phones = line.substringAfter(' ', "")
+            if (key.isEmpty() || phones.isEmpty() || '(' in key) null else key to phones
+        }.toMap()
 
     /** piece -> unigram score, from the model's bpe.vocab ("piece<TAB>score"). */
     fun loadVocab(lines: Sequence<String>): Map<String, Float> {
@@ -27,7 +47,7 @@ object WakePhrase {
      */
     fun tokenize(phrase: String, vocab: Map<String, Float>, allowedPieces: Set<String>): List<String>? {
         val out = mutableListOf<String>()
-        for (word in phrase.trim().uppercase().split(' ').filter { it.isNotEmpty() }) {
+        for (word in phrase.trim().uppercase(Locale.ROOT).split(' ').filter { it.isNotEmpty() }) {
             val s = "▁$word"
             val n = s.length
             val best = FloatArray(n + 1) { Float.NEGATIVE_INFINITY }

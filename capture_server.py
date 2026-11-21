@@ -69,6 +69,16 @@ MCP_URL = "http://127.0.0.1:8200/mcp"
 # Runtime toggles: attributes of the motion module (docs/MOTION.md, "Speeds and blending"). Changed only
 # through State.change_settings (command owner, never while moving); back to these defaults on restart.
 SETTINGS = {
+    "DIRECT": {"type": "bool", "label": "Go straight from view to view",
+               "help": "Between two checked views all joints move together in one straight move, without going "
+                       "up to the transit pose, whenever the geometry model shows that path never dips below "
+                       "its two end views. Off: every move goes up through transit. Views marked "
+                       "\"direct\": false (home) always go through transit."},
+    "ARC": {"type": "bool", "label": "Lift over when straight would dip",
+            "help": "For pairs whose straight path would dip (left and right, for example): take the same "
+                    "path but lifted in the middle, instead of going all the way up through transit. Only the "
+                    "geometry model vouches for these: watch the first run of each pair. Off: those pairs go "
+                    "through transit."},
     "BLEND": {"type": "bool", "label": "Blend the turn into rise and descent",
               "help": "At Fast and Turbo the arm starts turning while it is still rising, and starts coming down "
                       "while it is still turning, but only high above the desk. Off: strictly rise, then turn, "

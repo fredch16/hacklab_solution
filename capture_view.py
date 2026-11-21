@@ -89,6 +89,8 @@ async def capture(arm: Arm, data: dict, name: str, cam=None, description: str = 
             view["snapshot"] = f"views/{name}.jpg"
         except RuntimeError as e:
             logger.warning("no snapshot for %s: %s", name, e)
+    if data["views"].get(name, {}).get("direct") is False:
+        view["direct"] = False      # an explicit "never go direct to or from this view" survives a re-capture
     data["views"][name] = view
     if name == "transit":       # every route passes through it: re-teaching it un-checks all views
         for other in data["views"].values():

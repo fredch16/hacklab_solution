@@ -1,0 +1,63 @@
+simulated arm (realistic response), virtual clock, every view counted as checked; computed in 38 s
+times in s, heights in cm; turn-h = lowest height at which M1 or M5 was moving
+move                 | normal: time  solo idle turn-h dip  route | fast: time  solo idle turn-h dip  route | turbo: time  solo idle turn-h dip  route
+home -> left         |  15.6  14.2  1.4   31   0  rise>turn>descend |   8.6   6.0  0.3   27   0  rise>turn>descend |   5.3   3.7  0.1   26   0  rise>turn>descend
+home -> right        |  15.5  14.0  1.5   31   0  rise>turn>descend |   8.6   6.1  0.3   26   0  rise>turn>descend |   5.3   3.6  0.2   26   0  rise>turn>descend
+home -> top          |  11.8  10.2  1.6    -   0  rise>turn>descend |   8.1   6.7  0.8    -   0  rise>turn>descend |   5.0   4.1  0.5   26   0  rise>turn>descend
+home -> wide         |  11.8  10.2  1.6    -   0  rise>turn>descend |   8.1   6.8  0.8    -   0  rise>turn>descend |   5.0   4.1  0.5   26   0  rise>turn>descend
+home -> close        |  10.8   9.1  1.6   31   0  rise>turn>descend |   7.1   6.0  0.6   28   0  rise>turn>descend |   4.6   3.7  0.5   26   0  rise>turn>descend
+home -> side_low     |  15.5  14.1  1.3   31   0  rise>turn>descend |   8.6   6.1  0.3   27   0  rise>turn>descend |   5.3   3.7  0.2   26   0  rise>turn>descend
+left -> home         |  15.6  14.2  1.4   31   0  rise>turn>descend |   9.8   7.4  0.4   28   0  rise>turn>descend |   5.9   4.3  0.1   26   0  rise>turn>descend
+left -> right        |  17.1  15.7  1.4   31   0  rise>turn>descend |   8.6   4.4  0.3   25   0  rise>turn>descend |   4.9   2.8  0.1   26   0  rise>turn>descend
+left -> top          |  13.1  11.8  1.3   31   0  rise>turn>descend |   7.3   4.8  0.4   28   0  rise>turn>descend |   4.6   3.0  0.1   26   0  rise>turn>descend
+left -> wide         |  13.1  11.8  1.3   31   0  rise>turn>descend |   7.3   4.8  0.4   28   0  rise>turn>descend |   4.6   3.0  0.1   26   0  rise>turn>descend
+left -> close        |  12.0  10.7  1.3   31   0  rise>turn>descend |   6.2   3.8  0.3   28   0  rise>turn>descend |   4.1   2.4  0.1   26   0  rise>turn>descend
+left -> side_low     |  10.4   9.2  1.2    -   0  rise>turn>descend |   7.7   6.0  0.8    -   0  rise>turn>descend |   4.9   3.8  0.4   27   0  rise>turn>descend
+right -> home        |  15.5  13.9  1.5   31   0  rise>turn>descend |   9.8   7.5  0.4   27   0  rise>turn>descend |   5.9   4.3  0.1   27   0  rise>turn>descend
+right -> left        |  17.1  15.7  1.4   31   0  rise>turn>descend |   8.6   4.3  0.4   25   0  rise>turn>descend |   5.0   2.8  0.1   27   0  rise>turn>descend
+right -> top         |  13.0  11.6  1.4   31   0  rise>turn>descend |   7.3   4.9  0.4   27   0  rise>turn>descend |   4.6   3.0  0.1   27   0  rise>turn>descend
+right -> wide        |  12.8  11.6  1.3   31   0  rise>turn>descend |   7.3   4.9  0.4   27   0  rise>turn>descend |   4.6   3.0  0.1   27   0  rise>turn>descend
+right -> close       |  11.9  10.8  1.1   31   0  rise>turn>descend |   6.2   3.7  0.3   27   0  rise>turn>descend |   4.1   2.4  0.1   27   0  rise>turn>descend
+right -> side_low    |  17.0  15.6  1.4   31   0  rise>turn>descend |   8.7   4.6  0.4   25   0  rise>turn>descend |   5.0   2.8  0.1   27   0  rise>turn>descend
+top -> home          |  11.8  10.2  1.6    -   0  rise>turn>descend |   9.4   7.9  0.9    -   0  rise>turn>descend |   5.8   5.0  0.4   29   0  rise>turn>descend
+top -> left          |  13.1  11.8  1.3   31   0  rise>turn>descend |   7.3   4.9  0.2   29   0  rise>turn>descend |   4.8   3.2  0.1   28   0  rise>turn>descend
+top -> right         |  13.0  11.6  1.4   31   0  rise>turn>descend |   7.3   5.0  0.2   29   0  rise>turn>descend |   4.8   3.2  0.1   28   0  rise>turn>descend
+top -> wide          |   8.3   7.2  1.1    -   0  rise>turn>descend |   6.9   6.0  0.9    -   0  rise>turn>descend |   4.6   4.2  0.4    -   0  rise>turn>descend
+top -> close         |   8.3   6.7  1.5   31   0  rise>turn>descend |   5.8   4.7  0.7   30   0  rise>turn>descend |   4.0   3.3  0.3   28   0  rise>turn>descend
+top -> side_low      |  13.0  11.7  1.3   31   0  rise>turn>descend |   7.3   5.0  0.2   29   0  rise>turn>descend |   4.8   3.2  0.1   28   0  rise>turn>descend
+wide -> home         |  11.8  10.2  1.6    -   0  rise>turn>descend |   9.4   7.8  1.0    -   0  rise>turn>descend |   5.9   5.0  0.5   26   0  rise>turn>descend
+wide -> left         |  13.1  11.8  1.3   31   0  rise>turn>descend |   7.3   4.9  0.2   28   0  rise>turn>descend |   4.9   3.1  0.2   26   0  rise>turn>descend
+wide -> right        |  12.8  11.6  1.3   31   0  rise>turn>descend |   7.3   5.0  0.2   28   0  rise>turn>descend |   4.9   3.1  0.3   26   0  rise>turn>descend
+wide -> top          |   8.3   7.2  1.1    -   0  rise>turn>descend |   6.9   6.0  0.9    -   0  rise>turn>descend |   4.7   4.2  0.5    -   0  rise>turn>descend
+wide -> close        |   8.3   6.7  1.6   31   0  rise>turn>descend |   5.8   4.7  0.7   31   0  rise>turn>descend |   4.2   3.3  0.5   26   0  rise>turn>descend
+wide -> side_low     |  13.0  11.7  1.3   31   0  rise>turn>descend |   7.3   4.9  0.2   28   0  rise>turn>descend |   4.9   3.1  0.3   26   0  rise>turn>descend
+close -> home        |  10.8   9.1  1.7   31   0  rise>turn>descend |   8.9   7.5  1.0   31   0  rise>turn>descend |   5.6   4.9  0.4   27   0  rise>turn>descend
+close -> left        |  12.0  10.7  1.3   31   0  rise>turn>descend |   6.9   4.7  0.2   29   0  rise>turn>descend |   4.6   3.0  0.1   27   0  rise>turn>descend
+close -> right       |  11.9  10.8  1.1   31   0  rise>turn>descend |   6.9   4.6  0.2   29   0  rise>turn>descend |   4.6   3.0  0.1   27   0  rise>turn>descend
+close -> top         |   8.3   6.7  1.5   31   0  rise>turn>descend |   6.4   5.1  0.9   31   0  rise>turn>descend |   4.4   3.6  0.4   27   0  rise>turn>descend
+close -> wide        |   8.3   6.7  1.6   31   0  rise>turn>descend |   6.4   5.1  0.9   31   0  rise>turn>descend |   4.4   3.6  0.4   27   0  rise>turn>descend
+close -> side_low    |  11.7  10.6  1.1   31   0  rise>turn>descend |   6.9   4.7  0.2   29   0  rise>turn>descend |   4.6   3.0  0.1   27   0  rise>turn>descend
+side_low -> home     |  15.5  14.1  1.4   31   0  rise>turn>descend |   9.8   7.4  0.4   28   0  rise>turn>descend |   5.9   4.3  0.1   26   0  rise>turn>descend
+side_low -> left     |  10.3   9.2  1.2    -   0  rise>turn>descend |   7.7   6.0  0.8    -   0  rise>turn>descend |   4.9   3.8  0.4   27   0  rise>turn>descend
+side_low -> right    |  17.0  15.6  1.4   31   0  rise>turn>descend |   8.7   4.5  0.4   25   0  rise>turn>descend |   4.9   2.8  0.1   26   0  rise>turn>descend
+side_low -> top      |  13.0  11.7  1.3   31   0  rise>turn>descend |   7.3   4.8  0.4   28   0  rise>turn>descend |   4.6   3.0  0.1   26   0  rise>turn>descend
+side_low -> wide     |  13.0  11.7  1.3   31   0  rise>turn>descend |   7.3   4.8  0.4   28   0  rise>turn>descend |   4.6   3.0  0.1   26   0  rise>turn>descend
+side_low -> close    |  11.7  10.6  1.1   31   0  rise>turn>descend |   6.2   3.8  0.3   28   0  rise>turn>descend |   4.1   2.4  0.1   26   0  rise>turn>descend
+home -> transit      |   7.9   6.9  1.0   31   0  rise>turn |   4.0   2.8  0.3   28   0  rise>turn |   2.3   1.4  0.2   26   0  rise>turn
+left -> transit      |   8.7   7.9  0.8   31   0  rise>turn |   4.3   2.6  0.3   28   0  rise>turn |   2.5   1.0  0.2   26   0  rise>turn
+right -> transit     |   9.0   8.2  0.8   31   0  rise>turn |   4.4   2.7  0.3   27   0  rise>turn |   2.5   1.1  0.2   27   0  rise>turn
+top -> transit       |   5.2   4.3  0.9   31   0  rise>turn |   2.7   1.8  0.3   30   0  rise>turn |   1.8   1.2  0.1   28   0  rise>turn
+wide -> transit      |   5.2   4.2  1.0   31   0  rise>turn |   2.7   1.8  0.3   30   0  rise>turn |   1.9   1.2  0.2   26   0  rise>turn
+close -> transit     |   4.2   3.2  1.0    -   0  rise>turn |   2.3   1.5  0.3    -   0  rise>turn |   1.6   1.1  0.1   27   0  rise>turn
+side_low -> transit  |   8.8   7.9  0.9   31   0  rise>turn |   4.3   2.8  0.3   28   0  rise>turn |   2.5   1.1  0.2   26   0  rise>turn
+transit -> home      |   9.0   6.9  2.2   31   0  rise>turn>descend |   7.8   6.9  0.9   31   0  rise>turn>descend |   4.4   4.2  0.1   31   0  rise>turn>descend
+transit -> left      |   9.9   8.0  1.9   31   0  rise>turn>descend |   5.7   4.3  0.2   30   0  rise>turn>descend |   3.9   2.5  0.2   27   0  rise>turn>descend
+transit -> right     |  10.1   8.2  1.9   31   0  rise>turn>descend |   5.7   4.2  0.2   30   0  rise>turn>descend |   3.9   2.5  0.2   27   0  rise>turn>descend
+transit -> top       |   6.4   4.3  2.1   31   0  rise>turn>descend |   5.3   4.3  1.0   31   0  rise>turn>descend |   3.1   3.0  0.1   31   0  rise>turn>descend
+transit -> wide      |   6.4   4.3  2.1   31   0  rise>turn>descend |   5.3   4.2  1.0   31   0  rise>turn>descend |   3.1   3.0  0.1   31   0  rise>turn>descend
+transit -> close     |   5.3   3.2  2.1    -   0  rise>turn>descend |   4.2   3.2  1.1    -   0  rise>turn>descend |   2.7   2.4  0.3   31   0  rise>turn>descend
+transit -> side_low  |   9.9   7.9  2.0   31   0  rise>turn>descend |   5.7   4.3  0.2   30   0  rise>turn>descend |   4.0   2.6  0.2   27   0  rise>turn>descend
+
+normal total   633.7 s over 56 moves (view to view:   527.7 s over 42); one group alone  555.2 s (pitch 397.0, turn 158.2), nothing moving   78.1 s; lowest M1/M5 turn 31 cm; worst dip below the end poses 0.0 cm; failed 0
+fast   total   385.4 s over 56 moves (view to view:   320.9 s over 42); one group alone  275.6 s (pitch 251.0, turn 24.7), nothing moving   26.5 s; lowest M1/M5 turn 25 cm; worst dip below the end poses 0.0 cm; failed 0
+turbo  total   244.9 s over 56 moves (view to view:   204.7 s over 42); one group alone  172.8 s (pitch 159.9, turn 12.8), nothing moving   11.9 s; lowest M1/M5 turn 26 cm; worst dip below the end poses 0.0 cm; failed 0

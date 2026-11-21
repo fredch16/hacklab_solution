@@ -8,6 +8,7 @@
           Writes the same views.json + views/<name>.jpg as capture_view.py.
 /control  control: click a saved view and the arm moves there (motion.go_to_view); STOP holds it where it is.
 /api/still.jpg  one camera JPEG for the MCP server (mcp_server.py), only while the arm holds still; read-only.
+/api/frame      preview of framing a box from the current image (framing.py); dry_run only, never moves.
 
 Read-only extras for the control page: /api/telemetry (per-joint table), /api/pose (stick-figure points from
 fk.py), /api/history (last moves), /api/settings (GET), /api/extras (is the MCP server up).
@@ -39,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+import framing
 import motion
 from camera import Camera, list_camera_queues
 from capture_view import GUIDED_VIEWS, NAME_RE, SNAPSHOT_DIR, VIEWS_PATH, capture, load_views, save_views
@@ -59,6 +61,7 @@ HOLD_CONFIRM_S = 1.5  # ...and we give up waiting for that after this long
 STALE_CLICK = "the arm was stopped since this page last updated; check the arm and click again"
 DRAIN_S = 3.0       # shutdown: how long to wait for the stopped move task to end
 WHERE_TTL_S = 1.0   # motion.describe() is asked at most this often, and never while a move is running
+FRAME_POSE_TOL = 20    # /api/frame: steps a joint may differ from the image's pose before the image counts as stale
 STILL_MAX_AGE_S = 1.0  # /api/still.jpg: a camera frame older than this counts as no picture
 CAMERA_LIVE_S = 2.0    # the status strip calls the camera live while its newest frame is younger than this
 WATCH_S = 0.5          # how often the server itself checks whether arm data is still arriving
@@ -506,8 +509,52 @@ class State:
             jpeg = f.read_bytes()
         else:
             raise Refused("no camera", 503)
+        size = framing.jpeg_size(jpeg)
         return jpeg, {"X-View": view or "", "X-Joints": json.dumps(joints, separators=(",", ":")),
+                      "X-Image-Size": f"{size[0]}x{size[1]}" if size else "",
                       "X-Taken-At": f"{time.time():.3f}"}
+
+    def frame_preview(self, req: dict) -> tuple[int, dict]:
+        """POST /api/frame: where the camera would go to frame a box from the current image.
+        Preview only (stage 2, B): computes and checks, never moves. Runs in the HTTP thread
+        because the solver takes a second or two; it only reads the arm, like snapshot()."""
+        if req.get("dry_run") is not True:
+            return 501, {"ok": False, "error": "not_enabled",
+                         "detail": "moves to computed targets are not enabled yet; send dry_run: true for a preview"}
+        if self.moving or self.stopping:
+            return 409, {"ok": False, "error": "moving", "detail": "the arm is moving; preview from a still pose"}
+        try:
+            joints = self.arm.joints()
+            ranges = self.arm.ranges()
+        except RuntimeError as e:
+            return 503, {"ok": False, "error": "no_arm_data", "detail": str(e)}
+        seen = req.get("still_joints")
+        if not isinstance(seen, dict) or not seen:
+            return 400, {"ok": False, "error": "invalid_request",
+                         "detail": "still_joints (the X-Joints header of the image the box is from) is required"}
+        try:
+            moved = {int(m): abs(int(joints[int(m)]) - int(p)) for m, p in seen.items() if int(m) in joints}
+        except (TypeError, ValueError):
+            return 400, {"ok": False, "error": "invalid_request", "detail": "still_joints must map motor ids to steps"}
+        if not moved or max(moved.values()) > FRAME_POSE_TOL:
+            return 409, {"ok": False, "error": "stale_image",
+                         "detail": "the arm has moved since this image was taken; take a new image and mark the box again"}
+        aspect = framing.DEFAULT_ASPECT
+        size = str(req.get("image_size") or "")
+        if "x" in size:
+            try:
+                w, h = (int(v) for v in size.split("x", 1))
+                aspect = w / h if w > 0 and h > 0 else aspect
+            except ValueError:
+                pass
+        try:
+            out = framing.plan(joints, req.get("bbox") or {}, framing=str(req.get("framing") or "fill"),
+                               margin=float(req.get("margin", 0.1)), aspect=aspect, ranges=ranges)
+        except framing.FramingError as e:
+            return (400 if e.code == "invalid_request" else 422), e.body()
+        except (TypeError, ValueError) as e:
+            return 400, {"ok": False, "error": "invalid_request", "detail": str(e)}
+        return 200, {**out, "dry_run": True, "from_view": ((self.where or {}).get("where") or {}).get("view")}
 
     def snapshot(self) -> dict:
         data = load_views(self.views_path)
@@ -1132,6 +1179,9 @@ def make_handler(state: State):
                         return self._json(result, 504 if late else 500)
                     return self._json(result, 200 if result["ok"] else 500)
                 req = self._body()
+                if self.path == "/api/frame":  # preview only, never moves; see State.frame_preview
+                    status, body = state.frame_preview(req)
+                    return self._json(body, status)
                 if self.path == "/api/goto":
                     self._json(state.call(state.start_move(str(req.get("view", "")), req.get("speed") or DEFAULT_SPEED,
                                                            recover=req.get("recover") is True, gen=gen,

@@ -1,0 +1,4 @@
+node_modules/
+apps/dashboard/dist/
+.claude/settings.local.json
+.playwright-mcp/

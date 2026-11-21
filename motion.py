@@ -99,7 +99,10 @@ async def hold(arm: Arm):
 
 
 async def move_to(arm: Arm, target: dict[int, int], include_gripper: bool = False,
-                  max_speed: float = MAX_SPEED, min_duration: float = MIN_DURATION) -> dict:
+                  max_speed: float = MAX_SPEED, min_duration: float = MIN_DURATION,
+                  on_tick=None) -> dict:
+    """on_tick(s) is called with the move's progress 0..1 before each waypoint. If it raises,
+    the move ends without writing anything else: the servos keep the last waypoint."""
     present = arm.joints()
     ranges = arm.ranges()
     grip = gripper_id(present)
@@ -128,6 +131,8 @@ async def move_to(arm: Arm, target: dict[int, int], include_gripper: bool = Fals
     try:
         while True:
             s = min(1.0, (time.monotonic() - t0) / duration)
+            if on_tick is not None:
+                on_tick(s)
             k = _ease(s)
             goals = {m: arcs[m].to_pos(start[m] + (goal[m] - start[m]) * k) for m in ids}
             if first:

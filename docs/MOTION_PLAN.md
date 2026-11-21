@@ -1,98 +1,90 @@
-# Motion plan: any pose → a saved view, without breaking the arm
+# Motion plan: getting to a saved view without breaking the arm
 
-Design for review (council round 1). Status: **proposal, nothing here has run on the real arm.**
-Background: [HARDWARE.md](HARDWARE.md), [MOTION.md](MOTION.md), current code in `motion.py`.
+**Version 2** (after council round 1). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 70 checks). **Nothing here has run on the real arm yet.**
+Background: [HARDWARE.md](HARDWARE.md), [MOTION.md](MOTION.md).
 
 ## Goal
 
-Click a view in the web UI → the follower arm (ElRobot, 7 joints + gripper, camera on the gripper) moves from **wherever it is now** to that saved view. It must not hit the table, itself, or yank the camera cable, and a person must be able to stop it instantly.
+Click a view in the web UI → the follower arm (ElRobot, 7 joints + gripper, camera on the gripper) moves to that saved view. It must not hit the table or itself or pull the camera cable, and a person must be able to stop it instantly.
 
-## Constraints
+## What changed from version 1 (review round 1)
 
-- Hackathon: M2 should work this afternoon (Sat), demo Sunday. Prefer simple and predictable over clever.
-- No verified kinematic model yet (an FK model from the URDF is being built in parallel, see "FK dry-run").
-- Positions are raw ST3215 encoder steps (4096/turn). We command the servos by writing goal position (0x2A), goal speed (0x2E), acceleration (0x29), torque enable (0x28) through Station.
-- Station's `current-threshold` only protects its own leader→follower mirroring, **not our direct writes**. Any overload protection for our moves has to be ours.
-- Views are poses a human physically put the arm in (taught), so each end pose is known-reachable and collision-free. The risk is the path between them.
+| Round 1 finding | Decision |
+|---|---|
+| "Any pose" start with a blind shoulder-first lift is unsafe | Moves only start from a **known place on a fixed route network** (at a view, on a view's spoke, at the hub). Anything else is refused. An explicit, slow, supervised "Recover to transit" exists for unknown poses. |
+| The `<60 steps` shortcut allowed `home → top` as one direct move (M2 +1494, M4 −1535) | **Shortcut removed.** Every move goes through the hub. |
+| Views saved at or past joint limits (`home`, `left`, `right`, `side_low`) were driven to those values (`JointArc.include`) | `include()` removed. Targets are **clamped inside the calibrated range minus 30 steps**; `check_views()` lists affected views so they can be re-captured. Wrapped or tiny calibration ranges are refused. |
+| Arrival check clamped the measured position and could report a false arrival | Arrival compares raw measured position with the goal, per segment, and requires the joint to be standing still. |
+| Only cancellation held the arm; other failures left the last goal active | **Every** abort path ends in a hold (goal := measured) once anything has been commanded. Refusals before the first command write nothing. |
+| Goal can run far ahead of the arm (residual travel if the link dies) | Goals **only advance while the arm keeps up** (commanded − measured ≤ 120 steps). The servo's own speed ceiling is set just above ours (1.5× peak + 50). |
+| Station's current limit doesn't cover our writes | Own guards: tracking stall, servo status faults, overcurrent, stale data, pushed joints, failed writes. |
+| Torque switched on automatically; gripper written on startup/hold | Moves **require torque already on** (a person pressed "Hold here"). The gripper (M8) is **never written** by any move, hold or engage. `hold()` never energises a limp joint. |
+| Fighting Station's leader→follower mirroring | Preflight reads Station's mirroring state and **refuses while the follower is a mirror target**. |
+| Smoothstep peaks at 1.5× the nominal speed; accel units | Speeds are now true peak speeds (slow 200, normal 400 steps/s); duration = 1.5 × distance / peak. Accel register set to 15 (1500 steps/s²). |
+| Routes should be checked by a person before being trusted | Per-view `checked` flag (`go.py --mark-checked`, UI button). **Unchecked views only run at slow speed.** Re-capturing a view clears it. |
+| Wrong arm / wrong motors | Views record the bus serial they were captured on; preflight requires that serial and motors 1–8. |
 
-## Joints
+Not adopted (scope): dynamic torque-limit changes (skipped, as recommended), per-motor source timestamps (we use frame receipt age ≤ 0.3 s), read-back confirmation of holds, FK-based checks as a hard gate (advisory only, see below).
 
-| Motor | Joint | Group |
+## The route network
+
+Joint groups: **LIFT** = M2 (shoulder) · **SHAPE** = M3, M4, M6 (elbow, pitch, wrist pitch) · **TURN** = M1, M5, M7 (base yaw, forearm roll, wrist roll) · M8 gripper never moves.
+
+The **hub** is the transit pose's pitch configuration (M2, M3, M4, M6 at the `transit` values; yaw/rolls anywhere). `transit` was taught by hand: arm raised, gripper pointing straight up, wrist straight.
+
+Each view has a **spoke** to the hub. A move is a walk along spokes, one joint group at a time:
+
+| Segment | Joints | Goes to |
 |---|---|---|
-| 1 | base yaw | TURN |
-| 2 | shoulder pitch | LIFT (the big lever) |
-| 3 | elbow pitch | SHAPE |
-| 4 | pitch | SHAPE |
-| 5 | forearm roll (~336°) | TURN |
-| 6 | wrist pitch | SHAPE |
-| 7 | wrist roll (~340°), camera rolls with it | TURN |
-| 8 | gripper | never moved (camera mount) |
+| lift | M2 | transit value (leave the view: shoulder first) |
+| fold | M3, M4, M6 | transit values → now at the hub |
+| turn | M1, M5, M7 | the **target's** values, at the hub |
+| shape | M3, M4, M6 | target's values |
+| lower | M2 | target's value |
 
-Saved views (steps):
+- Entering a view is the exact reverse of leaving it.
+- A view can be flagged `"exit": "fold_first"` in `views.json` to swap lift and fold on its spoke (candidate: `home`, which is folded back with M2 at its minimum; to be decided by the first supervised run and the FK model).
+- After a Stop the arm is still on the network (on a spoke or at the hub), and `locate()` recognises that from the measured joints alone, so the next click plans from there: finish going up the current spoke, turn, go down the target's spoke. If the target is the spoke's own view, it goes straight back down.
+- The safety argument: (1) the hub is safe for any yaw/roll the views use (a person chose the transit pose for that); (2) each view's spoke is safe (a person watches it once, slowly, both ways, then marks the view checked). Nothing else is ever driven.
 
-```
-motor          1     2     3     4     5     6     7     8
-home        2095  1061  1906  3196  1899  1912  2303  1279
-left        2547  3032  1444  1652  2949  3069  2268  1279
-right       1675  3032  1381  1655   909  3071  2251  1279
-top         2120  2555  1522  1661  1899  2991  2250  1279
-wide        2117  1780  1521  2124  1900  2993  2251  1279
-close       2104  2548  1522  2133  1941  2553  2261  1279
-side_low    2518  3023  1668  1545  2923  2957  2173  1279
-follower calibrated ranges: M1 1105–2991, M2 1071–3025, M3 924–3172, M4 897–3199,
-                            M5 141–3955, M6 1017–3079, M7 164–3932, M8 1263–2833
-```
+## Preflight (before the first command; a failure writes nothing)
 
-## Proposed approach: taught transit pose + lift → turn → lower
+Transit pose saved · motors 1–8 present · view captured on this arm's serial · no servo fault bits · joints 1–7 holding (torque on) · Station not mirroring onto this arm · calibration sane (no wrap, range ≥ 400 steps, present position within range) · the arm is on the network.
 
-One extra taught pose, **`transit`**: arm raised and compact, wrist roughly straight, camera well above the table, chosen by a human so that turning the base and the two roll joints through their used range hits nothing. Every non-trivial move goes through it in ordered phases:
+## Guards while moving (each ends the move and holds)
 
-| Phase | Joints that move | To | Why |
-|---|---|---|---|
-| 0. Hold | all | present position | goal := present, then torque on. No jump from a stale goal register |
-| 1. Lift | M2 (shoulder) | transit value | rigid rotation of the whole arm about the shoulder: the most predictable way up and away from the table |
-| 2. Shape | M3, M4, M6 | transit values | fold into the compact transit shape while high |
-| 3. Turn | M1, M5, M7 | **target** values | all yaw/roll happens at the transit height, with the wrist straight |
-| 4. Shape | M3, M4, M6 | target values | take the target's arm shape while the shoulder is still high |
-| 5. Lower | M2 | target value | rigid rotation down into the taught pose |
+| Guard | Threshold (provisional until measured on the arm) |
+|---|---|
+| Joint not following | commanded − measured > 120 steps for > 0.6 s |
+| Held joint pushed/sagging | a non-moving joint > 150 steps from where the segment started |
+| Stale data | joint data older than 0.3 s |
+| Servo fault | any status bit except the voltage bit |
+| Overcurrent | > 250 raw (≈1.6 A) for > 0.3 s on a moving joint |
+| Write failure | Station doesn't accept a command within 0.5 s |
+| Not arrived | after a segment, a joint > 40 steps from its goal or still moving after 2 s |
+| Stop / cancel | immediate |
 
-Rules:
-- A phase is skipped if its joints are already within 25 steps of that phase's goal.
-- **Shortcut:** if TURN joints (M1, M5, M7) of present and target differ by < 60 steps each, skip the transit and do a single direct move of the pitch joints (covers top ↔ wide ↔ close, which share yaw and roll). Open question: should the shortcut still order shoulder vs. the rest?
-- Each phase is a joint-space move with smoothstep easing, streamed at 30 Hz, duration `max(1.0 s, furthest joint / speed)`, default speed 400 steps/s (~35°/s). The UI offers a "slow" setting (200 steps/s) and first runs use it.
-- Interpolation stays inside each joint's calibrated arc (existing `JointArc`), 30 steps clear of the stops.
-- Unknown present pose (e.g. arm was left limp somewhere odd) is handled the same way: phase 1 lifts from wherever it is.
+Every move appends per-joint max lag and max current to `motion_log.jsonl`, so the thresholds can be tuned from real data after the first runs.
 
-## Safety guards during every phase
+## FK dry-run (advisory)
 
-1. **Stop = hold.** Cancel/Stop button/Ctrl-C writes goal := present for all joints immediately. Torque stays on (the arm must not drop).
-2. **Tracking-error abort.** If any moving joint's present position lags its commanded waypoint by more than `LAG_LIMIT` (proposed 150 steps ≈ 13°) for more than 0.3 s → treat as blocked: hold, report `ok: False` with the joint. (Servo ceiling speed is set to ~2× the waypoint speed so normal tracking lag is small.)
-3. **Current abort.** Read present current (register 0x45) from the state stream each tick; if any joint exceeds `CURRENT_LIMIT` for 0.2 s → hold and abort. Starting value: to be measured during the first slow runs (log max current per joint), then set to ~1.5× the observed peak.
-4. **Stale data abort.** If Station joint data is older than 0.3 s → hold and abort.
-5. **Arrival check** after each phase (not just at the end): 40 steps tolerance, otherwise abort before starting the next phase.
-6. **One move at a time** (lock); a new click while moving is rejected (or: stops the current move first, open question).
-7. **Mirroring check.** Refuse to move if Station is mirroring the leader onto the follower (they would fight). If we can't detect it reliably, the UI shows a reminder.
-8. **Optional torque limit** (register 0x30) lowered during moves so a collision stalls gently. Open question: is this worth it, given gravity load on the shoulder?
-
-## FK dry-run (advisory, built in parallel)
-
-`fk.py`: forward kinematics from the vendored ElRobot URDF using the same steps→angle mapping Station's 3D viewer uses (the viewer visibly matches the real arm). Before executing, the planner samples each phase's path and computes the height of the elbow, wrist, gripper tip and camera above the base plane. If any point goes below `TABLE_MARGIN` → refuse and say which phase. It is a second opinion, not the primary safety: the taught transit + ordering + guards must be safe on their own.
+`fk.py` (being built) models the arm from the vendored URDF with the mapping Station's 3D viewer uses. If it validates against the saved views, the planner can report the lowest point of each segment as a second opinion. It is not a gate: the network and guards must be safe on their own.
 
 ## Test protocol on the real arm
 
-1. Sim: unit tests for phase planning (order, skips, shortcut), guards (inject lag / current / stale data), cancel-holds.
-2. Real arm, follower "(Self-controlled)", one person at the arm with the power plug in reach, slow speed (200 steps/s):
-   a. hold only (phase 0) → arm stiffens where it is, no movement.
-   b. current pose → `transit`.
-   c. `transit` → `wide` → `transit` (pitch-only views first), then `top`, `close`.
-   d. views with big rolls: `left`, `right`, `side_low`, then `home`.
-   e. full tour ×1 slow, then ×5 at normal speed.
-3. Log per-joint max lag and max current for every move; tune limits from the data.
+Follower "(Self-controlled)" in Station, one person at the arm with the power plug in reach, slow speed, cables checked for slack at both roll joints.
 
-## Open questions for reviewers
+1. `python go.py --where` (nothing moves): confirms calibration, mirroring off, location.
+2. Hand-pose to `transit` (Go limp → pose → Hold here), then `transit → wide → transit`, then `top`, `close`: the views that only differ in pitch.
+3. Views with big rolls: `left`, `right`, `side_low` (after re-capturing them away from the joint limits and with a level horizon).
+4. `home` last, watching its spoke closely; switch it to `fold_first` if lift-first looks wrong.
+5. Press Stop mid-segment once; check the arm holds and the next click recovers.
+6. Mark each view checked after a clean there-and-back run. Then one full tour slow, then normal speed.
+7. Read `motion_log.jsonl`, tune lag/current limits.
 
-1. Is lift → shape → turn → shape → lower the right order, and is "shoulder first, alone" right for lifting? Should phases 1+2 or 4+5 be merged or reordered for some configurations (e.g. leaving `home`, where M2 is at its minimum and M4 at its maximum, i.e. folded)?
-2. Is a single transit pose enough, or do we need the roll joints (M5/M7) sequenced separately from base yaw?
-3. Guard thresholds: are lag 150 steps / 0.3 s and the current approach sensible for ST3215 servos? Anything better available from the servo (present load 0x3C, status 0x41)?
-4. Torque limit during moves: worth doing?
-5. What are we missing that could break hardware?
+## Known limits
+
+- No collision model: safety rests on taught poses, ordering, supervision and guards.
+- A slow move takes 10–30 s (five segments in sequence). Merging segments or raising the speed is a later step once routes are checked.
+- If the link to Station dies mid-move we cannot confirm the hold; the last goal is at most 120 steps from the arm. Emergency stop is the power plug.
+- `left`/`right` differ by ~179° of forearm roll (M5); watch the camera cable there.

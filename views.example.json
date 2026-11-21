@@ -1,11 +1,108 @@
 {
   "views": {
-    "home": {"joints": {"1": 2048, "2": 900, "3": 3050, "4": 2600, "5": 2048, "6": 2048}, "description": "safe rest pose, arm folded"},
-    "top": {"joints": {"1": 2048, "2": 1700, "3": 2300, "4": 1300, "5": 2048, "6": 2048}, "description": "top-down over the workspace"},
-    "wide": {"joints": {"1": 2048, "2": 1500, "3": 2700, "4": 2000, "5": 2048, "6": 2048}, "description": "whole desk in frame"},
-    "left": {"joints": {"1": 1550, "2": 1650, "3": 2450, "4": 1900, "5": 2048, "6": 2048}, "description": "about 45 degrees from the left"},
-    "right": {"joints": {"1": 2550, "2": 1650, "3": 2450, "4": 1900, "5": 2048, "6": 2048}, "description": "about 45 degrees from the right"},
-    "close": {"joints": {"1": 2048, "2": 2000, "3": 2000, "4": 1500, "5": 2048, "6": 2048}, "description": "close-up of the workspace centre"},
-    "side_low": {"joints": {"1": 1300, "2": 1250, "3": 2850, "4": 2300, "5": 2048, "6": 2048}, "description": "low side angle"}
+    "home": {
+      "joints": {
+        "1": 2095,
+        "2": 1061,
+        "3": 1906,
+        "4": 3196,
+        "5": 1899,
+        "6": 1912,
+        "7": 2303,
+        "8": 1279
+      },
+      "description": "safe rest pose, arm folded"
+    },
+    "left": {
+      "joints": {
+        "1": 2547,
+        "2": 3032,
+        "3": 1444,
+        "4": 1652,
+        "5": 2949,
+        "6": 3069,
+        "7": 2268,
+        "8": 1279
+      },
+      "description": "about 45 degrees from the left"
+    },
+    "right": {
+      "joints": {
+        "1": 1675,
+        "2": 3032,
+        "3": 1381,
+        "4": 1655,
+        "5": 909,
+        "6": 3071,
+        "7": 2251,
+        "8": 1279
+      },
+      "description": "about 45 degrees from the right"
+    },
+    "top": {
+      "joints": {
+        "1": 2120,
+        "2": 2555,
+        "3": 1522,
+        "4": 1661,
+        "5": 1899,
+        "6": 2991,
+        "7": 2250,
+        "8": 1279
+      },
+      "description": "top-down over the workspace"
+    },
+    "wide": {
+      "joints": {
+        "1": 2117,
+        "2": 1780,
+        "3": 1521,
+        "4": 2124,
+        "5": 1900,
+        "6": 2993,
+        "7": 2251,
+        "8": 1279
+      },
+      "description": "whole desk in frame"
+    },
+    "close": {
+      "joints": {
+        "1": 2104,
+        "2": 2548,
+        "3": 1522,
+        "4": 2133,
+        "5": 1941,
+        "6": 2553,
+        "7": 2261,
+        "8": 1279
+      },
+      "description": "close-up of the workspace centre"
+    },
+    "side_low": {
+      "joints": {
+        "1": 2518,
+        "2": 3023,
+        "3": 1668,
+        "4": 1545,
+        "5": 2923,
+        "6": 2957,
+        "7": 2173,
+        "8": 1279
+      },
+      "description": "low side angle"
+    },
+    "transit": {
+      "joints": {
+        "1": 2114,
+        "2": 1906,
+        "3": 1585,
+        "4": 1527,
+        "5": 1958,
+        "6": 2064,
+        "7": 2216,
+        "8": 1758
+      },
+      "description": "safe raised pose every move passes through (not a camera view)"
+    }
   }
 }

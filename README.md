@@ -20,7 +20,7 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
 | M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
 
-Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
+Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (target architecture with iPhone camera, dashboard, MCP; build status) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 
 ## Hardware in one paragraph
 
@@ -47,6 +47,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python go.py --where` / `top` / `--tour 5` / `--mark-checked top` | M2 | Command-line moves; `--sim` for the simulated arm; Ctrl-C holds |
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
 | `python3 arm_view.py` | M2 | **Watch the arm move as a stick figure** (side/top/front) at http://localhost:8896; follows the server on :8891 (sim) or `--source http://localhost:8890` (real arm). Read-only |
+| `.venv/bin/python mcp_server.py` (`--arm-url http://127.0.0.1:8891` for `--sim`) | M3 | **MCP server** camera-arm on localhost:8200/mcp for Claude: views, moves (through the web server), status, stop, camera still, scene. See [docs/MCP.md](docs/MCP.md) |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
 | `python3 tests/test_motion_sim.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py` | | Motion layer, web-server race and geometry model tests (no hardware; about 75 s, 2 min and 5 s) |
 

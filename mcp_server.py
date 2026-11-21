@@ -1,0 +1,394 @@
+"""MCP server camera-arm: the tools Claude uses to point the camera. Thin layer over capture_server.py.
+
+    python3 capture_server.py --bus 5B79016329     # first: the web server, the one program that moves the arm
+    python3 capture_server.py --sim --port 8891    #   (or the simulated arm)
+    .venv/bin/python mcp_server.py                 # then: MCP at http://127.0.0.1:8200/mcp (--arm-url for --sim)
+    claude mcp add --transport http camera-arm http://127.0.0.1:8200/mcp
+
+The MCP server moves nothing itself: every move goes through the web server's /api/goto, so the
+motion layer's routes and guards apply, and STOP on the /control page also stops moves Claude
+started. Claude can only pick saved views (enum), never free joint or Cartesian targets.
+Moves return at once; get_status tells how they went.
+The scene (objects seen in the camera image) lives here, in scene.json.
+"""
+
+import argparse
+import asyncio
+import base64
+import json
+import logging
+import os
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Literal
+
+import mcp_types as types
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel, Field
+
+log = logging.getLogger("mcp_server")
+
+ROOT = Path(__file__).parent
+SCENE_PATH = ROOT / "scene.json"
+VERSION = "0.1.0"
+MAX_OBJECTS = 30
+
+GUIDE = """# camera-arm: operating guide for Claude
+
+A robot arm holds a camera above a desk where a person assembles and solders electronics.
+You choose where the camera looks. You cannot steer the arm freely: you pick one of the saved
+views (list_views), and the control service moves the arm there safely.
+
+## Moving
+- go_to_view(view) returns at once ("started"). It does not wait. Every move goes rise -> turn ->
+  descend through a safe transit pose. Views not yet checked on the real arm move at first-run speed
+  (30-60 s); checked views take several seconds.
+- To learn how it went, call get_status once after a while (use the "eta_hint"). moving=true means
+  still on the way; otherwise current_view says where the camera is and last_result.ok whether the
+  move worked. If it failed, the error says why in plain words: tell the user.
+- Only one move at a time. A request while moving is refused: wait, or stop first if the user asked
+  for something else. A move is also refused while the arm is in an unknown pose or limp
+  (blockers in get_status say what to do; that needs a person at the arm).
+- stop() halts the arm where it is, at any time. Use it whenever the user says stop, wait, halt or
+  similar, before anything else. A person can also press STOP on the /control page.
+- Never loop on moves or status. One call, then decide.
+
+## Images and the scene
+- get_camera_image() returns the current camera image, only while the arm is not moving.
+  Call it when the user asks what is visible or asks you to find something.
+- After looking at an image, record what you saw with update_scene: one object per thing that
+  matters for filming (pcb, soldering_iron, hands, parts tray, multimeter ...).
+  bbox is the box around the object in that image, normalized 0..1: cx, cy = centre (0,0 = top left),
+  w, h = width and height as fractions of the image. visible = how much of the object is not covered (0..1).
+  Use the view name the image was taken at (view from get_camera_image).
+- get_scene() returns what has been recorded, with how old each sighting is. Old sightings may be
+  wrong: the person moves things.
+
+## Choosing a view
+Match the user's words to a view's name, description and aliases. If the user wants to see an
+object, prefer a view whose sightings show it large and visible. If nothing fits, say so and
+offer the closest view instead of guessing.
+"""
+
+INSTRUCTIONS = (
+    "You point a camera held by a robot arm. Pick saved views with go_to_view (returns at once; check "
+    "get_status later, moves take seconds up to a minute), stop() whenever the user says stop. get_camera_image shows the current "
+    "picture; record what you see with update_scene (bbox normalized 0..1). Read camera-arm://guide for the rules."
+)
+
+
+# -- control service client ------------------------------------------------------
+
+class ControlError(Exception):
+    def __init__(self, status: int, code: str, detail: str):
+        super().__init__(f"{status} {code}: {detail}")
+        self.status, self.code, self.detail = status, code, detail
+
+
+ERROR_CODES = {400: "invalid_request", 403: "forbidden", 404: "not_found", 409: "refused", 500: "error",
+               503: "unavailable", 504: "timeout"}
+
+
+class Control:
+    """Minimal client for capture_server.py's /api (standard library, run in a thread)."""
+
+    def __init__(self, base: str, timeout: float = 10):
+        self.base = base.rstrip("/")
+        self.timeout = timeout
+
+    def _call(self, method: str, path: str, data: dict | None, raw: bool):
+        body = json.dumps(data).encode() if data is not None else None
+        req = urllib.request.Request(self.base + path, data=body, method=method,
+                                     headers={"Content-Type": "application/json"} if body else {})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                payload = r.read()
+                return (payload, dict(r.headers)) if raw else json.loads(payload)
+        except urllib.error.HTTPError as e:
+            try:
+                err = json.loads(e.read())
+                detail = err.get("error") or err.get("detail") or f"HTTP {e.code}"
+            except (json.JSONDecodeError, AttributeError):
+                detail = f"HTTP {e.code}"
+            raise ControlError(e.code, ERROR_CODES.get(e.code, "error"), str(detail))
+        except urllib.error.URLError as e:
+            raise ControlError(503, "arm_server_unreachable",
+                               f"arm web server not reachable at {self.base} ({e.reason}); start capture_server.py")
+
+    async def call(self, method: str, path: str, data: dict | None = None, raw: bool = False):
+        return await asyncio.to_thread(self._call, method, path, data, raw)
+
+
+# -- scene -------------------------------------------------------------------------
+
+class BBox(BaseModel):
+    cx: float = Field(ge=0, le=1, description="box centre x, 0 = left edge, 1 = right edge")
+    cy: float = Field(ge=0, le=1, description="box centre y, 0 = top edge, 1 = bottom edge")
+    w: float = Field(gt=0, le=1, description="box width as a fraction of the image width")
+    h: float = Field(gt=0, le=1, description="box height as a fraction of the image height")
+
+
+class Sighting(BaseModel):
+    view: str = Field(description="view the image was taken at ('view' from get_camera_image)")
+    camera: str = Field("arm", max_length=20)
+    bbox: BBox
+    visible: float = Field(1.0, ge=0, le=1, description="fraction of the object not covered, e.g. by hands")
+
+
+class SceneObject(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9_-]{1,40}$", description="short stable id, e.g. pcb, soldering_iron, left_hand")
+    label: str = Field(max_length=60)
+    description: str = Field("", max_length=300)
+    seen: list[Sighting] = Field(default_factory=list, max_length=10)
+
+
+class SceneStore:
+    """scene.json: {"objects": {id: {id, label, description, seen: [{view, camera, bbox, visible, at}]}}}"""
+
+    def __init__(self, path: Path = SCENE_PATH):
+        self.path = path
+        self.lock = asyncio.Lock()
+
+    def load(self) -> dict:
+        if not self.path.exists():
+            return {"objects": {}}
+        try:
+            return json.loads(self.path.read_text())
+        except json.JSONDecodeError:
+            log.warning("%s is not valid JSON; starting an empty scene", self.path)
+            return {"objects": {}}
+
+    def save(self, scene: dict):
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(scene, indent=1))
+        os.replace(tmp, self.path)
+
+    @staticmethod
+    def with_ages(scene: dict) -> dict:
+        now = time.time()
+        out = []
+        for obj in scene["objects"].values():
+            o = dict(obj)
+            o["seen"] = [{**s, "age_s": round(now - s.get("at", now))} for s in obj.get("seen", [])]
+            out.append(o)
+        return {"objects": out, "count": len(out)}
+
+    async def update(self, objects: list[SceneObject], known_views: set[str], replace: bool) -> dict:
+        bad = sorted({s.view for o in objects for s in o.seen if s.view not in known_views})
+        if bad:
+            raise ToolError(f"unknown view(s) {bad}; known: {sorted(known_views)}")
+        async with self.lock:
+            scene = {"objects": {}} if replace else self.load()
+            now = round(time.time(), 1)
+            for o in objects:
+                cur = scene["objects"].get(o.id, {"id": o.id, "seen": []})
+                cur["label"] = o.label
+                if o.description or "description" not in cur:
+                    cur["description"] = o.description
+                seen = [s for s in cur.get("seen", [])
+                        if not any(s["view"] == n.view and s.get("camera") == n.camera for n in o.seen)]
+                seen += [{**n.model_dump(), "at": now} for n in o.seen]
+                cur["seen"] = seen[-10:]
+                scene["objects"][o.id] = cur
+            if len(scene["objects"]) > MAX_OBJECTS:
+                raise ToolError(f"scene would hold {len(scene['objects'])} objects; max {MAX_OBJECTS}. "
+                                "Remove some or use replace=true.")
+            self.save(scene)
+            return self.with_ages(scene)
+
+    async def remove(self, obj_id: str) -> dict:
+        async with self.lock:
+            scene = self.load()
+            if scene["objects"].pop(obj_id, None) is None:
+                raise ToolError(f"no object {obj_id!r} in the scene")
+            self.save(scene)
+            return self.with_ages(scene)
+
+
+# -- MCP server --------------------------------------------------------------------
+
+def _tool_error(e: ControlError) -> ToolError:
+    return ToolError(json.dumps({"status": e.status, "error": e.code, "detail": e.detail}))
+
+
+def _overall_progress(m: dict) -> float:
+    n = m.get("phase_count") or 0
+    if not m.get("moving") or n <= 0:
+        return 1.0 if (m.get("last_result") or {}).get("ok") else 0.0
+    return round((max(m.get("phase_index", 1), 1) - 1 + (m.get("progress") or 0.0)) / n, 3)
+
+
+def status_from(st: dict) -> dict:
+    """What Claude needs from capture_server's /api/state (no joint values)."""
+    m = st.get("motion") or {}
+    last = m.get("last_result") or None
+    return {
+        "moving": bool(m.get("moving")),
+        "target_view": m.get("view"),
+        "phase": m.get("phase"), "route": m.get("route") or [], "progress": _overall_progress(m),
+        "current_view": st.get("current_view"),
+        "can_move": st.get("can_move"),
+        "blockers": st.get("blockers") or [],
+        "stopping": st.get("stopping"),
+        "hold": st.get("hold"),
+        "error": m.get("error"),
+        "last_result": ({k: last.get(k) for k in ("ok", "view", "error", "duration", "route") if k in last}
+                        if isinstance(last, dict) else None),
+    }
+
+
+def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPServer:
+    names = [v["name"] for v in views]
+    if not names:
+        raise RuntimeError("the arm web server has no views; capture some first (capture_server.py, page /)")
+    ViewName = Literal[tuple(names)]  # Claude can only pick saved views
+    known = set(names)
+
+    mcp = MCPServer("camera-arm", instructions=INSTRUCTIONS, version=VERSION)
+
+    async def state() -> dict:
+        try:
+            return await control.call("GET", "/api/state")
+        except ControlError as e:
+            raise _tool_error(e)
+
+    @mcp.tool(description="The saved camera views: name, description, aliases, whether the view was already "
+                          "checked on the real arm (unchecked = slow first-run moves), and which recorded scene "
+                          "objects were seen from each. Also where the camera is now (current_view).")
+    async def list_views() -> dict[str, Any]:
+        st = await state()
+        raw = st.get("views") or {}
+        objs = scene.load()["objects"].values()
+        out = []
+        for c in st.get("cards") or []:
+            n = c["name"]
+            shows = [o["id"] for o in objs if any(s["view"] == n for s in o.get("seen", []))]
+            out.append({"name": n, "description": c.get("description", ""),
+                        "aliases": list((raw.get(n) or {}).get("aliases", [])),
+                        "checked": bool(c.get("checked")), "shows": shows})
+        brief = status_from(st)
+        return {"views": out, "current_view": brief["current_view"], "moving": brief["moving"],
+                "can_move": brief["can_move"], "blockers": brief["blockers"]}
+
+    @mcp.tool(description="Move the camera to a saved view. Returns at once; the move runs rise -> turn -> "
+                          "descend and takes seconds (checked views) up to a minute (unchecked views, first-run "
+                          "speed). Call get_status later. Refused while another move runs or while the arm is in "
+                          "an unknown pose.")
+    async def go_to_view(view: ViewName) -> dict[str, Any]:
+        st = await state()
+        brief = status_from(st)
+        if brief["moving"]:
+            raise ToolError(json.dumps({"status": 409, "error": "busy",
+                                        "detail": f"already moving to {brief['target_view']!r}; stop first"}))
+        if brief["current_view"] == view:
+            return {"started": False, "view": view, "detail": "the camera is already at this view"}
+        try:
+            r = await control.call("POST", "/api/goto", {"view": view, "generation": st["generation"]})
+        except ControlError as e:
+            raise _tool_error(e)
+        card = next((c for c in st.get("cards") or [] if c["name"] == view), {})
+        first_run = not card.get("checked")
+        return {"started": bool(r.get("started")), "view": view, "speed": r.get("speed"), "first_run_speed": first_run,
+                "eta_hint": "30-60 s (first-run speed)" if first_run else "a few seconds",
+                "hint": "call get_status later to see whether it arrived"}
+
+    @mcp.tool(description="Where the camera is and how the current or last move is going: moving, target_view, "
+                          "phase (rise/turn/descend), progress 0..1, current_view, last_result {ok, view, error, "
+                          "duration}, and blockers (why no move can start right now).")
+    async def get_status() -> dict[str, Any]:
+        return status_from(await state())
+
+    @mcp.tool(description="Stop the arm immediately and hold it where it is. Works at any time; use it first "
+                          "whenever the user says stop, wait or halt.")
+    async def stop() -> dict[str, Any]:
+        try:
+            r = await control.call("POST", "/api/stop", {})
+        except ControlError as e:
+            raise _tool_error(e)
+        return {k: r.get(k) for k in ("ok", "hold", "was_moving", "view", "error") if k in r}
+
+    @mcp.tool(structured_output=False,
+              description="The current camera image as JPEG, plus the view it was taken at. Only while the arm "
+                          "is not moving (refused otherwise).")
+    async def get_camera_image() -> list[types.ImageContent | types.TextContent]:
+        try:
+            jpeg, headers = await control.call("GET", "/api/still.jpg", raw=True)
+        except ControlError as e:
+            raise _tool_error(e)
+        meta = {"view": headers.get("X-View") or None,
+                "taken_at": float(headers.get("X-Taken-At", time.time()))}
+        return [types.ImageContent(type="image", data=base64.b64encode(jpeg).decode(), mime_type="image/jpeg"),
+                types.TextContent(type="text", text=json.dumps(meta))]
+
+    @mcp.tool(description="Objects recorded in the scene, each with the views it was seen from, its box in that "
+                          "image (normalized 0..1), how visible it was and how many seconds ago.")
+    async def get_scene() -> dict[str, Any]:
+        return scene.with_ages(scene.load())
+
+    @mcp.tool(description="Record what you saw in a camera image. Objects are merged by id; a sighting replaces "
+                          "the earlier one from the same view and camera. replace=true clears the scene first. "
+                          "bbox: cx, cy = centre, w, h = size, all as fractions of the image (0..1, 0,0 = top left).")
+    async def update_scene(objects: list[SceneObject], replace: bool = False) -> dict[str, Any]:
+        return await scene.update(objects, known, replace)
+
+    @mcp.tool(description="Remove one object from the scene, e.g. when it has been taken away.")
+    async def remove_scene_object(id: str) -> dict[str, Any]:
+        return await scene.remove(id)
+
+    @mcp.resource("camera-arm://guide", name="camera-arm operating guide", mime_type="text/markdown",
+                  description="How to move the camera, read images and record the scene.")
+    def guide() -> str:
+        return GUIDE
+
+    @mcp.resource("camera-arm://scene", name="Recorded scene", mime_type="application/json",
+                  description="Objects seen in camera images, with boxes per view and their age.")
+    def scene_resource() -> str:
+        return json.dumps(scene.with_ages(scene.load()))
+
+    return mcp
+
+
+async def fetch_views(control: Control, wait_s: float) -> list[dict]:
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            st = await control.call("GET", "/api/state")
+            return [{"name": c["name"]} for c in st.get("cards") or []]
+        except ControlError as e:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"{e.detail}")
+            await asyncio.sleep(1)
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--arm-url", default="http://127.0.0.1:8890",
+                   help="capture_server.py base URL (default 8890; the --sim server usually runs on 8891)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8200)
+    p.add_argument("--scene", type=Path, default=SCENE_PATH)
+    p.add_argument("--wait", type=float, default=10, help="seconds to wait for the arm web server at start")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                        datefmt="%H:%M:%S")
+    args = parse_args(argv)
+    control = Control(args.arm_url)
+    views = asyncio.run(fetch_views(control, args.wait))
+    mcp = build_server(control, SceneStore(args.scene), views)
+    log.info("camera-arm MCP on http://%s:%d/mcp  arm=%s  views=%s",
+             args.host, args.port, args.arm_url, [v["name"] for v in views])
+    mcp.run("streamable-http", host=args.host, port=args.port, streamable_http_path="/mcp",
+            stateless_http=True, json_response=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as e:
+        raise SystemExit(f"error: {e}")

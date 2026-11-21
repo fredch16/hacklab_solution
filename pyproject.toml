@@ -5,4 +5,5 @@ description = "SO-101 camera arm directed by Claude (HackLab #2, NormaCore track
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=1.0",
+    "mcp==2.3.0",
 ]

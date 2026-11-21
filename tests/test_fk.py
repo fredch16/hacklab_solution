@@ -314,9 +314,10 @@ for n, pose in VIEWS.items():
         # the folded rest pose is the only one where the arm comes close to itself
         gap = fk.self_clearance(pose, RANGES, mp)
         assert (gap < 0.05) == (n == "home"), (n, gap)
-# M1 turns about the vertical: it changes neither heights nor how close the arm is to itself
+# M1 turns about the vertical (to half a degree in the URDF): 35 degrees of yaw change heights by
+# under 2 mm and do not change how close the arm is to itself
 turned = {**VIEWS["top"], 1: VIEWS["top"][1] + 400}
-assert all(close_to(a, b, 1e-9) for a, b in zip(fk.part_heights(turned, RANGES).values(), fk.part_heights(VIEWS["top"], RANGES).values()))
+assert all(close_to(a, b, 0.002) for a, b in zip(fk.part_heights(turned, RANGES).values(), fk.part_heights(VIEWS["top"], RANGES).values()))
 assert close_to(fk.self_clearance(turned, RANGES), fk.self_clearance(VIEWS["top"], RANGES))
 
 # ---- the views that are in views.json right now: report only -----------------------------------

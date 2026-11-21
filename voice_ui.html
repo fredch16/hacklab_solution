@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Camera Voice</title>
+<!-- Voice mode for the PC: served by voice_bridge.py at http://127.0.0.1:8210/ (same origin as its API).
+     The browser's speech recognition turns the microphone into text; the text goes to
+     POST /api/v1/voice-command exactly like the phone dashboard's finals. No build step. -->
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1f232c; --line: #2a2f3a;
+    --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --ok: #3ecf8e; --warn: #f5a524; --bad: #ff5d5d; --stop: #d7353b;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+         padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+  button, input { font: inherit; color: var(--text); }
+  button { cursor: pointer; touch-action: manipulation; }
+  main { max-width: 680px; margin: 0 auto; padding: 20px 16px; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+          font-size: 12px; color: var(--text); background: var(--panel); }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .chip.ok::before { background: var(--ok); } .chip.warn::before { background: var(--warn); } .chip.bad::before { background: var(--bad); }
+  .chip.warn { border-color: var(--warn); } .chip.bad { border-color: var(--bad); }
+
+  .modes { display: inline-flex; margin: 22px 0 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .modes button { background: var(--panel); border: 0; padding: 8px 14px; color: var(--muted); }
+  .modes button + button { border-left: 1px solid var(--line); }
+  .modes button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); font-weight: 600; }
+  .modehelp { color: var(--muted); font-size: 13px; margin: 8px 0 0; min-height: 2.9em; }
+  .modehelp input { width: 9em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 14px; margin: 18px 0 8px; padding: 26px 16px;
+           border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  #mic { width: 112px; height: 112px; border-radius: 50%; border: 2px solid var(--line); background: var(--panel-2);
+         display: grid; place-items: center; transition: border-color .15s, box-shadow .15s, background .15s; }
+  #mic svg { width: 44px; height: 44px; fill: var(--text); }
+  #mic:hover { border-color: var(--accent); }
+  #mic:disabled { opacity: .45; cursor: not-allowed; }
+  #mic.on { border-color: var(--accent); background: #1b2740; box-shadow: 0 0 0 8px rgba(79, 140, 255, .16); }
+  #mic.armed { border-color: var(--ok); background: #173127; box-shadow: 0 0 0 8px rgba(62, 207, 142, .18); }
+  @media (prefers-reduced-motion: no-preference) {
+    #mic.on, #mic.armed { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 16px rgba(79, 140, 255, .05); } }
+  }
+  #state { font-weight: 600; }
+  #heard { min-height: 1.5em; color: var(--muted); text-align: center; overflow-wrap: anywhere; max-width: 100%; }
+  #problem { color: var(--bad); text-align: center; max-width: 52ch; }
+
+  form { display: flex; gap: 8px; margin: 14px 0 0; }
+  form input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; }
+  form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  form button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; }
+  form button:hover { border-color: var(--accent); }
+
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 26px 0 8px; }
+  #log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #log li { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+  #log .said { overflow-wrap: anywhere; }
+  #log .res { font-size: 13px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
+  #log li.ok .res { color: var(--ok); } #log li.bad .res { color: var(--bad); }
+  #empty { color: var(--muted); font-size: 13px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
+
+  .stopbar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+             background: rgba(15, 17, 21, .97); border-top: 1px solid var(--line); }
+  #stop { display: block; width: 100%; max-width: 680px; margin: 0 auto; height: 64px; border-radius: 12px; border: 0;
+          background: var(--stop); color: #fff; font-size: 20px; font-weight: 700; letter-spacing: .04em; }
+  #stop:active { filter: brightness(1.2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Camera Voice</h1>
+  <div class="chips">
+    <span class="chip" id="chipArm">Arm: checking</span>
+    <span class="chip" id="chipAi">Free phrasing: checking</span>
+    <span class="chip" id="chipMic">Microphone: not used yet</span>
+  </div>
+
+  <div class="modes" role="group" aria-label="Listening mode">
+    <button id="modeTap" aria-pressed="true">Tap to talk</button>
+    <button id="modeFree" aria-pressed="false">Hands-free</button>
+  </div>
+  <p class="modehelp" id="helpTap">Click the microphone (or press Space), say one request, and pause. Example: “show me the thing from the top”.</p>
+  <p class="modehelp" id="helpFree" hidden>Always listening. Start with
+    “Hey <input id="wake" aria-label="Wake name" maxlength="20" spellcheck="false">”, then the request.
+    “Stop” works without it.</p>
+
+  <section class="stage" aria-live="polite">
+    <button id="mic" aria-label="Start listening" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.92V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.58a6 6 0 0 0 5-5.92Z"/></svg>
+    </button>
+    <div id="state">Starting…</div>
+    <div id="heard"></div>
+    <div id="problem" hidden></div>
+  </section>
+
+  <form id="typed" autocomplete="off">
+    <input id="text" maxlength="500" placeholder="…or type a request" aria-label="Type a request">
+    <button>Send</button>
+  </form>
+
+  <h2>Requests</h2>
+  <p id="empty">Nothing yet. Checked views you can ask for: <span id="views">…</span></p>
+  <ul id="log"></ul>
+
+  <footer>
+    Speech is turned into text by this browser's speech service (Chrome: Google, Safari: Apple). The text goes to
+    <code>voice_bridge.py</code> on this PC, which moves the arm through the camera-arm MCP server; loosely worded
+    requests are interpreted by Claude when free phrasing is on. Esc or the red button stops the arm.
+  </footer>
+</main>
+<div class="stopbar"><button id="stop">STOP</button></div>
+
+<script id="logic">
+// Pure decisions, no DOM: tests/test_voice_bridge.py runs this block under node.
+const STOP_WORD = /\b(?:stop|halt|freeze|abort)\b/;
+
+/** A spoken stop that must go out at once (never anything about recording: the bridge ignores that). */
+function isStop(text) {
+  const t = String(text).toLowerCase();
+  return STOP_WORD.test(t) && !t.includes("record");
+}
+
+/** Spellings speech recognition produces for a wake name ("claude" comes back as cloud, clawed, ...). */
+function wakeForms(name) {
+  const n = String(name).toLowerCase().replace(/[^a-z' ]/g, "").trim();
+  const extra = n === "claude" ? ["cloud", "claud", "clod", "clawed", "klaud", "claude's", "clawd", "claudia"] : [];
+  return n ? [n, ...extra] : [];
+}
+
+/** Find the wake name in a transcript: {woke, request}. The request is what follows the name, or
+ *  what came before it ("show me the top, Claude"); "" when only the name was said. */
+function afterWake(text, name) {
+  const forms = wakeForms(name).map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!forms.length) return { woke: false, request: "" };
+  const m = new RegExp(`\\b(?:${forms.join("|")})\\b`, "i").exec(text);
+  if (!m) return { woke: false, request: "" };
+  const clean = (s) => s.replace(/^[\s,.!?:;-]+|[\s,.!?:;-]+$/g, "");
+  const after = clean(text.slice(m.index + m[0].length));
+  const before = clean(text.slice(0, m.index)).replace(/^(?:hey|hi|yo|ok|okay|hello)$/i, "")
+    .replace(/[\s,]+(?:hey|hi|yo|ok|okay|hello)$/i, "");
+  return { woke: true, request: after || clean(before) };
+}
+
+/** What to do with a finished sentence. mode "tap": send it. mode "free": only after the wake name,
+ *  within the window a bare "Hey Claude" opened (armed), or when it is a stop. */
+function decide(text, mode, name, armed) {
+  const t = String(text).trim();
+  if (!t) return { send: null, arm: false };
+  if (mode !== "free") return { send: t, arm: false };
+  const w = afterWake(t, name);
+  if (w.woke) return w.request ? { send: w.request, arm: false } : { send: null, arm: true };
+  if (armed || isStop(t)) return { send: t, arm: false };
+  return { send: null, arm: false };
+}
+
+if (typeof module !== "undefined") module.exports = { isStop, wakeForms, afterWake, decide };
+</script>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const session = "pc-" + Math.random().toString(36).slice(2, 10);
+  const ARM_WINDOW_MS = 8000;      // after a bare "Hey Claude", how long the next sentence counts
+  let seq = 0, mode = "tap", listening = false, wanted = false, armedUntil = 0, stopSentFor = -1, turn = 0, rec = null;
+
+  const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+                  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } } };
+  $("wake").value = store.get("voice.wake", "Claude");
+  $("wake").addEventListener("change", () => store.set("voice.wake", $("wake").value.trim() || "Claude"));
+  const wakeName = () => $("wake").value.trim() || "Claude";
+
+  const chip = (el, cls, text) => { el.className = "chip" + (cls ? " " + cls : ""); el.textContent = text; };
+  const problem = (text) => { $("problem").hidden = !text; $("problem").textContent = text || ""; };
+
+  // ---------- talking to the bridge ----------
+  async function post(text) {
+    const r = await fetch("/api/v1/voice-command", {
+      method: "POST", cache: "no-store", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: session, utterance_id: "u" + (++seq), text }),
+      signal: AbortSignal.timeout(15000),
+    });
+    return r.json();
+  }
+
+  function resultText(r) {
+    if (!r || typeof r !== "object") return ["bad", "✕ The voice bridge did not answer"];
+    if (r.command === "none" || !r.command) return ["", "– No matching command"];
+    const msg = r.message || (r.error ? `Failed (${r.error})` : "Done");
+    return r.ok ? ["ok", "✓ " + msg] : ["bad", "✕ " + msg];
+  }
+
+  async function send(text) {
+    text = text.trim().slice(0, 500);
+    if (!text) return;
+    $("empty").hidden = true;
+    const li = document.createElement("li"), said = document.createElement("div"), res = document.createElement("div");
+    said.className = "said"; said.textContent = text;
+    res.className = "res"; res.textContent = "…";
+    li.append(said, res); $("log").prepend(li);
+    while ($("log").children.length > 30) $("log").lastChild.remove();
+    let r = null;
+    try { r = await post(text); } catch { /* shown below */ }
+    const [cls, line] = resultText(r);
+    li.className = cls; res.textContent = line;
+  }
+
+  const stopNow = () => send("stop");
+  $("stop").addEventListener("click", stopNow);
+  $("typed").addEventListener("submit", (e) => { e.preventDefault(); send($("text").value); $("text").value = ""; });
+
+  async function startup() {
+    try {
+      const h = await (await fetch("/api/v1/health", { cache: "no-store" })).json();
+      chip($("chipAi"), h.llm ? "ok" : "warn", h.llm ? `Free phrasing: on (${h.llm})` : "Free phrasing: off, fixed phrases only");
+    } catch { chip($("chipAi"), "bad", "Voice bridge not reachable"); }
+    try {
+      const r = await post("list views");
+      if (r.ok) { chip($("chipArm"), "ok", "Arm: connected"); $("views").textContent = String(r.message || "").replace(/^Views: /, "") + "."; }
+      else { chip($("chipArm"), "bad", "Arm: " + (r.message || r.error || "not reachable")); $("views").textContent = "unknown (the arm's MCP server is not reachable)."; }
+    } catch { chip($("chipArm"), "bad", "Arm: voice bridge not reachable"); $("views").textContent = "unknown."; }
+  }
+
+  // ---------- speech recognition ----------
+  const MIC_ERRORS = {
+    "not-allowed": "The browser blocked the microphone. Allow it for this page (address bar, site settings) and try again.",
+    "service-not-allowed": "Speech recognition is turned off in this browser. On a Mac, Safari needs Dictation enabled in System Settings; Chrome works without it.",
+    "audio-capture": "No microphone was found.",
+    "network": "The browser's speech service is not reachable (it needs the Internet).",
+  };
+
+  function render() {
+    const armed = mode === "free" && Date.now() < armedUntil;
+    $("mic").className = armed ? "armed" : listening ? "on" : "";
+    $("mic").setAttribute("aria-label", listening ? "Stop listening" : "Start listening");
+    $("state").textContent = !SR ? "Voice needs Chrome, Edge or Safari" : armed ? "Go ahead…"
+      : listening ? (mode === "free" ? `Listening for “Hey ${wakeName()}”` : "Listening…")
+      : mode === "free" ? "Hands-free is off: click the microphone" : "Click the microphone or press Space";
+    if (listening) chip($("chipMic"), "ok", "Microphone: on");
+    else if ($("chipMic").textContent === "Microphone: on") chip($("chipMic"), "", "Microphone: off");
+  }
+
+  function sentence(text) {
+    const armed = Date.now() < armedUntil;
+    const d = decide(text, mode, wakeName(), armed);
+    if (d.arm) { armedUntil = Date.now() + ARM_WINDOW_MS; setTimeout(render, ARM_WINDOW_MS + 50); }
+    else if (d.send !== null) armedUntil = 0;
+    // A stop already went out on the first interim words of this sentence: don't send it twice.
+    if (d.send !== null && !(stopSentFor === turn && isStop(d.send))) send(d.send);
+    $("heard").textContent = d.send === null && !d.arm && mode === "free" ? `(ignored) ${text.trim()}` : text.trim();
+    turn++;
+    render();
+  }
+
+  function begin() {
+    if (!SR || listening) return;
+    problem("");
+    rec = new SR();
+    rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1; rec.continuous = mode === "free";
+    rec.onstart = () => { listening = true; render(); };
+    rec.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript;
+        if (e.results[i].isFinal) sentence(text); else interim += text;
+      }
+      if (interim) {
+        $("heard").textContent = interim;
+        // Stop must not wait for the end of the sentence.
+        if (isStop(interim) && stopSentFor !== turn) { stopSentFor = turn; stopNow(); }
+      }
+    };
+    rec.onerror = (e) => {
+      if (e.error === "aborted" || e.error === "no-speech") { if (mode === "tap" && e.error === "no-speech") $("heard").textContent = "Didn't hear anything"; return; }
+      wanted = false;
+      problem(MIC_ERRORS[e.error] || `Speech recognition failed (${e.error}).`);
+      chip($("chipMic"), "bad", "Microphone: " + e.error);
+    };
+    rec.onend = () => {
+      listening = false; rec = null;
+      // Browsers end a session after a while, or after one sentence: hands-free starts the next one.
+      if (wanted && mode === "free") setTimeout(() => { if (wanted && mode === "free") begin(); }, 250);
+      render();
+    };
+    try { rec.start(); } catch { rec = null; }
+  }
+
+  function end() { wanted = false; armedUntil = 0; if (rec) rec.stop(); render(); }
+  function toggle() { if (listening || wanted) end(); else { wanted = mode === "free"; begin(); } }
+
+  function setMode(m) {
+    if (m === mode) return;
+    end(); mode = m;
+    $("modeTap").setAttribute("aria-pressed", String(m === "tap"));
+    $("modeFree").setAttribute("aria-pressed", String(m === "free"));
+    $("helpTap").hidden = m !== "tap"; $("helpFree").hidden = m !== "free";
+    $("heard").textContent = "";
+    render();
+  }
+
+  $("mic").addEventListener("click", toggle);
+  $("modeTap").addEventListener("click", () => setMode("tap"));
+  $("modeFree").addEventListener("click", () => setMode("free"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); stopNow(); return; }
+    const typing = ["INPUT", "TEXTAREA", "BUTTON"].includes(document.activeElement?.tagName);
+    if (e.code === "Space" && !typing && !e.repeat) { e.preventDefault(); toggle(); }
+  });
+
+  if (SR) $("mic").disabled = false;
+  else { problem("This browser has no speech recognition. Open this page in Chrome, Edge or Safari, or type the request below."); chip($("chipMic"), "bad", "Microphone: not supported here"); }
+  render();
+  startup();
+})();
+</script>
+</body>
+</html>

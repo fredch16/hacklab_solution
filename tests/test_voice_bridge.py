@@ -52,6 +52,53 @@ def part_a():
     print("A grammar + origins OK")
 
 
+def part_a_page_logic():
+    """The voice page's decisions (wake name, hands-free, stop), run under node when it is installed."""
+    import re, shutil, subprocess, tempfile
+    html = (ROOT / "voice_ui.html").read_text()
+    blocks = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+    assert len(blocks) == 2 and "module.exports" in blocks[0], "voice_ui.html: logic block, then the page script"
+    if not shutil.which("node"):
+        print("A voice page logic SKIPPED (node is not installed)")
+        return
+    checks = r"""
+const assert = require("node:assert/strict");
+assert.ok(isStop("Stop!") && isStop("whoa stop it") && isStop("HALT") && !isStop("stop recording") && !isStop("go to top"));
+const w = (t) => afterWake(t, "Claude");
+assert.deepEqual(w("Hey Claude, show me the top"), { woke: true, request: "show me the top" });
+assert.deepEqual(w("yo cloud show me the thing from da top"), { woke: true, request: "show me the thing from da top" });
+assert.deepEqual(w("show me the top, Claude"), { woke: true, request: "show me the top" });
+assert.deepEqual(w("Hey Claude."), { woke: true, request: "" });
+assert.deepEqual(w("okay clawed"), { woke: true, request: "" });
+assert.deepEqual(w("show me the top"), { woke: false, request: "" });
+assert.deepEqual(w("it was cloudy and included everything"), { woke: false, request: "" });
+assert.deepEqual(afterWake("hey robo go wide", "Robo"), { woke: true, request: "go wide" });
+assert.deepEqual(afterWake("hey cloud go wide", "Robo"), { woke: false, request: "" });
+assert.deepEqual(afterWake("anything", ""), { woke: false, request: "" });
+// tap to talk: whatever was said goes out
+assert.deepEqual(decide(" show me the top ", "tap", "Claude", false), { send: "show me the top", arm: false });
+assert.deepEqual(decide("   ", "tap", "Claude", false), { send: null, arm: false });
+// hands-free: only after the wake name, in the window a bare wake name opened, or a stop
+assert.deepEqual(decide("show me the top", "free", "Claude", false), { send: null, arm: false });
+assert.deepEqual(decide("hey claude show me the top", "free", "Claude", false), { send: "show me the top", arm: false });
+assert.deepEqual(decide("Hey Claude", "free", "Claude", false), { send: null, arm: true });
+assert.deepEqual(decide("show me the top", "free", "Claude", true), { send: "show me the top", arm: false });
+assert.deepEqual(decide("somebody stop that thing", "free", "Claude", false), { send: "somebody stop that thing", arm: false });
+assert.deepEqual(decide("stop recording", "free", "Claude", false), { send: null, arm: false });
+console.log("page logic ok");
+"""
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "logic.cjs"
+        f.write_text(blocks[0] + checks)
+        out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0 and "page logic ok" in out.stdout, out.stderr[-2000:]
+        g = Path(d) / "page.cjs"
+        g.write_text(blocks[1])
+        out = subprocess.run(["node", "--check", str(g)], capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr[-2000:]
+    print("A voice page logic OK")
+
+
 class CannedClient:
     """Stands in for anthropic.Anthropic: messages.create returns or raises what the test queued."""
     def __init__(self):
@@ -208,6 +255,21 @@ def part_b():
     assert post(url, {"session_id": "s1", "utterance_id": "x", "text": "stop"}, origin="https://evil.example")[0] == 403
     assert post(url, {"session_id": "s1", "utterance_id": "x", "text": "stop"}, ctype="text/plain")[0] == 415
     assert post(url, {"session_id": "s 1", "utterance_id": "x", "text": "stop"})[0] == 400
+
+    # the voice page for this PC: served from here, and its own origin (exact port) may post
+    port = srv.server_address[1]
+    for path in ("/", "/voice"):
+        with urllib.request.urlopen(url + path, timeout=5) as r:
+            page = r.read().decode()
+            assert r.status == 200 and r.headers["Content-Type"].startswith("text/html"), path
+            assert "connect-src 'self'" in r.headers["Content-Security-Policy"]
+            assert 'id="mic"' in page and "/api/v1/voice-command" in page and 'id="stop"' in page
+    for own in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+        code, r, h = post(url, {"session_id": "pc-1", "utterance_id": "p" + own[7:10], "text": "list views"}, origin=own)
+        assert code == 200 and r["command"] == "arm.list_views" and h["Access-Control-Allow-Origin"] == own, (own, r)
+    for foreign in (f"http://127.0.0.1:{port + 1}", f"http://evil.example:{port}", f"http://192.168.1.20:{port}",
+                    f"https://127.0.0.1.evil.example:{port}"):
+        assert post(url, {"session_id": "pc-1", "utterance_id": "q", "text": "stop"}, origin=foreign)[0] == 403, foreign
 
     target = next(n for n in checked if n != "home") if len(checked) > 1 else checked[0]
     code, r, h = post(url, {"session_id": "s1", "utterance_id": "u1", "text": f"Go to {target.replace('_', ' ')}."})
@@ -381,6 +443,7 @@ if __name__ == "__main__":
         model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else vb.LLM_MODEL
         sys.exit(1 if live(model) else 0)
     part_a()
+    part_a_page_logic()
     part_a_claude()
     part_b()
     print("ALL OK")

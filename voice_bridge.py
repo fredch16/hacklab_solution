@@ -3,6 +3,11 @@
     .venv/bin/python voice_bridge.py                      # MCP at http://127.0.0.1:8200/mcp, listens on 127.0.0.1:8210
     .venv/bin/python voice_bridge.py --mcp-url http://127.0.0.1:8201/mcp --port 8211   # against a --sim stack
 
+Voice mode on this PC, no phone: open http://127.0.0.1:8210/ in Chrome, Edge or Safari. That page
+(voice_ui.html, served from here) uses the browser's speech recognition and posts the text to the
+same endpoint as the phone dashboard: tap to talk, or hands-free after "Hey Claude"; a spoken
+"stop", Esc and the red button stop the arm.
+
 The paired browser dashboard forwards only eligible live finals that are not recording commands
 (dashboard/docs/ARCHITECTURE.md, "Dashboard command routing and MCP handoff"):
 
@@ -54,6 +59,7 @@ log = logging.getLogger("voice_bridge")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")          # utterance IDs (as the dashboard checks them)
 SID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")      # phone session IDs are opaque
 MAX_TEXT = 500
+UI_PATH = Path(__file__).resolve().with_name("voice_ui.html")
 
 FILLER_HEAD = re.compile(r"^(?:(?:hey|okay|ok|please|can you|could you|would you|now|and|then|robot|camera|arm) )+")
 FILLER_TAIL = re.compile(r"(?: (?:please|right now|now|thank you|thanks|okay|i think))+$")
@@ -367,9 +373,16 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
         def log_message(self, fmt, *args):
             log.debug("%s " + fmt, self.address_string(), *args)
 
+        def _allowed(self, origin: str | None) -> bool:
+            """The dashboard's origins, plus this server's own page (voice_ui.html) on loopback. The
+            exact port is part of the check, so a web page elsewhere cannot pass as ours."""
+            port = self.server.server_address[1]
+            return origin in (f"http://127.0.0.1:{port}", f"http://localhost:{port}") or \
+                origin_allowed(origin, extra_origins)
+
         def _cors(self):
             origin = self.headers.get("Origin")
-            if origin and origin_allowed(origin, extra_origins):
+            if origin and self._allowed(origin):
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Vary", "Origin")
                 self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -388,7 +401,7 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
             self.wfile.write(body)
 
         def do_OPTIONS(self):
-            if not origin_allowed(self.headers.get("Origin"), extra_origins):
+            if not self._allowed(self.headers.get("Origin")):
                 return self._json(403, {"ok": False, "error": "ORIGIN_NOT_ALLOWED"})
             self.send_response(204)
             self._cors()
@@ -399,10 +412,26 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
             if self.path == "/api/v1/health":
                 return self._json(200, {"ok": True, "mcp_url": str(bridge.target),
                                         "llm": getattr(bridge.interpreter, "model", None)})
+            if self.path in ("/", "/voice"):
+                return self._page()
             self._json(404, {"ok": False, "error": "NOT_FOUND"})
 
+        def _page(self):
+            try:
+                body = UI_PATH.read_bytes()      # read per request: edit the file, reload the page
+            except OSError:
+                return self._json(404, {"ok": False, "error": "NOT_FOUND"})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; "
+                             "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
-            if not origin_allowed(self.headers.get("Origin"), extra_origins):
+            if not self._allowed(self.headers.get("Origin")):
                 return self._json(403, {"ok": False, "error": "ORIGIN_NOT_ALLOWED"})
             if self.path != "/api/v1/voice-command":
                 return self._json(404, {"ok": False, "error": "NOT_FOUND"})
@@ -471,6 +500,7 @@ def main(argv=None):
     bridge = Bridge(args.mcp_url, interpreter=make_interpreter(args.llm, args.llm_model))
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(bridge, set(args.allow_origin)))
     log.info("voice bridge on http://%s:%d -> %s", args.host, args.port, args.mcp_url)
+    log.info("voice mode on this PC: http://127.0.0.1:%d/", args.port)
     log.info("free phrasing: %s", f"Claude ({bridge.interpreter.model})" if bridge.interpreter else
              "off, local grammar only" + ("" if args.llm == "off" else " (no ANTHROPIC_API_KEY found)"))
     try:

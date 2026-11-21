@@ -10,17 +10,17 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
                     └──────────────────────── camera frames (camera.py) ◄───────────────────┘
 ```
 
-## Status (Sat 21 Nov, ~13:45)
+## Status (Sat 21 Nov, ~15:30)
 
 | Milestone | State |
 |---|---|
 | M0 arm + camera from our code | ✅ joints read, camera frames grabbed, torque control works on the real arms |
-| M1 saved viewpoints | ✅ 7 views in `views.json` + `views/*.jpg`. `left`/`right`/`side_low` come out sideways and should be re-captured with a level horizon |
-| M2 `go_to_view` | 🟡 implemented + tested on the simulated arm; **not yet run on the real arm**, no collision checks. Motion team: [docs/MOTION.md](docs/MOTION.md) |
+| M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
+| M2 move to a view | 🟡 built and reviewed: route network through the transit pose, guards, web control page. **76 checks pass on the simulated arm; not yet run on the real arm.** Next: the supervised test protocol in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
 | M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
 
-Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (motion planning handoff) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
+Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 
 ## Hardware in one paragraph
 
@@ -39,17 +39,19 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | Command | Milestone | What it does |
 |---|---|---|
 | `python joints.py` | M0 | Live joints of every arm, and which is limp vs holding |
-| `python calib_watch.py` | M0 | Live calibration progress per joint; shows which arm is moving |
+| `python calib_watch.py` | M0 | Live calibration progress per joint |
 | `python camera.py [--list]` | M0.8 | Save one frame to `frame.jpg` / list cameras |
-| `python torque.py off\|on` | M1.1 | Make an arm limp / hold (hold it first!) |
-| `python capture_server.py --bus 5B79016329` | M1 | **Capture web UI** at http://localhost:8890: live camera, Go limp / Hold here, guided steps, Save/Retake/Delete |
-| `python capture_view.py --bus 5B79016329` | M1 | Same as above in the terminal (Enter per view) |
-| `python go.py top` / `--tour 5` / `--speed 250` | M2 | Move the follower to saved views; Ctrl-C holds where it is |
-| `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves; `--sim` needs no hardware |
+| `python torque.py off\|on` | M1.1 | Go limp / hold the present pose (joints 1–7; the gripper stays limp) |
+| `python capture_server.py --bus 5B79016329` | M1 + M2 | **Web UI** at http://localhost:8890. `/` captures views (live camera, Go limp / Hold here, Save). **`/control` moves the arm: click a view, STOP always visible.** |
+| `python capture_server.py --sim --port 8891` | | The same UI on a simulated arm, no hardware |
+| `python go.py --where` / `top` / `--tour 5` / `--mark-checked top` | M2 | Command-line moves; `--sim` for the simulated arm; Ctrl-C holds |
+| `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
+| `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
+| `python3 tests/test_motion_sim.py`, `python3 tests/test_fk.py` | | Motion layer and geometry model tests (no hardware) |
 
 ## Interfaces between the pieces
 
-- `motion.go_to_view(arm, name) -> {"ok", "view", "error", "duration"}`: the one call everything else uses.
+- `motion.go_to_view(arm, name) -> {"ok", "view", "error", "duration", "route"}`: the one call everything else uses. It refuses with a readable `error` instead of moving when anything is off.
 - `views.json`: named poses (raw encoder steps per motor id) + description + snapshot path. Format in [docs/MOTION.md](docs/MOTION.md#contract-please-keep-these-stable).
 - `camera.Camera.get_frame() -> JPEG bytes`: latest frame from a Station camera queue.
 - `events.jsonl`: `director.py` appends `{"t", "kind": "heard"|"decided"|"moved"|"reply"|"error", "text"}` per step, for the overlay (E) and spoken confirmation (D).
@@ -58,11 +60,14 @@ The director uses Claude Opus 5.5 (`claude-opus-5-5`, effort `low` for snappy re
 
 ## Safety rules
 
-- Set the follower to **"(Self-controlled)"** in Station before `go.py` / `director.py`, or leader mirroring fights our moves.
-- Moves stay inside each joint's calibrated arc, are capped at ~44°/s, hold position on Ctrl-C, and never move the gripper (camera) unless `--gripper` is passed.
-- First runs of new motion code: half speed, one person at the arm, power plug within reach.
+- Set the follower to **"(Self-controlled)"** in Station before moving it; the code refuses while Station mirrors a leader onto it.
+- Every move goes **rise → turn → descend** through the taught `transit` pose, only from a known pose, only with the arm already holding. The gripper (camera mount) is never moved.
+- A move stops and holds if a joint doesn't follow, pushes at full effort, draws too much current, stops answering, is commanded by something else, or the data goes stale. **STOP** on the page, Space/Esc, or Ctrl-C holds the arm where it is.
+- Views nobody has watched on the real arm run at slow speed only. After a clean there-and-back run, mark the view as checked.
+- **Recalibrating the follower invalidates its saved views** (they are raw motor positions); the code detects this and asks for a re-capture.
+- First runs of anything new: slow, one person at the arm, power plug within reach.
 - **Never leave a powered arm unattended. Ask a mentor before touching the camera mount.** (hackathon rules)
 
 ## What's ours vs. starter code
 
-NormaCore provides Station (robot runtime + web UI), its Python client and the ElRobot hardware files; those are vendored unchanged in `vendor/normacore/` (plus the small viewer patch in `patches/`). Everything else in this repo was written this weekend: arm wrapper, camera access, view capture (CLI + web UI), the motion layer, the simulator and the Claude director.
+NormaCore provides Station (robot runtime + web UI), its Python client and the ElRobot hardware files; those are vendored unchanged in `vendor/normacore/` (plus the small viewer patch in `patches/`). Everything else in this repo was written this weekend: arm wrapper, camera access, view capture and control web UI, the motion layer and its geometry model, the simulator and the Claude director.

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "description": "Quiet Precision — initial design tokens for Local Vision Console; adjust only with evidence/accessibility checks.",
+  "colors": {
+    "ink950": "#080D14",
+    "ink900": "#101824",
+    "ink800": "#172334",
+    "ink700": "#253549",
+    "textPrimary": "#EAF2F9",
+    "textSecondary": "#A2B4C5",
+    "textTertiary": "#71859B",
+    "accentTeal": "#5EDBC8",
+    "accentBlue": "#79B9F2",
+    "recordRed": "#FF6873",
+    "warningAmber": "#F4BD6A",
+    "dangerRed": "#F27B7B",
+    "successGreen": "#73DCB0"
+  },
+  "spacingPx": [4, 8, 12, 16, 24, 32, 40],
+  "borderRadiusPx": {"chip": 8, "control": 11, "card": 16, "viewport": 18},
+  "controlHeightsPx": {"compact": 36, "standard": 44, "prominent": 52},
+  "typographyPx": {"caption": 11, "label": 12, "body": 14, "bodyLarge": 16, "subtitle": 19, "title": 26},
+  "breakpointsPx": {"mobile": 640, "stackDesktopSidebar": 1100, "desktopMax": 1440},
+  "motionMs": {"quick": 120, "standard": 180},
+  "semanticPrinciples": [
+    "Color is never the only state cue",
+    "Recording uses red only when recording is active",
+    "View streaming and local master recording are always labeled separately",
+    "Metrics represent actual readings or are explicitly unavailable",
+    "No remote font or icon dependencies"
+  ]
+}

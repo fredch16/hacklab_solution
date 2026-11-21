@@ -1,90 +1,101 @@
 # Motion plan: getting to a saved view without breaking the arm
 
-**Version 2** (after council round 1). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 70 checks). **Nothing here has run on the real arm yet.**
+**Version 3** (after council round 1). Implemented in `motion.py`, tested on the simulated arm only (`python3 tests/test_motion_sim.py`, 76 checks). **Nothing here has run on the real arm yet.**
 Background: [HARDWARE.md](HARDWARE.md), [MOTION.md](MOTION.md).
 
 ## Goal
 
 Click a view in the web UI → the follower arm (ElRobot, 7 joints + gripper, camera on the gripper) moves to that saved view. It must not hit the table or itself or pull the camera cable, and a person must be able to stop it instantly.
 
-## What changed from version 1 (review round 1)
+## Council round 1
 
-| Round 1 finding | Decision |
+| Reviewer | Score for v1 | Main point |
+|---|---|---|
+| GPT-6.2 Sol | 3/10 | Only move from known poses on checked routes; stricter stop/fault handling; views sit on joint limits |
+| Gemini 4 Neon | 5/10 | Shoulder-first lift drives the gripper ~65 mm into the table at `home`; merge to 3 phases |
+| Claude Fable 5.2 | 6/10 | Same collision found independently (~49 mm); 3 phases; tie views to the calibration |
+
+Gemini and Claude each built an offline kinematic model from the URDF (joint angle = `lower + p·(upper − lower)`, which they report matches all saved snapshots) and reached the same conclusion: **with the four pitch joints moving together, every view's path to the transit pose stays at or above the height of its own end poses; with the shoulder moving alone, `home` collides.** v3 adopts that.
+
+| Round 1 finding | Decision in v3 |
 |---|---|
-| "Any pose" start with a blind shoulder-first lift is unsafe | Moves only start from a **known place on a fixed route network** (at a view, on a view's spoke, at the hub). Anything else is refused. An explicit, slow, supervised "Recover to transit" exists for unknown poses. |
-| The `<60 steps` shortcut allowed `home → top` as one direct move (M2 +1494, M4 −1535) | **Shortcut removed.** Every move goes through the hub. |
-| Views saved at or past joint limits (`home`, `left`, `right`, `side_low`) were driven to those values (`JointArc.include`) | `include()` removed. Targets are **clamped inside the calibrated range minus 30 steps**; `check_views()` lists affected views so they can be re-captured. Wrapped or tiny calibration ranges are refused. |
-| Arrival check clamped the measured position and could report a false arrival | Arrival compares raw measured position with the goal, per segment, and requires the joint to be standing still. |
-| Only cancellation held the arm; other failures left the last goal active | **Every** abort path ends in a hold (goal := measured) once anything has been commanded. Refusals before the first command write nothing. |
-| Goal can run far ahead of the arm (residual travel if the link dies) | Goals **only advance while the arm keeps up** (commanded − measured ≤ 120 steps). The servo's own speed ceiling is set just above ours (1.5× peak + 50). |
-| Station's current limit doesn't cover our writes | Own guards: tracking stall, servo status faults, overcurrent, stale data, pushed joints, failed writes. |
-| Torque switched on automatically; gripper written on startup/hold | Moves **require torque already on** (a person pressed "Hold here"). The gripper (M8) is **never written** by any move, hold or engage. `hold()` never energises a limp joint. |
-| Fighting Station's leader→follower mirroring | Preflight reads Station's mirroring state and **refuses while the follower is a mirror target**. |
-| Smoothstep peaks at 1.5× the nominal speed; accel units | Speeds are now true peak speeds (slow 200, normal 400 steps/s); duration = 1.5 × distance / peak. Accel register set to 15 (1500 steps/s²). |
-| Routes should be checked by a person before being trusted | Per-view `checked` flag (`go.py --mark-checked`, UI button). **Unchecked views only run at slow speed.** Re-capturing a view clears it. |
-| Wrong arm / wrong motors | Views record the bus serial they were captured on; preflight requires that serial and motors 1–8. |
+| Shoulder-alone lift collides at `home` (Gemini, Claude) | **Three segments.** M2, M3, M4, M6 always move together: rise → turn → descend. |
+| "Any pose" start is unsafe (all three) | Moves only start from a **known place on the route network** (at a view, on a view's spoke, at the hub). Otherwise refused; a slow, explicit "recover to transit" exists for supervised use. |
+| `<60 steps` shortcut allowed `home → top` directly (Sol, Gemini) | **Shortcut removed.** Every move goes through the hub. |
+| Views saved on/past joint limits were driven there via `JointArc.include` (all three) | `include()` removed. Targets are **clamped 30 steps inside the calibrated range**; `check_views()` lists affected views for re-capture. Wrapped, tiny or missing calibration is refused. |
+| Views silently shift if the arm is recalibrated (Claude) | Each view stores the calibration ranges it was captured with; a move is **refused if live ranges differ by more than 15 steps**. |
+| False arrival near stops; no guards during the settle wait (Sol, Gemini) | Arrival compares raw measured position with the goal per segment and requires standstill; guards keep running while settling. |
+| Aborts left the last goal active; `hold()` threw on stale data (all three) | Every abort after the first command ends in a hold (goal := measured), shielded against cancellation. With stale data nothing is written (the last goal is ≤ 120 steps ahead, see leash). Refusals before the first command write nothing. Status is always reset. |
+| Goal can run far ahead of a blocked arm (all three) | **Leash:** goals only advance while commanded − measured ≤ 120 steps; blocked for 0.4 s → abort. Servo speed ceiling = 1.5 × our peak + 50, never 0. |
+| Station's current limit doesn't cover our writes (all three) | Own guards (table below). |
+| Auto torque-on; gripper written on startup/hold (Sol, Gemini) | Moves **require torque already on**. `engage()` ("Hold here") writes goal := present with a low speed ceiling, then torque on. The gripper (M8) is **never written**. `hold()` never energises a limp joint. `torque.py on` now uses `engage()`. |
+| Mirroring / other writers (all three) | Preflight reads Station's mirroring state and refuses while the follower is a mirror target. During a move the goal registers are read back: a goal we didn't write → abort. |
+| Whole-frame freshness hides a dead arm or servo; short register dumps read as 0 (Gemini, Claude, Sol) | Freshness is tracked **per motor** from Station's per-motor read stamp; register dumps shorter than 71 bytes are refused; read errors that persist abort. |
+| Smoothstep peaks at 1.5× nominal; accel units (Sol) | Speeds are true peak speeds (slow 200, normal 400 steps/s). Accel register 15 (1500 steps/s²). |
+| Routes need a human check (Sol) | Per-view `checked` flag; **unchecked views only run at slow speed**; re-capturing clears it. |
+| Wrong arm / missing motor changes which id is "the gripper" (Sol, Gemini) | Views record their bus serial; preflight requires that serial and exactly motors 1–8. Gripper is the constant 8. |
+| `transit` leaked into the view list Claude's director sees (Gemini) | `view_names()` / `view_descriptions()` exclude it. |
 
-Not adopted (scope): dynamic torque-limit changes (skipped, as recommended), per-motor source timestamps (we use frame receipt age ≤ 0.3 s), read-back confirmation of holds, FK-based checks as a hard gate (advisory only, see below).
+Not adopted, on purpose (scope for this weekend): dynamic torque limit (all three said skip); read-back confirmation of each hold; `CT_STOP_MIRROR` sent by us (we refuse and tell the user instead); FK as a runtime gate (kept offline/advisory); a hard ban on recovery from unknown poses (kept, but slow, explicit and supervised).
 
 ## The route network
 
-Joint groups: **LIFT** = M2 (shoulder) · **SHAPE** = M3, M4, M6 (elbow, pitch, wrist pitch) · **TURN** = M1, M5, M7 (base yaw, forearm roll, wrist roll) · M8 gripper never moves.
+Joint groups: **PITCH** = M2, M3, M4, M6 (shoulder, elbow, pitch, wrist pitch), always together · **TURN** = M1, M5, M7 (base yaw, forearm roll, wrist roll), only at the hub · M8 gripper never moves.
 
-The **hub** is the transit pose's pitch configuration (M2, M3, M4, M6 at the `transit` values; yaw/rolls anywhere). `transit` was taught by hand: arm raised, gripper pointing straight up, wrist straight.
-
-Each view has a **spoke** to the hub. A move is a walk along spokes, one joint group at a time:
+The **hub** is the transit pose's pitch configuration (yaw/rolls anywhere). `transit` was taught by hand: arm raised, gripper pointing straight up, wrist straight (about 53 cm tall per the reviewers' models).
 
 | Segment | Joints | Goes to |
 |---|---|---|
-| lift | M2 | transit value (leave the view: shoulder first) |
-| fold | M3, M4, M6 | transit values → now at the hub |
-| turn | M1, M5, M7 | the **target's** values, at the hub |
-| shape | M3, M4, M6 | target's values |
-| lower | M2 | target's value |
+| rise | M2, M3, M4, M6 together | transit values → now at the hub |
+| turn | M1, M5, M7 together | the target's values |
+| descend | M2, M3, M4, M6 together | the target's values |
 
-- Entering a view is the exact reverse of leaving it.
-- A view can be flagged `"exit": "fold_first"` in `views.json` to swap lift and fold on its spoke (candidate: `home`, which is folded back with M2 at its minimum; to be decided by the first supervised run and the FK model).
-- After a Stop the arm is still on the network (on a spoke or at the hub), and `locate()` recognises that from the measured joints alone, so the next click plans from there: finish going up the current spoke, turn, go down the target's spoke. If the target is the spoke's own view, it goes straight back down.
-- The safety argument: (1) the hub is safe for any yaw/roll the views use (a person chose the transit pose for that); (2) each view's spoke is safe (a person watches it once, slowly, both ways, then marks the view checked). Nothing else is ever driven.
+- A **spoke** is the straight joint-space line between a view and the hub with the view's yaw/rolls. After a Stop the arm is on a spoke or at the hub, and `locate()` recognises that from the measured joints alone (all pitch joints the same fraction of the way), so the next click plans from there: up the current spoke, turn, down the target's spoke. If the target is the spoke's own view it goes straight back down.
+- Safety argument: (1) the hub is safe for any yaw/roll the views use (chosen by a person; the reviewers' models give ≥ 17 cm table clearance for the whole sweep); (2) each spoke lies between two poses a person taught, is watched once at slow speed, then marked checked. Nothing else is ever driven.
 
-## Preflight (before the first command; a failure writes nothing)
+## Preflight (a failure writes nothing)
 
-Transit pose saved · motors 1–8 present · view captured on this arm's serial · no servo fault bits · joints 1–7 holding (torque on) · Station not mirroring onto this arm · calibration sane (no wrap, range ≥ 400 steps, present position within range) · the arm is on the network.
+Transit pose saved · exactly motors 1–8 · view captured on this arm's serial and with this calibration · no servo fault bits or read errors · joints 1–7 holding · Station not mirroring onto this arm · calibration sane (no wrap, range ≥ 400 steps, present position within range) · the arm is on the network.
 
 ## Guards while moving (each ends the move and holds)
 
 | Guard | Threshold (provisional until measured on the arm) |
 |---|---|
-| Joint not following | commanded − measured > 120 steps for > 0.6 s |
+| Joint not following (leash) | commanded − measured > 120 steps; goals stop advancing at once, abort after 0.4 s |
 | Held joint pushed/sagging | a non-moving joint > 150 steps from where the segment started |
-| Stale data | joint data older than 0.3 s |
-| Servo fault | any status bit except the voltage bit |
-| Overcurrent | > 250 raw (≈1.6 A) for > 0.3 s on a moving joint |
+| Another writer | a held joint's goal register changes (immediate), or a moving joint's goal is not one we sent (0.25 s) |
+| Stale data | any motor not read for 0.3 s |
+| Servo fault | any status bit except the voltage bit (immediate) |
+| Stalled | load (PWM duty) > 800 for 0.25 s |
+| Overcurrent | > 250 raw (≈1.6 A) for 0.25 s |
+| Read errors | a motor's reads failing for 0.25 s |
 | Write failure | Station doesn't accept a command within 0.5 s |
 | Not arrived | after a segment, a joint > 40 steps from its goal or still moving after 2 s |
 | Stop / cancel | immediate |
 
-Every move appends per-joint max lag and max current to `motion_log.jsonl`, so the thresholds can be tuned from real data after the first runs.
+Every move appends per-joint max lag, load and current and the max temperature to `motion_log.jsonl` for tuning.
 
-## FK dry-run (advisory)
+## FK model (advisory, offline)
 
-`fk.py` (being built) models the arm from the vendored URDF with the mapping Station's 3D viewer uses. If it validates against the saved views, the planner can report the lowest point of each segment as a second opinion. It is not a gate: the network and guards must be safe on their own.
+`fk.py` models the arm from the vendored URDF. Used to print the lowest point of every route as a second opinion (and it is how the round-1 reviewers found the `home` collision). Not a runtime gate.
 
 ## Test protocol on the real arm
 
-Follower "(Self-controlled)" in Station, one person at the arm with the power plug in reach, slow speed, cables checked for slack at both roll joints.
+Follower "(Self-controlled)" in Station, one person at the arm, slow speed, desk cleared, cable slack checked by hand at full transit height and through the roll sweep (torque off) before the first powered run.
 
-1. `python go.py --where` (nothing moves): confirms calibration, mirroring off, location.
-2. Hand-pose to `transit` (Go limp → pose → Hold here), then `transit → wide → transit`, then `top`, `close`: the views that only differ in pitch.
-3. Views with big rolls: `left`, `right`, `side_low` (after re-capturing them away from the joint limits and with a level horizon).
-4. `home` last, watching its spoke closely; switch it to `fold_first` if lift-first looks wrong.
-5. Press Stop mid-segment once; check the arm holds and the next click recovers.
-6. Mark each view checked after a clean there-and-back run. Then one full tour slow, then normal speed.
-7. Read `motion_log.jsonl`, tune lag/current limits.
+1. `python go.py --where` (nothing moves): calibration matches, mirroring off, location, register dump complete.
+2. Hand-pose to `transit` (Go limp → pose → Hold here). Check held-still lag/load/current/temperature readings.
+3. `transit → wide → transit`, then `top`, `close` (pitch-only views).
+4. `left`, `right`, `side_low` after re-capturing them off the joint limits with a level horizon (smaller M5 sweep).
+5. `home` last, watching its spoke closely.
+6. Press Stop mid-segment once; check the arm holds and the next click recovers.
+7. Mark each view checked after a clean there-and-back run. One full tour slow, then normal speed.
+8. Read `motion_log.jsonl`, tune the lag/load/current limits per joint.
 
 ## Known limits
 
-- No collision model: safety rests on taught poses, ordering, supervision and guards.
-- A slow move takes 10–30 s (five segments in sequence). Merging segments or raising the speed is a later step once routes are checked.
-- If the link to Station dies mid-move we cannot confirm the hold; the last goal is at most 120 steps from the arm. Emergency stop is the power plug.
-- `left`/`right` differ by ~179° of forearm roll (M5); watch the camera cable there.
+- No collision model at runtime: safety rests on taught poses, joint ordering, supervision and guards.
+- If the link to Station dies mid-move we cannot confirm the hold; the last goal is at most 120 steps from the arm. Emergency stop is the power plug, and at transit the arm then falls from ~50 cm: prefer Stop, pad the desk for first runs.
+- Whether a goal write energises a limp ST3215 joint, the idle telemetry values, and the servo's overload settings are still to be read from the real arm (step 1–2 above).
+- `left`/`right` differ by ~179° of forearm roll (M5); watch the camera cable there until they are re-captured.
+- A slow view-to-view move takes about 15–25 s.

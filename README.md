@@ -24,9 +24,9 @@ The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. 
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
 | M2 move to a view | 🟢 **works on the real arm**: 10 supervised moves on 21 Nov between transit, `top`, `wide` and `right`, from the web page at `/control`. Still to do: `left`, `close`, `side_low`, `home`, the Stop and block tests, normal speed. Details and data in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
-| M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Spoken arm requests (stop, go to a checked view, status, list views) go from the dashboard through `voice_bridge.py` to MCP, with Claude interpreting free phrasing; tested on the simulated arm, not yet on the real arm by voice. |
+| M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Spoken arm requests (stop, go to a checked view, status, list views) go from the dashboard through `voice_bridge.py` to MCP, with Claude interpreting free phrasing. A voice page on the PC (`http://127.0.0.1:8210/`) does the same without a phone; with it, four spoken moves ran on the real arm on 21 Nov. The phone path is tested on the simulated arm only. See [docs/VOICE.md](docs/VOICE.md). |
 
-Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (current Android capture and dashboard, MCP handoff, previous planning context) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
+Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration, moving to another computer) · **[docs/VOICE.md](docs/VOICE.md)** (voice control: how to start it, what you can say, what is tested) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_OPT.md](docs/MOTION_OPT.md)** (direct moves between checked views, benchmark) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (current Android capture and dashboard, MCP handoff, previous planning context) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 
 ## Hardware in one paragraph
 
@@ -54,9 +54,11 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
 | `python3 arm_view.py` | M2 | **Watch the arm move as a stick figure** (side/top/front) at http://localhost:8896; follows the server on :8891 (sim) or `--source http://localhost:8890` (real arm). Read-only |
 | `.venv/bin/python mcp_server.py` (`--arm-url http://127.0.0.1:8891` for `--sim`) | M3 | **MCP server** camera-arm on localhost:8200/mcp for Claude: views, moves (through the web server), status, stop, camera still, scene. See [docs/MCP.md](docs/MCP.md) |
+| `.venv/bin/python voice_bridge.py` | M4 | **Voice**: turns spoken or typed requests into MCP calls; voice page at http://127.0.0.1:8210/. Needs `mcp_server.py` running and, for free phrasing, `ANTHROPIC_API_KEY`. See [docs/VOICE.md](docs/VOICE.md) |
+| `python3 calib_file.py show` / `export` / `install` | M0 | Carry Station's calibration to another computer. See [docs/HARDWARE.md](docs/HARDWARE.md#running-the-same-arms-from-another-computer) |
 | `python3 framing.py top 0.6 0.55 0.3 0.25` | M5 | **Framing preview** (stage 2): where the camera would go to frame a box from a view; never moves. See [docs/FRAMING.md](docs/FRAMING.md) |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
-| `python3 tests/test_motion_sim.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py` | | Motion layer, web-server race and geometry model tests (no hardware; about 75 s, 2 min and 5 s) |
+| `python3 tests/test_motion_sim.py`, `python3 tests/test_motion_opt.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py`, `.venv/bin/python tests/test_voice_bridge.py` | | Motion layer, direct moves, web-server race, geometry model and voice bridge tests (no hardware) |
 
 ## Interfaces between the pieces
 
@@ -70,7 +72,7 @@ The director uses Claude Opus 5.5 (`claude-opus-5-5`, effort `low` for snappy re
 ## Safety rules
 
 - Set the follower to **"(Self-controlled)"** in Station before moving it; the code refuses while Station mirrors a leader onto it.
-- Every move goes **rise → turn → descend** through the taught `transit` pose, only from a known pose, only with the arm already holding. The gripper (camera mount) is never moved.
+- A move goes **rise → turn → descend** through the taught `transit` pose, only from a known pose, only with the arm already holding. Between two checked views it goes in one straight line instead when the geometry model shows that line stays at least as high as its ends ([docs/MOTION_OPT.md](docs/MOTION_OPT.md)); `home` always goes through `transit`. The gripper (camera mount) is never moved.
 - A move stops and holds if a joint doesn't follow, pushes at full effort, draws too much current, stops answering, goes limp, is commanded by something else, or the data goes stale. **STOP** on the page, Space/Esc, or Ctrl-C holds the arm where it is, and the page says if that hold could not be confirmed.
 - Views nobody has watched on the real arm run at first-run speed only (100 steps/s, 30–60 s per move). After a clean there-and-back run, mark the view as checked.
 - Use **one controlling program** per session (the web server). STOP on the page cannot stop a move started by `go.py` or `director.py` in another terminal.
@@ -78,6 +80,13 @@ The director uses Claude Opus 5.5 (`claude-opus-5-5`, effort `low` for snappy re
 - **Recalibrating the follower invalidates its saved views** (they are raw motor positions); the code detects this and asks for a re-capture.
 - First runs of anything new: slow, one person at the arm, power plug within reach.
 - **Never leave a powered arm unattended. Ask a mentor before touching the camera mount.** (hackathon rules)
+
+## Parked branches (not in main)
+
+| Branch | What | State |
+|---|---|---|
+| `keep-in-view` | Watch an object (the PCB) and move to another saved view when a hand covers it. Plan in `docs/KEEP_IN_VIEW.md` on that branch | Draft, never run. To be reviewed on 22 Nov |
+| `overload-override` | A setting to ignore a servo's overload flag (motor 2 reported status 0x20 on arc moves from `right` to `top`) | Works on the simulated arm. Not merged on purpose: the servo cuts its own torque when it trips, whatever our code ignores |
 
 ## What's ours vs. starter code
 

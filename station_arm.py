@@ -235,5 +235,13 @@ def run(coro):
         sys.exit(1)
 
 
+def gripper_id(motor_ids) -> int:
+    """The gripper is the last motor: 6 on an SO-101, 8 on a 7+1 DoF ElRobot."""
+    return max(motor_ids)
+
+
 def format_joints(joints: dict[int, int]) -> str:
-    return "  ".join(f"{SO101_JOINTS.get(mid, mid)}={pos}" for mid, pos in sorted(joints.items()))
+    if len(joints) == len(SO101_JOINTS):
+        return "  ".join(f"{SO101_JOINTS.get(mid, mid)}={pos}" for mid, pos in sorted(joints.items()))
+    grip = gripper_id(joints)
+    return "  ".join(f"{'gripper' if mid == grip else f'j{mid}'}={pos}" for mid, pos in sorted(joints.items()))

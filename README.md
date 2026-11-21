@@ -8,7 +8,7 @@ you / voice ──► Claude (director.py) ──► go_to_view ──► motion
 
 ## Setup
 
-- Station v0.1.0-beta.10: download `station-macos-arm64.zip` from https://github.com/norma-core/norma-core/releases, run `./station --web --tcp`, open http://localhost:8889. In `station.yaml`, set `usb-video.resize_target: 720` (default 224 is too small for Claude/video).
+- Station v0.1.0-beta.10: download `station-macos-arm64.zip` from https://github.com/norma-core/norma-core/releases, run `./station --web --tcp`, open http://localhost:8889. In `station.yaml`, set `usb-video.resize_target: 720` and `formats: [{format: "max@30fps,mjpeg"}, {format: "max@30fps,420v"}]` (defaults give 224px from a 320x240 capture).
 - Python: `uv sync` (Python 3.13, `anthropic` SDK). The Station Python client is vendored in `vendor/normacore` (MIT, matches beta.10).
 - `export ANTHROPIC_API_KEY=...` for the director.
 

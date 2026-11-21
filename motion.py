@@ -10,7 +10,7 @@ How a move works:
   3. Interpolation happens inside each joint's calibrated arc, so a move never
      sweeps through the part of the circle the joint can't physically reach.
   4. Ctrl-C / cancel: hold position where the arm is.
-The gripper (motor 6) is left alone by default in case the camera is mounted on it.
+The gripper (last motor: 6 on SO-101, 8 on ElRobot) is left alone by default in case the camera is mounted on it.
 """
 
 import asyncio
@@ -18,10 +18,9 @@ import json
 import time
 from pathlib import Path
 
-from station_arm import Arm, logger
+from station_arm import Arm, gripper_id, logger
 
 VIEWS_PATH = Path(__file__).parent / "views.json"
-GRIPPER_ID = 6
 FULL = 4096
 
 MAX_SPEED = 500        # encoder steps per second for the joint that travels furthest (~44 deg/s)
@@ -88,7 +87,8 @@ async def move_to(arm: Arm, target: dict[int, int], include_gripper: bool = Fals
                   max_speed: float = MAX_SPEED, min_duration: float = MIN_DURATION) -> dict:
     present = arm.joints()
     ranges = arm.ranges()
-    ids = [m for m in target if m in present and (include_gripper or m != GRIPPER_ID)]
+    grip = gripper_id(present)
+    ids = [m for m in target if m in present and (include_gripper or m != grip)]
     missing = [m for m in target if m not in present]
     if missing:
         return {"ok": False, "error": f"motors {missing} not on the bus"}

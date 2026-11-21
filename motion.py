@@ -46,6 +46,7 @@ EXPECTED_MOTORS = MOVABLE + (GRIPPER,)
 SPEED_FIRST = 100      # ~9 deg/s: forced for views nobody has checked on the real arm yet
 SPEED_SLOW = 200       # ~18 deg/s
 SPEED_NORMAL = 400     # ~35 deg/s
+SPEED_FAST = 800       # ~70 deg/s for rise and turn; the descent into a view is capped at SPEED_NORMAL
 MIN_SEGMENT_S = 0.8
 RATE_HZ = 30
 MAX_TICK_S = 2 / RATE_HZ   # a late tick never advances the path by more than this much time
@@ -79,11 +80,11 @@ STATUS_IGNORE = 0x01   # voltage bit; not a motion fault
 
 
 def lead_limit(peak_speed: float) -> float:
-    """Leash: how far a commanded goal may be ahead of the measured position (100 / 120 / 160
-    steps at 100 / 200 / 400 steps/s). Bounds how far the arm can still travel if we go blind.
-    First real session: the loaded shoulder rests ~20-35 steps short of its goal and needed more
-    than 60 to start lifting out of `top`, so 60 stopped every move back up."""
-    return 80 + 0.2 * peak_speed
+    """Leash: how far a commanded goal may be ahead of the measured position (140 / 160 / 200 /
+    260 steps at 100 / 200 / 400 / 800 steps/s). Bounds how far the arm can still travel if we
+    go blind. From the first real session: the loaded shoulder rests 20-35 steps short of its
+    goal, needed more than 60 to start lifting out of `top`, and 100 to lift out of `right`."""
+    return min(260, 120 + 0.2 * peak_speed)
 
 
 _move_lock = asyncio.Lock()
@@ -541,6 +542,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     dist = max(abs(goal[m] - start[m]) for m in ids)
     duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours
+    servo_accel = max(SERVO_ACCEL, int(peak_speed / 20))     # enough acceleration to keep up when fast
     leash = lead_limit(peak_speed)
 
     def waypoint(s):   # inside the calibrated envelope even if the arm started just outside it
@@ -578,7 +580,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         if stalled_since is None:           # over the leash nothing is sent, not even a repeat
             ctx["wrote"] = _last["wrote"] = True
             if first:
-                await _write(arm, cmd, speed=servo_speed, accel=SERVO_ACCEL)
+                await _write(arm, cmd, speed=servo_speed, accel=servo_accel)
                 first = False
             else:
                 await _write(arm, cmd)
@@ -780,7 +782,9 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
                         raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
                                           "needs it to be; not continuing")
                 ctx["moving"] = _last["driving"] = tuple(goal)
-                result["duration"] += await _run_segment(arm, seg, goal, max_speed, env, stats, ctx,
+                # Coming down onto a view is where an overshoot would matter: never faster than normal.
+                seg_speed = min(max_speed, SPEED_NORMAL) if seg == "descend" else max_speed
+                result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
                                                          {m: expect[m] for m in moved})
                 ctx["moving"] = _last["driving"] = ()
                 expect.update(goal)

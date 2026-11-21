@@ -38,7 +38,8 @@ from station_arm import Arm, format_joints, logger
 ROOT = Path(__file__).parent
 PAGES = {"/": ROOT / "capture_ui.html", "/index.html": ROOT / "capture_ui.html", "/control": ROOT / "control_ui.html"}
 
-SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL}  # max_speed for go_to_view, steps per second
+# max_speed for go_to_view, steps per second
+SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
 DEFAULT_SPEED = "slow"
 STOP_WAIT_S = 1.0   # how long STOP waits for the cancelled move / command to unwind before it holds anyway
 TORQUE_WAIT_S = 1.5 # ...and for a Hold here / Go limp in progress to finish (short, and nothing is moving then)

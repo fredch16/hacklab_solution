@@ -17,12 +17,13 @@ from motion import (MOVABLE, PITCH, TRANSIT, TURN, clamp_pose, envelope, go_to_v
                     locate, plan_route)
 from sim_arm import SIM_RANGES, SimArm
 
-FAST = 8000                      # steps/s, so the suite runs in seconds
+FAST = 2500                      # steps/s, so the suite runs in seconds
 motion.MIN_SEGMENT_S = 0.05
 motion.SETTLE_POLL_S = 0.04
 motion.LOG_PATH = Path("/dev/null")
 motion.view_checked = lambda name: True   # the "unchecked views run slow" rule is tested on its own below
 motion.SPEED_FIRST = FAST                  # ...and so is the forced first-run speed
+motion.SPEED_NORMAL = FAST                 # descents are capped at normal speed; keep the suite quick
 
 ENV = envelope(SIM_RANGES)
 VIEWS = {n: clamp_pose(p, ENV) for n, p in motion.load_views().items()}

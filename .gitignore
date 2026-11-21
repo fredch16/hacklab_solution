@@ -10,4 +10,5 @@ motion_log.jsonl
 .motion.lock
 scene.json
 
-robot-recordings/
+/robot-recordings
+/Camera recordings/

@@ -14,3 +14,9 @@
 3. Start a robot clip, then switch tabs, refresh, close the dashboard, scroll the robot feed away, and interrupt the robot stream in separate runs. Each run should stop and save the clip. Reopening must never resume. The phone recording should continue until independently stopped.
 4. Speak the explicit start/stop phrases from the [laptop guide](../LAPTOP_DASHBOARD.md), including the unqualified phone default. Try a loose recording request with Claude enabled and an ambiguous or negated request. Verify the robot recorder refuses to start without a visible live feed.
 5. Verify local video, both manual controls, and the fixed grammar with the WAN disabled. Verify the arm operator controls as a separate, supervised hardware check.
+
+## Owner robot recording follow-up
+
+The owner recorded a real Station feed on the laptop. FFprobe verified a 39.32 s, 960×720, video-only Matroska clip. It was moved to the Git-ignored `Camera recordings/` directory without restarting the paired dashboard. The download endpoint still returned the complete file.
+
+The Pixel continued processing microphone input with zero reported audio drops during that clip and showed Listening. The native logs contained no wake detection during the clip. The cause of the missed wake phrase has not been established. A same-position spoken comparison with the robot recorder on and off is pending.

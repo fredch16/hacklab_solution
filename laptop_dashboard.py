@@ -500,7 +500,7 @@ def main():
     cli.add_argument("--port", type=int, default=8300)
     cli.add_argument("--arm-url", default="http://127.0.0.1:8890")
     cli.add_argument("--voice-bridge", default="http://127.0.0.1:8210")
-    cli.add_argument("--clips", type=Path, default=ROOT / "robot-recordings")
+    cli.add_argument("--clips", type=Path, default=ROOT / "Camera recordings")
     args = cli.parse_args()
     if not (ASSETS / "index.html").is_file():
         cli.error("Build the laptop dashboard first (npm run build in dashboard/apps/dashboard).")

@@ -52,7 +52,7 @@ A short phone connection loss pauses listening and leaves an ongoing master reco
 
 The two recorders are independent. Use **Record phone camera** and **Record robot camera**, or say the wake phrase followed by a request. Named recording commands use the phone's acoustic cross-check. With Claude enabled, the voice bridge can classify loose requests such as “could you film this with the robot camera?” and invoke MCP's `record_camera(camera, action)` tool. Recording without a named camera defaults to the phone. A robot request never falls back to the phone.
 
-The robot recording belongs to the dashboard tab displaying the live robot feed. Hiding, closing or refreshing that tab, scrolling the feed out of view, or losing the feed finalizes the clip. An interrupted tab that cannot close its connection loses its viewing lease after about three seconds. Opening a tab never resumes a recording. Completed Matroska clips are in `robot-recordings/` by default, with a download link for the latest clip. Only one robot clip records at a time.
+The robot recording belongs to the dashboard tab displaying the live robot feed. Hiding, closing or refreshing that tab, scrolling the feed out of view, or losing the feed finalizes the clip. An interrupted tab that cannot close its connection loses its viewing lease after about three seconds. Opening a tab never resumes a recording. Completed Matroska clips are in `Camera recordings/` in the HackLab checkout by default, with a download link for the latest clip. Only one robot clip records at a time.
 
 ## Architecture and verification
 

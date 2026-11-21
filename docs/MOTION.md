@@ -2,7 +2,7 @@
 
 How to use and extend the motion layer. The design, the reasoning and the council review are in [MOTION_PLAN.md](MOTION_PLAN.md); hardware facts in [HARDWARE.md](HARDWARE.md).
 
-**Status: tested on the simulated arm only. The first runs on the real arm follow the test protocol in MOTION_PLAN.md, slowly, with a person at the arm.**
+**Status: tested on the simulated arm only. The first runs on the real arm follow the test protocol in MOTION_PLAN.md, slowly, with a person at the arm. Use one controlling program per session (the web server): a Stop on the page cannot stop a move another process started.**
 
 ## Contract (please keep stable)
 
@@ -11,11 +11,13 @@ The control page, the Claude director and voice all go through these:
 ```python
 # motion.py
 await go_to_view(arm, name, max_speed=SPEED_SLOW, allow_unknown_start=False)
-    -> {"ok": bool, "view": str, "error": str | None, "duration": float, "route": [str]}
-await describe(arm, name=None)   # where is the arm / what would a move do; moves nothing
-await hold(arm)                  # freeze where it is (skips limp joints and the gripper)
-await engage(arm)                # limp -> holding: goal := present, then torque on (joints 1-7)
-await release(arm)               # go limp; refused while moving
+    -> {"ok": bool, "view": str, "error": str | None, "duration": float, "route": [str],
+        "hold": None | "confirmed" | "unconfirmed" | "limp"}
+await describe(arm, name=None)   # {"ok", "error", "blockers", "where", "route"}; moves nothing
+await hold(arm)                  # stop where it is; returns "confirmed" / "limp", raises if unconfirmed
+await engage(arm)                # limp -> holding (joints 1-7), with the same arm checks as a move
+await release(arm)               # go limp (joints 1-7); refused while moving
+SPEED_FIRST, SPEED_SLOW, SPEED_NORMAL   # 100 / 200 / 400 steps/s peak
 view_names(), view_descriptions()   # camera views; the transit pose is excluded
 view_checked(name), mark_checked(name)
 status                           # dict polled by UIs: moving, view, phase, phase_index/count, progress, error, route
@@ -37,17 +39,18 @@ Joint values are raw encoder steps (0–4095, 4096 per turn) keyed by motor id. 
 
 ## What a move does
 
-1. **Preflight** (nothing is written if it fails): transit saved, motors 1–8 present, right arm and calibration, no servo faults, arm holding, Station not mirroring a leader onto it, the arm is at a known place.
-2. **Plan** on the route network: `rise` (M2, M3, M4, M6 together to the transit configuration) → `turn` (M1, M5, M7 to the target's values) → `descend` (M2, M3, M4, M6 together to the target). From a spoke or the hub, only the remaining segments.
-3. **Run each segment**: smoothstep in joint space, goals streamed at 30 Hz, advancing only while the arm keeps up (leash of 120 steps). Guards on every tick; any fault holds the arm.
-4. **Arrive**: every moved joint within 40 steps of its goal and standing still, checked after each segment.
+1. **Preflight** (nothing is written if it fails): transit saved, Station not mirroring a leader onto the arm, fresh data from motors 1–8, no faults, right arm and calibration, arm holding, the arm is at a known place.
+2. **Plan** on the route network: `rise` (M2, M3, M4, M6 together to the transit configuration) → `turn` (M1, M5, M7 to the target's values) → `descend` (M2, M3, M4, M6 together to the target). Segments that need no motion are skipped when they run.
+3. **Run each segment**: smoothstep in joint space, goals streamed at 30 Hz; a waypoint is only sent if it is within a short leash (60–120 steps, by speed) of where the arm really is. Guards on every sample until the segment has settled; any fault holds the arm and the result says whether that hold was confirmed.
+4. **Arrive**: every moved joint within 50 steps of its goal, standing still, with the goal read back, checked after each segment.
 
 Targets are clamped 30 steps inside each joint's calibrated range. The gripper is never written.
 
 ## Trying it
 
 ```bash
-python3 tests/test_motion_sim.py      # 76 checks on the simulated arm (~30 s)
+python3 tests/test_motion_sim.py      # 91 checks on the simulated arm (~75 s)
+python3 tests/test_server_sim.py      # Stop / start / shutdown races in the web server
 python3 fk.py                         # geometry model: heights per view and per route segment
 python3 go.py --sim --where           # where is the (simulated) arm
 python3 go.py --sim home top left     # run moves on the simulated arm
@@ -57,9 +60,9 @@ python3 capture_server.py --sim --port 8891   # the web UI against the simulated
 On the real arm (follower "(Self-controlled)" in Station, one person at the arm):
 
 ```bash
-python3 go.py --where                 # moves nothing; shows location and any refusal reason
+python3 go.py --where                 # moves nothing; location, blockers, per-joint sag/load/current
 python3 go.py --engage                # limp -> holding (support the arm first)
-python3 go.py wide                    # slow by default
+python3 go.py wide                    # unchecked views run at first-run speed (100 steps/s)
 python3 go.py --mark-checked wide     # after watching a clean there-and-back run
 ```
 

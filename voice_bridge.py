@@ -24,7 +24,7 @@ browser bundle never see MCP. A small local grammar comes first and needs no net
 
 What the grammar cannot place ("yo claude show me the thing from da top") goes to Claude, which
 picks ONE of those four actions or none (class Interpreter). That step is on when an Anthropic
-credential is found (ANTHROPIC_API_KEY in the environment or in .env next to this file), and
+credential is found (set on the local voice page, or ANTHROPIC_API_KEY in the environment or .env), and
 `--llm off` turns it off. It sends the transcript text and the view names/descriptions to the
 Anthropic API: no audio, no images. The model only chooses; the policy stays here: the same
 checked-views rule, the same four tools, and a failed or slow call falls back to the grammar's answer.
@@ -163,11 +163,12 @@ class Interpreter:
     """Maps a transcript to one of ACTIONS with Claude. `client` is for tests (an anthropic.Anthropic
     look-alike); by default the SDK finds the credential itself."""
 
-    def __init__(self, model: str = LLM_MODEL, timeout_s: float = LLM_TIMEOUT_S, client=None):
+    def __init__(self, model: str = LLM_MODEL, timeout_s: float = LLM_TIMEOUT_S, client=None, *, api_key=None):
         import anthropic
         self._errors = anthropic
         # No retries: a spoken request that needs several seconds is better answered "not understood".
-        self.client = client or anthropic.Anthropic(timeout=timeout_s, max_retries=0)
+        credentials = {"api_key": api_key} if api_key is not None else {}
+        self.client = client or anthropic.Anthropic(timeout=timeout_s, max_retries=0, **credentials)
         self.model = model
 
     def interpret(self, text: str, views: list[dict], current_view: str | None = None) -> dict | None:
@@ -263,14 +264,27 @@ def _status_line(st: dict) -> str:
 
 
 class Bridge:
-    def __init__(self, target, max_seen: int = 500, interpreter=None):
+    def __init__(self, target, max_seen: int = 500, interpreter=None, *, llm_model: str | None = None):
         """target: the MCP server's Streamable HTTP URL, or (tests) an MCPServer to call in-process.
         interpreter: an Interpreter for what the grammar cannot place; None = grammar only."""
         self.target = target
         self.interpreter = interpreter
+        self.startup_interpreter = interpreter
+        self.llm_model = llm_model
         self.seen: OrderedDict[tuple[str, str], dict | None] = OrderedDict()
         self.max_seen = max_seen
         self.lock = threading.Lock()
+
+    def set_claude_key(self, key: str | None) -> dict:
+        interpreter = Interpreter(self.llm_model, api_key=key) if key is not None else self.startup_interpreter
+        with self.lock:
+            self.interpreter = interpreter
+            return self.claude_settings()
+
+    def claude_settings(self) -> dict:
+        interpreter = self.interpreter
+        return {"llm": getattr(interpreter, "model", None), "claude_key_editable": self.llm_model is not None,
+                "claude_key_override": interpreter is not self.startup_interpreter}
 
     async def _run(self, text: str) -> dict:
         async with Client(self.target, read_timeout_seconds=10) as client:
@@ -281,9 +295,10 @@ class Bridge:
             views = listing.get("views", [])
             p = plan(text, views)
             log.info("plan %r -> %s", text, p)
-            if p["tool"] is None and p["reason"] in ASKABLE and self.interpreter and views:
+            interpreter = self.interpreter
+            if p["tool"] is None and p["reason"] in ASKABLE and interpreter and views:
                 # A stop word or anything about recording never gets here: plan() settles those first.
-                better = await asyncio.to_thread(self._ask, text, views, listing.get("current_view"))
+                better = await asyncio.to_thread(self._ask, interpreter, text, views, listing.get("current_view"))
                 if better:
                     p = better
                     log.info("plan %r -> %s (Claude step)", text, p)
@@ -306,9 +321,9 @@ class Bridge:
             return {"ok": True, "command": command, "error": None,
                     "message": "Views: " + (", ".join(names) if names else "none checked yet")}
 
-    def _ask(self, text: str, views: list[dict], current_view) -> dict | None:
+    def _ask(self, interpreter, text: str, views: list[dict], current_view) -> dict | None:
         try:
-            return plan_from_answer(self.interpreter.interpret(text, views, current_view), views)
+            return plan_from_answer(interpreter.interpret(text, views, current_view), views)
         except Exception as e:   # the grammar's answer stands, whatever went wrong here
             log.warning("Claude step failed: %r", e)
             return None
@@ -401,6 +416,8 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
             self.wfile.write(body)
 
         def do_OPTIONS(self):
+            if self.path == "/api/v1/claude-key":
+                return self._json(403, {"ok": False, "error": "LOCAL_SETTINGS_ONLY"})
             if not self._allowed(self.headers.get("Origin")):
                 return self._json(403, {"ok": False, "error": "ORIGIN_NOT_ALLOWED"})
             self.send_response(204)
@@ -411,7 +428,7 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
         def do_GET(self):
             if self.path == "/api/v1/health":
                 return self._json(200, {"ok": True, "mcp_url": str(bridge.target),
-                                        "llm": getattr(bridge.interpreter, "model", None)})
+                                        **bridge.claude_settings()})
             if self.path in ("/", "/voice"):
                 return self._page()
             self._json(404, {"ok": False, "error": "NOT_FOUND"})
@@ -431,6 +448,8 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path == "/api/v1/claude-key":
+                return self._claude_key()
             if not self._allowed(self.headers.get("Origin")):
                 return self._json(403, {"ok": False, "error": "ORIGIN_NOT_ALLOWED"})
             if self.path != "/api/v1/voice-command":
@@ -451,6 +470,35 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
             out = bridge.handle(sid, uid, text)
             log.info("%s/%s %r -> %s", sid, uid, text, out)
             self._json(200, {"utterance_id": uid, **out})
+
+        def _claude_key(self):
+            port = self.server.server_address[1]
+            host = self.headers.get("Host")
+            own_hosts = (f"127.0.0.1:{port}", f"localhost:{port}")
+            if (host not in own_hosts or self.headers.get("Origin") != f"http://{host}"
+                    or not ipaddress.ip_address(self.client_address[0]).is_loopback):
+                return self._json(403, {"ok": False, "error": "LOCAL_SETTINGS_ONLY"})
+            if bridge.llm_model is None:
+                return self._json(403, {"ok": False, "error": "CLAUDE_DISABLED"})
+            if (self.headers.get("Content-Type") or "").split(";", 1)[0].strip() != "application/json":
+                return self._json(415, {"ok": False, "error": "JSON_REQUIRED"})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 0 < length <= 2048:
+                    raise ValueError
+                key = json.loads(self.rfile.read(length))["api_key"]
+                if key is not None:
+                    if not isinstance(key, str) or not re.fullmatch(r"[!-~]{1,512}", key.strip()):
+                        raise ValueError
+                    key = key.strip()
+            except (ValueError, TypeError, KeyError):
+                return self._json(400, {"ok": False, "error": "INVALID_KEY"})
+            try:
+                state = bridge.set_claude_key(key)
+            except Exception:
+                log.warning("Could not initialize Claude from the local settings")
+                return self._json(503, {"ok": False, "error": "CLAUDE_SETUP_FAILED"})
+            return self._json(200, {"ok": True, **state})
 
     return Handler
 
@@ -497,7 +545,8 @@ def main(argv=None):
     logging.getLogger("httpx2").setLevel(logging.WARNING)
     logging.getLogger("anthropic").setLevel(logging.WARNING)
     load_env(Path(__file__).resolve().parent / ".env")
-    bridge = Bridge(args.mcp_url, interpreter=make_interpreter(args.llm, args.llm_model))
+    bridge = Bridge(args.mcp_url, interpreter=make_interpreter(args.llm, args.llm_model),
+                    llm_model=args.llm_model if args.llm != "off" else None)
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(bridge, set(args.allow_origin)))
     log.info("voice bridge on http://%s:%d -> %s", args.host, args.port, args.mcp_url)
     log.info("voice mode on this PC: http://127.0.0.1:%d/", args.port)

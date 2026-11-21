@@ -57,6 +57,10 @@
   form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   form button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; }
   form button:hover { border-color: var(--accent); }
+  #claude-settings { margin-top: 18px; }
+  #claude-settings summary { cursor: pointer; }
+  #claude-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #claude-key { flex: 1 1 220px; min-width: 0; }
 
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 26px 0 8px; }
   #log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -82,6 +86,18 @@
     <span class="chip" id="chipAi">Free phrasing: checking</span>
     <span class="chip" id="chipMic">Microphone: not used yet</span>
   </div>
+
+  <details id="claude-settings">
+    <summary>Claude API key settings</summary>
+    <p class="modehelp">The bridge keeps this key until it restarts. Claude receives transcript text for requests the local rules can’t interpret.</p>
+    <form id="claude-form" autocomplete="off">
+      <label for="claude-key">API key</label>
+      <input id="claude-key" type="password" autocomplete="new-password" spellcheck="false" required maxlength="512">
+      <button id="claude-save" type="submit" disabled>Save key</button>
+      <button id="claude-reset" type="button" hidden>Remove session key</button>
+    </form>
+    <p id="claude-status" class="modehelp" role="status"></p>
+  </details>
 
   <div class="modes" role="group" aria-label="Listening mode">
     <button id="modeTap" aria-pressed="true">Tap to talk</button>
@@ -181,6 +197,47 @@ if (typeof module !== "undefined") module.exports = { isStop, wakeForms, afterWa
   const chip = (el, cls, text) => { el.className = "chip" + (cls ? " " + cls : ""); el.textContent = text; };
   const problem = (text) => { $("problem").hidden = !text; $("problem").textContent = text || ""; };
 
+  const keyField = $("claude-key"), saveKey = $("claude-save"), resetKey = $("claude-reset");
+  if (location.hash === "#claude-settings") $("claude-settings").open = true;
+
+  function updateClaude(state) {
+    chip($("chipAi"), state.llm ? "ok" : "warn",
+      state.llm ? `Free phrasing: on (${state.llm})` : "Free phrasing: off, fixed phrases only");
+    saveKey.disabled = keyField.disabled = !state.claude_key_editable;
+    resetKey.hidden = !state.claude_key_override;
+  }
+
+  async function changeClaudeKey(apiKey) {
+    saveKey.disabled = resetKey.disabled = true;
+    const status = $("claude-status");
+    status.textContent = "";
+    try {
+      const response = await fetch("/api/v1/claude-key", {
+        method: "POST", cache: "no-store", signal: AbortSignal.timeout(5000),
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: apiKey }),
+      });
+      const state = await response.json();
+      if (!response.ok) {
+        status.textContent = state.error === "INVALID_KEY" ? "Enter a key without spaces." :
+          state.error === "CLAUDE_DISABLED" ? "This voice bridge started with Claude disabled." :
+          "Couldn’t change the key. Check that the voice bridge is running on this PC.";
+        return;
+      }
+      keyField.value = "";
+      updateClaude(state);
+      status.textContent = apiKey ? "Key set for this run." :
+        state.llm ? "Session key removed. Using the bridge’s startup credential." : "Session key removed.";
+    } catch {
+      status.textContent = "Voice bridge not reachable. Try again.";
+    } finally {
+      saveKey.disabled = keyField.disabled;
+      resetKey.disabled = false;
+    }
+  }
+
+  $("claude-form").addEventListener("submit", (e) => { e.preventDefault(); void changeClaudeKey(keyField.value.trim()); });
+  resetKey.addEventListener("click", () => void changeClaudeKey(null));
+
   // ---------- talking to the bridge ----------
   async function post(text) {
     const r = await fetch("/api/v1/voice-command", {
@@ -220,7 +277,8 @@ if (typeof module !== "undefined") module.exports = { isStop, wakeForms, afterWa
   async function startup() {
     try {
       const h = await (await fetch("/api/v1/health", { cache: "no-store" })).json();
-      chip($("chipAi"), h.llm ? "ok" : "warn", h.llm ? `Free phrasing: on (${h.llm})` : "Free phrasing: off, fixed phrases only");
+      updateClaude(h);
+      if (!h.claude_key_editable) $("claude-status").textContent = "This voice bridge started with Claude disabled.";
     } catch { chip($("chipAi"), "bad", "Voice bridge not reachable"); }
     try {
       const r = await post("list views");

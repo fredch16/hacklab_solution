@@ -87,3 +87,10 @@ Reviewed by / next actions:
 ```
 
 Tests may use mocks to verify state transitions, but **mocks cannot replace the real phone camera, microphone, WebRTC or file verification acceptance gates**.
+
+## Claude API key settings
+
+- In Chromium 158.0.8127.36, a local HTTPS dashboard fixture opened the PC bridge’s settings page. Saving a dummy key enabled the status immediately. Reload kept it active and removing it restored the default state.
+- `.venv/bin/python tests/test_voice_bridge.py` exercised runtime changes and rejected cross-origin mutation attempts, plus the existing simulated-arm flow. `npm run build && npm test` passed all 26 dashboard tests.
+- Owner check on the Pixel and paired PC. Start the updated PC bridge, open **Voice → Claude API key settings**, save a key, then try a request that needs Claude on the simulated arm. Remove the key and verify the settings reflect the startup configuration. Restart the bridge and verify the override was forgotten.
+- **NOT TESTED:** the live Claude API with the owner’s key or live voice with this APK.

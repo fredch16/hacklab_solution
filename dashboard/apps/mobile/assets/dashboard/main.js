@@ -577,7 +577,15 @@ function buildDash() {
         sendCommand("voice.settings.set", { wake_phrase: c.normalized }, "voice");
         phraseDirty = false;
     };
-    const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
+    const bridge = armBridgeUrl();
+    const claudeSettings = bridge && /^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?$/.test(bridge)
+        ? h("a", "link", "Claude API key settings") : null;
+    if (claudeSettings) {
+        claudeSettings.href = `${bridge}/#claude-settings`;
+        claudeSettings.target = "_blank";
+        claudeSettings.rel = "noopener noreferrer";
+    }
+    const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, claudeSettings, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
     const rail = h("aside", "rail", recBox, voiceCard, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
     const title = h("h2", null, "Stop recording?");
     title.id = "dlg-t";

@@ -195,16 +195,51 @@ class Scripted:
         return self.reply
 
 
-def post(base, body, origin="https://192.168.1.20:8443", ctype="application/json"):
+def post(base, body, origin="https://192.168.1.20:8443", ctype="application/json", path="/api/v1/voice-command"):
     h = {"Content-Type": ctype}
     if origin:
         h["Origin"] = origin
-    req = urllib.request.Request(base + "/api/v1/voice-command", json.dumps(body).encode(), h, method="POST")
+    req = urllib.request.Request(base + path, json.dumps(body).encode(), h, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read()), r.headers
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read()), e.headers
+
+
+def part_a_claude_settings():
+    bridge = vb.Bridge("http://127.0.0.1:9/mcp", llm_model=vb.LLM_MODEL)
+    with ThreadingHTTPServer(("127.0.0.1", 0), vb.make_handler(bridge, set())) as srv:
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        path = "/api/v1/claude-key"
+        key = "test-key-not-a-real-secret"
+
+        def save(value, origin=base):
+            return post(base, {"api_key": value}, origin=origin, path=path)
+
+        try:
+            assert save(key, "https://192.168.1.20:8443")[0] == 403
+            assert save(key, None)[0] == 403
+            assert save("key with spaces")[0] == 400
+            assert bridge.interpreter is None
+            code, state, headers = save(f"  {key}  ")
+            assert code == 200 and state["llm"] == vb.LLM_MODEL
+            assert headers["Cache-Control"] == "no-store"
+            assert key not in json.dumps(state)
+            assert bridge.interpreter.client.api_key == key
+            assert save(key + "-rotated")[0] == 200
+            assert bridge.interpreter.client.api_key == key + "-rotated"
+            with urllib.request.urlopen(base + "/api/v1/health", timeout=5) as response:
+                health = response.read().decode()
+                assert json.loads(health)["llm"] == vb.LLM_MODEL and key not in health
+            assert save(None)[1]["llm"] is None
+            assert bridge.interpreter is None
+        finally:
+            srv.shutdown()
+            thread.join()
+    print("A runtime Claude settings OK")
 
 
 def start_arm_server():
@@ -445,5 +480,6 @@ if __name__ == "__main__":
     part_a()
     part_a_page_logic()
     part_a_claude()
+    part_a_claude_settings()
     part_b()
     print("ALL OK")

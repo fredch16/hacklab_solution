@@ -59,4 +59,4 @@ Phone joins a public Wi-Fi (client isolation — PC↔phone impossible there) **
 ## Next
 1. Owner re-tests voice after dashboard routing and verifies reconnect does not replay commands.
 2. Slice 5: download finalized recordings over LAN with SHA-256 verification.
-3. Dashboard-side MCP command service `voice_bridge.py` (hackathon repo root): built and tested on the simulated arm; free phrasing is interpreted by Claude when `ANTHROPIC_API_KEY` is set on the PC (15 of 15 test phrases, about 1 s each). See [handoff](ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) and [evidence](evidence/slice-05-arm-voice-bridge-2026-11-21.md).
+3. Dashboard-side MCP command service `voice_bridge.py` (hackathon repo root): built and tested on the simulated arm; free phrasing is interpreted by Claude when a key is supplied on the PC. The dashboard’s **Claude API key settings** link opens the bridge’s local page, where the operator can set or remove an in-memory key while the bridge is running. See [handoff](ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) and [evidence](evidence/slice-05-arm-voice-bridge-2026-11-21.md).

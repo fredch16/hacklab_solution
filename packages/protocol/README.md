@@ -112,4 +112,4 @@ Snapshot also gains `"stream": {"state": "idle|connecting|connected|failed", "er
 Envelopes all carry the shared `sequence`. Max 1 offer per second accepted (else `webrtc.error BAD_REQUEST`). SDP max 64 KiB.
 
 ### Targets (not guarantees)
-640×360, 30 FPS, max bitrate 1.2 Mbps set via sender `RtpParameters`, `degradationPreference = MAINTAIN_RESOLUTION`? → use `BALANCED`.
+640×360, 30 FPS, max bitrate 1.2 Mbps set via sender `RtpParameters`, `degradationPreference = BALANCED`.

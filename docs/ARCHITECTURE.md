@@ -1,6 +1,30 @@
-# Architecture: camera arm with an iPhone camera and voice
+# Architecture — Local Vision dashboard and camera arm
 
-Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). An iPhone on the follower's gripper is the camera and the microphone. A Safari page on the phone sends video and audio over one WebRTC connection to a camera gateway on the laptop; a voice service turns speech into text for Claude, and a spoken stop word goes straight to the arm. People control the arm from a dashboard with a chat; Claude picks positions through our own MCP server. Station only drives the servos.
+## Current capture and command boundary
+
+The imported [Local Vision project](../dashboard/README.md) provides the Android capture app and its paired web dashboard. The phone owns audio/video capture, local recording, offline wake detection and speech-to-text. The browser receives video over WebRTC and final transcript text over the authenticated LAN event socket. It decides whether to start or stop recording and sends the normal recording request back to the phone. Manual capture controls remain available. See [the wire contract](../dashboard/packages/protocol/README.md).
+
+```mermaid
+flowchart LR
+    Phone["Flutter app · camera, mic, offline speech, recorder"]
+    Browser["Paired dashboard · transcript and recording intent"]
+    Client["Future dashboard-side command service · MCP client"]
+    MCP["Existing camera-arm MCP server"]
+    Arm["Existing capture_server.py · motion checks and control"]
+    Phone -- "Vision-only video and final transcript text" --> Browser
+    Browser -- "Authenticated recording start/stop" --> Phone
+    Browser -. "Future: eligible live transcript" .-> Client
+    Client -. "Future: MCP requests" .-> MCP
+    MCP --> Arm
+```
+
+The browser implements the recording grammar today. Complex transcripts appear in history while the dashboard-to-MCP bridge is pending. Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
+
+---
+
+## Historical iPhone gateway proposal
+
+The following 21 November planning notes describe the former Safari gateway and laptop speech service. Keep the arm-control and MCP design references here. The current capture and voice architecture is above.
 
 ## Build status
 
@@ -8,13 +32,13 @@ Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). A
 |---|---|---|---|
 | Arm web server = control service | built by the team, reviewed; **works on the real arm**: 10 supervised moves on 21 Nov (transit, `top`, `wide`, `right`), see [MOTION_PLAN.md](MOTION_PLAN.md#first-real-session-sat-21-nov-1608-1614) | `capture_server.py` (`/control`, `/api/...`), `motion.py`, `fk.py` | [MOTION.md](MOTION.md), [MOTION_PLAN.md](MOTION_PLAN.md) |
 | MCP server camera-arm | built, tested against the web server on the simulated arm; not yet with the real arm | `mcp_server.py`, plus `GET /api/still.jpg` in `capture_server.py` | [MCP.md](MCP.md) |
-| Camera gateway (iPhone video + audio) | not started | – | this page |
-| Voice service | not started | – | this page |
-| Dashboard (UI + backend) | not started; `/control` is the operator page, not the chat dashboard | – | this page |
+| Phone capture and vision-only WebRTC | implemented on Android | `dashboard/apps/mobile` | [Local Vision status](../dashboard/docs/STATUS.md) |
+| Voice capture and transcription | runs on Android | `dashboard/apps/mobile` | [voice pipeline](../dashboard/docs/adr/0004-voice-pipeline.md) |
+| Dashboard | browser implements recording intent; future complex command service | `dashboard/apps/dashboard` | [handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) |
 | elrobot-ik (stage 2) | not started | – | this page |
 | Framing preview (stage 2) | built, tested on the simulated arm; preview only, never moves; estimates not yet checked on the real arm | `framing.py`, `POST /api/frame` (dry_run), MCP `preview_frame`, `best_view` | [FRAMING.md](FRAMING.md) |
 
-Until the gateway exists, stills come from Station's USB camera, or, with `--sim`, from the saved snapshot of the view the simulated arm is at.
+The existing MCP still-image tool continues to use Station’s USB camera or, with `--sim`, the saved snapshot of the simulated view.
 
 ## Decisions at a glance
 

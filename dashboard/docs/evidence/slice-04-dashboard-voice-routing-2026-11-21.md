@@ -11,6 +11,8 @@ The owner reported that on-device wake and transcription in the previous build w
 - `./gradlew :app:testDebugUnitTest` passed the Android unit tests. `flutter build apk --debug --target-platform android-arm64` built the APK. SHA-256 `865734868fc90c3d7543ac3786ff3b555a0eb09183e3b658bc2130b973435258`.
 - A Chromium WebSocket test drove the actual dashboard assets with a locally mocked phone. A confirmed start final sent exactly `recording.start` with `voice:utt-1` and showed the successful reply. A duplicated final and a stop final without acoustic agreement sent nothing. A confirmed stop sent exactly `recording.stop` with `voice:utt-3` and displayed the returned `NOT_RECORDING` failure.
 
+The APK installed successfully with `adb install -r` on the Pixel 10 Pro XL (Android 17/API 37). Installation preserved app data.
+
 ## Owner test on Pixel and paired PC
 
 1. Pair the dashboard over LAN, start video and say “Hey [saved name], start recording”. Check the browser’s confirmation and the phone’s recording timer.

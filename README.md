@@ -10,6 +10,12 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
                     └──────────────────────── camera frames (camera.py) ◄───────────────────┘
 ```
 
+## Local Vision mobile app and dashboard
+
+Source, build steps, and agent instructions live under [dashboard/](dashboard/README.md). The Flutter app records and transcribes on the phone. The paired browser interprets spoken recording requests and asks the phone's recorder to start or stop. The dashboard-side MCP handoff for complex requests is documented and is a separate integration step. [Current architecture](docs/ARCHITECTURE.md)
+
+The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. In an existing checkout, run `git lfs pull` before building the Android app. The APK bundles the model for offline operation. The dashboard source was imported with 22 commits as the second parent of `fc86036`. Three commit IDs changed when the decoder entered Git LFS.
+
 ## Status (Sat 21 Nov, ~16:15)
 
 | Milestone | State |
@@ -18,9 +24,9 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
 | M2 move to a view | 🟢 **works on the real arm**: 10 supervised moves on 21 Nov between transit, `top`, `wide` and `right`, from the web page at `/control`. Still to do: `left`, `close`, `side_low`, `home`, the Stop and block tests, normal speed. Details and data in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
-| M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
+| M4 voice | Android on-device wake and transcription plus browser-routed recording commands live in `dashboard/`. Complex requests still need the dashboard-side MCP bridge. |
 
-Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (target architecture with iPhone camera, dashboard, MCP; build status) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
+Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (how moves work, the API) · **[docs/MOTION_PLAN.md](docs/MOTION_PLAN.md)** (design, council review, test protocol) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (current Android capture and dashboard, MCP handoff, previous planning context) · **[docs/MCP.md](docs/MCP.md)** (MCP server for Claude) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 
 ## Hardware in one paragraph
 

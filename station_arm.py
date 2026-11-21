@@ -252,31 +252,36 @@ class Arm:
         last entry is the current state. No entries at all means nothing was ever linked.
         """
         from target.gen_python.protobuf.drivers.motors_mirroring import mirroring
-        qr = self.client.read_from_tail("inference/mirroring", b"\x01", 1, 1, 4)
-        try:
-            entry = await asyncio.wait_for(qr.data.get(), timeout_s)
-        except asyncio.TimeoutError:
-            raise RuntimeError("could not read Station's mirroring state")
-        if entry is None:
-            err = qr.err
-            nothing_yet = (ErrQueueNotFound, ErrEntryNotFound)     # Station has never linked anything
-            if err in nothing_yet or isinstance(err, nothing_yet):
-                return None
-            # No entry and no "not found" answer is not proof of anything: refuse rather than guess.
-            raise RuntimeError(f"could not read Station's mirroring state: {err!r}")
-        try:
-            envelope = mirroring.RxEnvelopeReader(entry.Data)
-            if getattr(envelope, "_state_buf", None) is None:
-                raise ValueError("the latest entry carries no mirroring state")
-            state = envelope.get_state()
-            for link in state.get_mirroring() or []:
-                targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
-                if self.bus_serial in targets:
-                    # Readers are always truthy and give "" for a missing id: never return a falsy source.
-                    return link.get_source().get_id().get_unique_id() or "unknown"
-        except Exception as e:      # an entry we cannot decode must not read as "not mirrored"
-            raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
-        return None
+        nothing_yet = (ErrQueueNotFound, ErrEntryNotFound)     # Station has never linked anything
+        # The queue also carries command echoes, so the newest entry is not always a state:
+        # walk back a few entries to the newest one that has a state payload.
+        for back in range(1, 6):
+            qr = self.client.read_from_tail("inference/mirroring", bytes([back]), 1, 1, 4)
+            try:
+                entry = await asyncio.wait_for(qr.data.get(), timeout_s)
+            except asyncio.TimeoutError:
+                raise RuntimeError("could not read Station's mirroring state (timeout)")
+            if entry is None:
+                err = qr.err
+                if err in nothing_yet or isinstance(err, nothing_yet):
+                    if back == 1:
+                        return None             # empty queue: nothing was ever linked
+                    break                       # ran out of entries without finding a state
+                # No entry and no "not found" answer is not proof of anything: refuse, don't guess.
+                raise RuntimeError(f"could not read Station's mirroring state: {err!r}")
+            try:
+                envelope = mirroring.RxEnvelopeReader(entry.Data)
+                if getattr(envelope, "_state_buf", None) is None:
+                    continue                    # a command echo; look at the entry before it
+                for link in envelope.get_state().get_mirroring() or []:
+                    targets = [t.get_id().get_unique_id() for t in (link.get_targets() or [])]
+                    if self.bus_serial in targets:
+                        # Readers give "" for a missing id: never return a falsy source.
+                        return link.get_source().get_id().get_unique_id() or "unknown"
+                return None                     # a real state that does not target this arm
+            except Exception as e:              # an entry we cannot decode must not read as "not mirrored"
+                raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
+        raise RuntimeError("could not find Station's mirroring state in its last entries")
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         """Calibrated (min, max) per motor id, as Station reports them."""

@@ -707,7 +707,9 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             present, views, env = info["present"], info["views"], info["env"]
             route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start)
             start = info["where"].get("view")
-            if allow_unknown_start or not all(view_checked(v) for v in (name, start) if v and v != TRANSIT):
+            checked = [view_checked(v) for v in (name, start) if v and v != TRANSIT]
+            if allow_unknown_start or not checked or not all(checked):
+                # Unchecked view, or no checked view involved at all (hub -> transit): slowest speed.
                 max_speed = min(max_speed, SPEED_FIRST)
             result["route"] = [seg for seg, _ in route]
             status.update(route=result["route"], phase_count=len(route))
@@ -744,5 +746,6 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             status.update(moving=False, phase=None, error=result["error"], hold=result["hold"],
                           last_result=dict(result),
                           progress=1.0 if result["ok"] else status["progress"])
-            _log_move({"t": t0, "took": round(time.time() - t0, 2), "speed": max_speed, **result, **stats})
+            if not getattr(arm, "is_sim", False):    # the log is for tuning from real runs only
+                _log_move({"t": t0, "took": round(time.time() - t0, 2), "speed": max_speed, **result, **stats})
     return result

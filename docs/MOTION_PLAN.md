@@ -9,11 +9,13 @@ Click a view in the web UI → the follower arm (ElRobot, 7 joints + gripper, ca
 
 ## Council review
 
-| Reviewer | Round 1 (design v1) | Round 2 (built code, v3) |
-|---|---|---|
-| GPT-6.2 Sol | 3/10 | 4/10 |
-| Gemini 4 Neon | 5/10 | 6/10 |
-| Claude Fable 5.2 | 6/10 | 7/10 |
+| Reviewer | Round 1 (design v1) | Round 2 (built code, v3) | Round 3 (v4) | Final verdict |
+|---|---|---|---|---|
+| GPT-6.2 Sol | 3/10 | 4/10 | 5/10 | No: five fixes first (all implemented in v5, not re-reviewed) |
+| Gemini 4 Neon | 5/10 | 6/10 | 8/10 | Yes, once the Stop-error message on the page was fixed (done) |
+| Claude Fable 5.2 | 6/10 | 7/10 | 8/10 | Yes, no must-fix; conditions are in the test protocol |
+
+Round 3 findings and what was done: Stop/abort always stops driven joints in place and confirms on fresh samples (tested with delayed register read-back); nothing is sent over the leash; skipped segments need two resting samples; held joints must stay near their planned place; a joint resting on its stop has not arrived; Go limp is confirmed by read-back; the mirroring state must be positively known; protocol step A made truly motionless; the server runs one tracked Stop cleanup and refuses clicks made before a Stop; a Stop that errors is shown as unconfirmed.
 
 Round 2 asked: "is it safe and sensible to start the supervised test protocol with this code?" All three answered yes once their must-fix lists were done. Those lists and what was done:
 
@@ -93,11 +95,11 @@ One controlling program (the web server). Follower "(Self-controlled)" in Statio
 
 **B. Holding, not moving**
 6. Hand-pose to `wide` (the page must say "at wide"), press Hold here. Read `--where`: goal error (sag), load, current, temperature at an extended pose.
-7. Go limp (arm supported), hand-pose to transit with M1, M5 and M7 near their transit values (the page must say "at the hub"), Hold here. Read `--where` again. If static sag exceeds ~40 steps or load/current sit near the limits, retune before moving. The arm is now holding at transit for step 8.
+7. Go limp (arm supported), hand-pose to transit with M1, M5 and M7 near their transit values (the page must say "at the hub"), Hold here. Read `--where` again. The sag decides what happens next: up to about 20 steps everything below should work as written; between 20 and 50, expect an "unknown pose" after a Stop mid-move (use Recover to transit, slowly and watched) and expect views saved on a joint stop to fail arrival; above 50, or with load/current near the limits, do not move: retune first. The arm is now holding at transit for step 8.
 
 **C. First moves (first-run speed, 100 steps/s)**
 8. From transit (where step 7 left it): go to `wide`. Then back to transit.
-9. Stop test, high in the air: start `wide` again, press Stop mid-segment; the arm must hold. Press Stop three more times: no drift. Click a view: it must recover.
+9. Stop test, high in the air: start `wide` again, press Stop mid-segment; the arm must hold. Press Stop three more times: no drift. Click a view: it must recover. If the page says "unknown pose" instead (the arm rests a little off the route because of sag), use Recover to transit and note the sag for tuning.
 10. Block test: during a rise, hold a soft object (a cushion) in the path; expect an abort within about 1 s and no continued pushing.
 11. `top`. Then `left`, `right` (after re-capturing them off the joint limits with a level horizon).
 12. `close`, `side_low` (after re-capturing them at least 3 cm higher: the model puts them 0.2–1.6 cm above the table, and a replayed pose rests lower than taught by the gravity sag). `home` last.
@@ -110,5 +112,6 @@ One controlling program (the web server). Follower "(Self-controlled)" in Statio
 - If the link to Station dies mid-move we cannot confirm the hold; the last goal is within the leash of the arm. Emergency stop is the power plug, and at transit the arm then falls from ~50 cm: prefer Stop.
 - Arrival is accepted up to 50 steps short and nothing is monitored once a move has finished, so a view taught very close to the table can rest on it. Teach views with clearance.
 - A Stop in the web page cannot stop a move started by `go.py` or `director.py` in another process; the lock file prevents two moves at once, not that. For the demo the director should call the server.
+- The mirroring check reads the newest state Station recorded. If Station ever answers in a way we do not expect, the check refuses and may not clear; step 3 tests both directions before anything moves.
 - Unproven until the first real session: the mirroring queue name on a live Station, read-back delay of goal registers (a delay above ~0.4 s would trip the "another writer" guard), static sag, whether a goal write energises a limp joint.
 - First-run moves take 30–60 s; checked views at normal speed about 10–15 s.

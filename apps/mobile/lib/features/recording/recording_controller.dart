@@ -5,6 +5,12 @@ import 'package:flutter/foundation.dart';
 import '../../platform/camera_platform.dart';
 import '../connectivity/signaling.dart';
 
+typedef MessageSenderFn = void Function(
+  String type,
+  Map<String, Object?> payload, {
+  String? requestId,
+});
+
 const _recordingKeys = [
   'state',
   'id',

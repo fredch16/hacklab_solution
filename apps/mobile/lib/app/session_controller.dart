@@ -7,6 +7,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../features/camera/capture_controller.dart';
 import '../features/recording/recording_controller.dart';
+import '../features/voice/voice_controller.dart';
 import '../features/connectivity/local_server.dart';
 import '../features/connectivity/pairing.dart';
 import '../features/connectivity/signaling.dart';
@@ -36,6 +37,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     required this.pairing,
     required this.capture,
     required this.recording,
+    required this.voice,
     required LocalServerFactory serverFactory,
     required this.deviceSource,
     required this.permissionPort,
@@ -51,6 +53,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     relay = SignalingRelay(
       port: capture,
       recording: recording,
+      voice: voice,
       send: (type, payload, {requestId}) =>
           server.sendMessage(type, payload, requestId: requestId),
     );
@@ -58,6 +61,9 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
         server.sendMessage(type, payload, requestId: requestId);
     capture.addListener(_publish);
     recording.addListener(_publish);
+    voice.addListener(_publish);
+    voice.sender = (type, payload, {requestId}) =>
+        server.sendMessage(type, payload, requestId: requestId);
     server = serverFactory(snapshotPayload, (raw) => relay.handle(raw));
     _serverSub = server.events.listen((_) {
       // Viewer gone (revoked, replaced, tab closed): nobody to send video to.
@@ -75,6 +81,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   final PairingService pairing;
   final CaptureController capture;
   final RecordingController recording;
+  final VoiceController voice;
   late final SignalingRelay relay;
   final DeviceStatusSource deviceSource;
   final PermissionPort permissionPort;
@@ -129,6 +136,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     stream: capture.streamJson(),
     recording: recording.recording,
     recordings: recording.recordings,
+    voice: voice.voice,
   );
 
   Future<void> init() async {
@@ -158,6 +166,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
       phase = AppPhase.active;
       _poll = Timer.periodic(pollInterval, (_) => _refresh());
       await _requestCameraPermission();
+      await voice.start();
     } catch (e) {
       phase = AppPhase.error;
       errorMessage = 'Could not start the local server: ${e.runtimeType}';
@@ -197,6 +206,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> endSession() async {
     if (!sessionRunning) return;
     _poll?.cancel();
+    await voice.end();
     await recording.end();
     await capture.end();
     await server.stop();
@@ -267,6 +277,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     _batterySub.cancel();
     capture.removeListener(_publish);
     recording.removeListener(_publish);
+    voice.removeListener(_publish);
     server.dispose();
     super.dispose();
   }

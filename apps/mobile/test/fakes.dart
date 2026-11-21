@@ -113,4 +113,20 @@ class FakeCameraPlatform implements CameraPlatform {
   >
   recordState() async =>
       (recording: null, recordings: <Map<String, Object?>>[]);
+
+  String? phraseError;
+  final voiceCalls = <String>[];
+
+  @override
+  Future<void> voiceStart() async => voiceCalls.add('start');
+  @override
+  Future<void> voiceStop() async => voiceCalls.add('stop');
+  @override
+  Future<String?> voiceSetPhrase(String phrase) async {
+    voiceCalls.add('phrase:$phrase');
+    return phraseError;
+  }
+
+  @override
+  Future<void> voiceMute(bool muted) async => voiceCalls.add('mute:$muted');
 }

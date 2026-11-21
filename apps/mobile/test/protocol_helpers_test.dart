@@ -6,6 +6,7 @@ import 'package:local_vision/features/connectivity/pairing.dart';
 import 'package:local_vision/features/connectivity/private_address.dart';
 import 'package:local_vision/features/connectivity/snapshot.dart';
 import 'package:local_vision/features/recording/recording_controller.dart';
+import 'package:local_vision/features/voice/voice_controller.dart';
 import 'package:local_vision/platform/device_status.dart';
 
 void main() {
@@ -66,6 +67,7 @@ void main() {
       stream: const {'state': 'idle', 'error': null},
       recording: normalizeRecording(null),
       recordings: const [],
+      voice: normalizeVoice(null),
     );
     final j = jsonDecode(jsonEncode(p)) as Map<String, dynamic>;
     expect(j.keys.toSet(), {

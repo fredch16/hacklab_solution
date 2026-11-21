@@ -14,6 +14,12 @@ abstract class RecordingPort {
   Future<String?> stopRecording();
 }
 
+abstract class VoicePort {
+  /// Null on success, else INVALID_WAKE_PHRASE.
+  Future<String?> setPhrase(String phrase);
+  Future<String?> setMuted(bool muted);
+}
+
 const maxSdpBytes = 64 * 1024;
 const _maxMessageChars = maxSdpBytes + 4096;
 
@@ -23,12 +29,14 @@ class SignalingRelay {
   SignalingRelay({
     required this.port,
     this.recording,
+    this.voice,
     required this.send,
     Clock? clock,
   }) : _now = clock ?? DateTime.now;
 
   final WebrtcPort port;
   final RecordingPort? recording;
+  final VoicePort? voice;
   final void Function(
     String type,
     Map<String, Object?> payload, {
@@ -50,6 +58,17 @@ class SignalingRelay {
       'error': err,
       'message': ?msg,
     };
+    if (type.startsWith('voice.')) {
+      final v = voice;
+      if (v == null) return res('BAD_REQUEST', 'Voice is not available.');
+      if (type == 'voice.settings.set') {
+        final phrase = payload['wake_phrase'];
+        if (phrase is! String)
+          return res('INVALID_WAKE_PHRASE', 'wake_phrase is required.');
+        return res(await v.setPhrase(phrase));
+      }
+      return res(await v.setMuted(type == 'voice.mute'));
+    }
     final rec = recording;
     if (rec == null) return res('BAD_REQUEST', 'Recording is not available.');
     if (type == 'recording.start') {
@@ -115,7 +134,11 @@ class SignalingRelay {
         } catch (_) {
           _error(id, 'NEGOTIATION_FAILED', 'WebRTC negotiation failed.');
         }
-      case 'recording.start' || 'recording.stop':
+      case 'recording.start' ||
+          'recording.stop' ||
+          'voice.settings.set' ||
+          'voice.mute' ||
+          'voice.unmute':
         final type = j['type'] as String;
         final r = await (_results[id] ??= _runCommand(type, payload).catchError(
           (Object _) => <String, Object?>{

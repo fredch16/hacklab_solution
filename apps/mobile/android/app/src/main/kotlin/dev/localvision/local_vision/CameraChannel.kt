@@ -17,6 +17,7 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
     private val audio = AudioCaptureBus()
     private val store = RecordingStore(activity)
     private lateinit var recorder: MasterRecorder
+    private val voice = VoiceEngine(activity.applicationContext, audio, emit)
     private var ticking = true
     private var offerGen = 0
 
@@ -33,6 +34,7 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
     init {
         camera = CameraSession(activity, activity, engine.renderer, vision, emit)
         recorder = MasterRecorder(activity, camera, audio, store, emit)
+        voice.registerDebugInjection(activity)
         camera.onBackgrounded = { recorder.stopForLifecycle("background") }
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "dev.localvision/camera").setMethodCallHandler { call, result ->
@@ -52,6 +54,17 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
                     val err = recorder.stop(call.argument<String>("reason") ?: "user")
                     result.success(mapOf("ok" to (err == null), "error" to err))
                 }
+                "voiceStart" -> { voice.start(); result.success(null) }
+                "voiceStop" -> { voice.stop(); result.success(null) }
+                "voiceSetPhrase" -> {
+                    val err = voice.setPhrase(call.argument<String>("phrase"))
+                    result.success(mapOf("ok" to (err == null), "error" to err))
+                }
+                "voiceMute" -> {
+                    voice.setMuted(call.argument<Boolean>("muted") == true)
+                    result.success(mapOf("ok" to true, "error" to null))
+                }
+                "voiceState" -> result.success(voice.snapshot())
                 "recordState" -> result.success(mapOf("recording" to recorder.snapshot(), "recordings" to store.list()))
                 else -> result.notImplemented()
             }
@@ -90,6 +103,7 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
         ticking = false
         main.removeCallbacks(tick)
         recorder.stopForLifecycle("session_ended")
+        voice.dispose()
         vision.dispose()
         camera.shutdown()
     }

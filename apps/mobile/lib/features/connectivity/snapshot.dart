@@ -19,6 +19,7 @@ Map<String, Object?> buildSnapshotPayload({
   required Map<String, Object?> stream,
   required Map<String, Object?> recording,
   required List<Map<String, Object?>> recordings,
+  required Map<String, Object?> voice,
 }) => {
   'app': app,
   'session_started_utc': _utc(sessionStartedUtc),
@@ -38,7 +39,7 @@ Map<String, Object?> buildSnapshotPayload({
   'stream': stream,
   'recording': recording,
   'recordings': recordings,
-  'voice': {'state': 'not_started'},
+  'voice': voice,
   'battery': {
     'level_percent': device.batteryPercent,
     'charging': device.charging,

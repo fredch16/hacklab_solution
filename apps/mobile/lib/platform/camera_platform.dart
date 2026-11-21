@@ -31,6 +31,14 @@ abstract class CameraPlatform {
   Future<String?> recordStart();
   Future<String?> recordStop(String reason);
 
+  /// Offline voice (wake phrase + command transcription, ADR 0004).
+  Future<void> voiceStart();
+  Future<void> voiceStop();
+
+  /// Null on success, else INVALID_WAKE_PHRASE.
+  Future<String?> voiceSetPhrase(String phrase);
+  Future<void> voiceMute(bool muted);
+
   /// Current native recording snapshot + finalized recordings (newest first).
   Future<
     ({Map<String, Object?>? recording, List<Map<String, Object?>> recordings})
@@ -135,4 +143,15 @@ class ChannelCameraPlatform implements CameraPlatform {
       ],
     );
   }
+
+  @override
+  Future<void> voiceStart() => _call<void>('voiceStart');
+  @override
+  Future<void> voiceStop() => _call<void>('voiceStop');
+  @override
+  Future<String?> voiceSetPhrase(String phrase) =>
+      _record('voiceSetPhrase', {'phrase': phrase});
+  @override
+  Future<void> voiceMute(bool muted) =>
+      _call<void>('voiceMute', {'muted': muted});
 }

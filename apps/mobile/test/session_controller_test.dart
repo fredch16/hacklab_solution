@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_vision/app/session_controller.dart';
 import 'package:local_vision/features/camera/capture_controller.dart';
 import 'package:local_vision/features/recording/recording_controller.dart';
+import 'package:local_vision/features/voice/voice_controller.dart';
 import 'package:local_vision/features/connectivity/certificate.dart';
 import 'package:local_vision/features/connectivity/local_server.dart';
 import 'package:local_vision/features/connectivity/pairing.dart';
@@ -52,6 +53,7 @@ void main() {
       deviceSource: device = _NoDevice(),
       capture: CaptureController(cam = FakeCameraPlatform()),
       recording: RecordingController(cam),
+      voice: VoiceController(cam),
       permissionPort: perms = _Perms(),
       addresses: () async => ['127.0.0.1'],
       wakelock: (b) async => wake.add(b),

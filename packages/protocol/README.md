@@ -171,3 +171,12 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 - `voice.transcript.partial` `{"utterance_id","text"}` (throttled ≤ 5/s)
 - `voice.transcript.final` `{"utterance_id","text","started_utc","ended_utc","end_reason","asr_latency_ms"}`
 End of command: VAD silence ≥ 1.0 s after speech started, or 15 s since wake (`max_duration`); if no speech within 5 s of wake → final with empty text and `end_reason:"no_speech"`. Cooldown 1 s after final before next wake. **No audio ever leaves the phone.**
+
+### Voice owner update (2026-11-21) — supersedes above where conflicting
+- **Voice listening starts when the PC starts the video stream** (with the WebRTC peer) and stops when the stream stops. Mic permission still requested at session start. Snapshot `voice.state` = `unavailable` with reason "Starts with the video stream" while no stream.
+- **Static voice commands (demo):** after a final transcript, normalize (lowercase, strip punctuation) and match:
+  - contains "start recording" (also "begin recording", "record") → `recording.start`
+  - contains "stop recording" (also "end recording") → `recording.stop` (no confirmation for voice)
+  - otherwise → no action.
+  Emit `voice.command` `{"utterance_id","command":"recording.start|recording.stop|none","ok":bool,"error":null|"<CODE>"}`; snapshot transcripts gain `"command": "recording.start"|"recording.stop"|null`.
+- Wake word verification is done by the owner in the real world; automated checks only cover logic (unit tests).

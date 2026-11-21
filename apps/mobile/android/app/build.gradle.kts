@@ -21,6 +21,7 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 30 // Pixel-first (Camera2 SessionConfiguration, thermal API)
         targetSdk = flutter.targetSdkVersion
+        ndk { abiFilters += listOf("arm64-v8a") }
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
         // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
@@ -50,6 +51,8 @@ dependencies {
     implementation("io.github.webrtc-sdk:android:144.7559.15")
     // Pure-Java QR decoder (Apache-2.0); replaces ML Kit, which phoned home.
     implementation("com.google.zxing:core:3.5.3")
+    // sherpa-onnx 2.0.2 (Apache-2.0), arm64-v8a only: on-device KWS, VAD and streaming ASR.
+    implementation(files("libs/sherpa-onnx-2.0.2-arm64.aar"))
     testImplementation("junit:junit:4.13.2")
 }
 

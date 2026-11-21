@@ -6,6 +6,7 @@ import 'app/session_controller.dart';
 import 'features/camera/capture_controller.dart';
 import 'features/connectivity/certificate.dart';
 import 'features/recording/recording_controller.dart';
+import 'features/voice/voice_controller.dart';
 import 'features/connectivity/local_server.dart';
 import 'features/connectivity/pairing.dart';
 import 'platform/camera_platform.dart';
@@ -20,11 +21,13 @@ Future<void> main() async {
   final cameraPlatform = ChannelCameraPlatform();
   final capture = CaptureController(cameraPlatform);
   final recording = RecordingController(cameraPlatform);
+  final voice = VoiceController(cameraPlatform);
   final certs = CertificateService(dir);
   final controller = SessionController(
     pairing: pairing,
     capture: capture,
     recording: recording,
+    voice: voice,
     deviceSource: ChannelDeviceStatusSource(),
     permissionPort: HandlerPermissionPort(),
     serverFactory: (payload, onMessage) => LocalServer(

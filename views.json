@@ -111,6 +111,22 @@
       "bus": "5B79016329",
       "captured_at": "2026-11-21T13:31:28",
       "snapshot": "views/side_low.jpg"
+    },
+    "transit": {
+      "joints": {
+        "1": 2114,
+        "2": 1906,
+        "3": 1585,
+        "4": 1527,
+        "5": 1958,
+        "6": 2064,
+        "7": 2216,
+        "8": 1758
+      },
+      "description": "safe raised pose every move passes through (not a camera view)",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:51:45",
+      "snapshot": "views/transit.jpg"
     }
   }
 }

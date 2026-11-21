@@ -25,7 +25,11 @@ RAM_TORQUE_ENABLE = 0x28
 RAM_ACC = 0x29
 RAM_GOAL_POSITION = 0x2A
 RAM_GOAL_SPEED = 0x2E
+RAM_TORQUE_LIMIT = 0x30
 RAM_PRESENT_POSITION = 0x38
+RAM_PRESENT_LOAD = 0x3C      # 0-1000 = 0-100% of stall torque, bit 10 = direction
+RAM_STATUS = 0x41            # error bits; bit 0 = voltage (often set on a 5 V leader, harmless)
+RAM_PRESENT_CURRENT = 0x45   # raw units of 6.5 mA
 
 MAX_ANGLE_STEP = 4095
 SIGN_BIT_MASK = 0x8000
@@ -178,6 +182,27 @@ class Arm:
             m.get_id(): _normal_position(_u16(bytes(m.get_state()), RAM_PRESENT_POSITION))
             for m in (bus.get_motors() or [])
         }
+
+    def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
+        """Per motor: present/goal position, load (0-1000), current (raw), status bits, torque flag."""
+        age = time.monotonic() - self.latest_stamp
+        if age > max_age_s:
+            raise RuntimeError(f"joint data is stale ({age:.1f}s old)")
+        bus = self._bus()
+        if bus is None:
+            raise RuntimeError(f"bus {self.bus_serial} missing from latest frame")
+        out = {}
+        for m in bus.get_motors() or []:
+            st = bytes(m.get_state())
+            out[m.get_id()] = {
+                "pos": _normal_position(_u16(st, RAM_PRESENT_POSITION)),
+                "goal": _normal_position(_u16(st, RAM_GOAL_POSITION)),
+                "load": _u16(st, RAM_PRESENT_LOAD) & 0x3FF,
+                "current": _u16(st, RAM_PRESENT_CURRENT) & 0x7FFF,
+                "status": st[RAM_STATUS] if len(st) > RAM_STATUS else 0,
+                "torque": len(st) > RAM_TORQUE_ENABLE and st[RAM_TORQUE_ENABLE] != 0,
+            }
+        return out
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         """Calibrated (min, max) per motor id, as Station reports them."""

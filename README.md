@@ -10,13 +10,13 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
                     └──────────────────────── camera frames (camera.py) ◄───────────────────┘
 ```
 
-## Status (Sat 21 Nov, ~15:30)
+## Status (Sat 21 Nov, ~16:15)
 
 | Milestone | State |
 |---|---|
 | M0 arm + camera from our code | ✅ joints read, camera frames grabbed, torque control works on the real arms |
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
-| M2 move to a view | 🟡 built and reviewed: route network through the transit pose, guards, web control page. **Tested on the simulated arm only (91 motion checks, ~1600 server race checks); not yet run on the real arm.** Next: the supervised test protocol in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
+| M2 move to a view | 🟢 **works on the real arm**: 10 supervised moves on 21 Nov between transit, `top`, `wide` and `right`, from the web page at `/control`. Still to do: `left`, `close`, `side_low`, `home`, the Stop and block tests, normal speed. Details and data in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
 | M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
 

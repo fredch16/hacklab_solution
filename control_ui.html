@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Camera Control</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel-2: #20242d; --line: #2c313c;
+    --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --ok: #3ecf8e; --warn: #f5a524; --bad: #ff5d5d;
+    --stop: #d7353b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+         padding-bottom: calc(96px + env(safe-area-inset-bottom)); /* render() keeps this in step with the STOP bar */ }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  nav { display: flex; gap: 4px; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 13px; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+  nav a:hover { color: var(--text); }
+  nav a.here { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  select, button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  select { max-width: 100%; }
+  button { cursor: pointer; touch-action: manipulation; }
+  button:hover { border-color: var(--accent); }
+  #arm { color: var(--muted); font-size: 12px; }
+  #arm b { color: var(--text); font-weight: 600; }
+  #joints { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; flex-basis: 100%; overflow-wrap: anywhere; }
+  main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); gap: 20px; padding: 20px; }
+  main > section { min-width: 0; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); padding: 16px; } header { padding: 12px 16px; } }
+  .live { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
+  .live img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .live .badge { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 16px; }
+  .panel .count { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .panel h2 { margin: 4px 0 2px; font-size: 26px; overflow-wrap: anywhere; }
+  .panel h2.lost { color: var(--warn); font-size: 20px; }
+  .phase { color: var(--muted); min-height: 21px; overflow-wrap: anywhere; }
+  .phase b { color: var(--text); font-weight: 600; }
+  .bar { height: 8px; margin: 10px 0 2px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .25s linear; }
+  .bar.idle { visibility: hidden; }
+  .route { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding: 0; list-style: none; min-height: 26px; }
+  .route li { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .route li.done { color: var(--ok); border-color: transparent; background: rgba(62, 207, 142, .1); }
+  .route li.now { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .where { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
+  .where.warn { color: var(--warn); font-weight: 600; }
+  .alert { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--bad); border-radius: 8px; background: rgba(255, 93, 93, .1);
+           color: var(--bad); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+  .alert small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-bottom: 2px; }
+  [hidden] { display: none !important; }
+  button.caution { border-color: var(--warn); color: var(--warn); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled:hover { border-color: var(--line); }
+  .msg { margin-top: 10px; min-height: 20px; font-size: 13px; overflow-wrap: anywhere; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); } .msg.stale { opacity: .45; }
+  .pose { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .pose button { padding: 10px 14px; }
+  .torque { font-size: 13px; color: var(--muted); }
+  .torque.on { color: var(--ok); } .torque.off { color: var(--warn); }
+  .reminder { border: 1px solid var(--warn); border-radius: 10px; padding: 12px 14px; color: var(--text); background: rgba(245, 165, 36, .08); }
+  .reminder b { color: var(--warn); }
+  .reminder ul { margin: 6px 0 0; padding-left: 18px; }
+  .speed { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; color: var(--muted); font-size: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel-2); color: var(--muted); padding: 8px 18px; font-size: 14px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+  h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 22px 0 10px; }
+  h3 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; min-width: 0; }
+  .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
+  .card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card.target { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+  .grid.locked .card { cursor: default; pointer-events: none; }
+  .grid.locked .card:not(.target) { opacity: .4; }
+  .card .thumb { aspect-ratio: 16 / 9; background: var(--panel-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .meta { padding: 6px 8px 0; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .card .name { font-weight: 600; overflow-wrap: anywhere; }
+  .card .tag { font-size: 11px; border-radius: 999px; padding: 1px 8px; flex: none; }
+  .card .tag:empty { display: none; }
+  .card.current .tag { background: var(--accent); color: #fff; }
+  .card.target .tag { background: var(--warn); color: #1a1300; }
+  .card .desc { padding: 0 8px 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card .flags { padding: 0 8px 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 11px; }
+  .card .flag { border-radius: 999px; padding: 1px 8px; border: 1px solid var(--line); color: var(--muted); }
+  .card .flag.unchecked, .card .flag.limit { color: var(--warn); border-color: var(--warn); }
+  .card .flag.limit { cursor: help; }
+  .card .flag.checked { color: var(--ok); border-color: transparent; padding-left: 0; }
+  .card .mark { font-size: 11px; padding: 1px 8px; color: var(--muted); }
+  .secondary { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 14px; color: var(--muted); font-size: 12px; }
+  .secondary button { padding: 8px 14px; }
+  .secondary button.current { border-color: var(--accent); }
+  .empty { color: var(--muted); }
+  .empty a { color: var(--accent); }
+  .stopbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; align-items: center; gap: 8px 20px;
+             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); background: rgba(15, 17, 21, .95); border-top: 1px solid var(--line); }
+  .stopbar .info { flex: 1; min-width: 0; font-size: 15px; overflow-wrap: anywhere; }
+  .stopbar .info.bad { color: var(--bad); font-weight: 600; }
+  .stopbar .info .err { display: block; color: var(--bad); font-weight: 600; }
+  #stop { flex: none; min-width: 280px; padding: 12px 28px; background: var(--stop); border: 2px solid #ff8f93; border-radius: 12px;
+          color: #fff; font-size: 24px; font-weight: 800; letter-spacing: .1em; line-height: 1.1; }
+  #stop small { display: block; font-size: 11px; font-weight: 500; letter-spacing: .04em; opacity: .9; margin-top: 3px; }
+  #stop:hover { border-color: #fff; }
+  #stop:active, #stop.pressed { background: #a8262b; }
+  @media (max-width: 600px) {
+    body { padding-bottom: calc(132px + env(safe-area-inset-bottom)); }
+    .stopbar { flex-direction: column; align-items: stretch; padding-left: 16px; padding-right: 16px; }
+    .stopbar .info { font-size: 13px; }
+    #stop { min-width: 0; width: 100%; padding: 14px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera Control</h1>
+  <nav><a href="/">Capture</a><a href="/control" class="here">Control</a></nav>
+  <label>Camera <select id="camera"></select></label>
+  <span id="arm"></span>
+  <div id="joints">connecting…</div>
+</header>
+
+<main>
+  <section>
+    <div class="live">
+      <img id="live" src="/stream" alt="Live camera">
+      <div class="badge" id="badge">live</div>
+    </div>
+
+    <div class="panel">
+      <div class="count">Status</div>
+      <h2 id="headline">Connecting…</h2>
+      <div class="where" id="where"></div>
+      <div class="phase" id="phase"></div>
+      <ol class="route" id="route" aria-label="Route"></ol>
+      <div class="bar idle" id="bar"><div id="barFill"></div></div>
+      <div class="alert" id="alert" role="alert" hidden></div>
+      <div class="msg" id="result" aria-live="polite"></div>
+      <div class="pose">
+        <button id="hold">Hold here</button>
+        <button id="recover" class="caution" hidden>Recover to transit…</button>
+        <span id="torque" class="torque"></span>
+      </div>
+      <div class="msg" id="msg" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="reminder">
+      <b>Before you click a view</b>
+      <ul>
+        <li>The follower must be on <b>"(Self-controlled)"</b> in Station.</li>
+        <li><b>Someone stands at the arm</b>, power plug within reach. STOP (below, or Space / Esc) holds the arm where it is.</li>
+        <li>The arm must be holding (<b>Hold here</b>) and at a known pose. A move rises to the transit pose, turns, then descends: 10 to 30 s at slow speed.</li>
+      </ul>
+    </div>
+
+    <div class="speed">
+      <span>Speed</span>
+      <div class="seg" id="speed">
+        <button data-speed="slow" aria-pressed="true">Slow</button>
+        <button data-speed="normal" aria-pressed="false">Normal</button>
+      </div>
+      <span id="speedHint"></span>
+    </div>
+
+    <h3>Views <span>· one click moves the arm</span></h3>
+    <div class="grid" id="grid"></div>
+    <div class="secondary">
+      <button id="transit">Go to transit</button>
+      <span id="transitHint">the safe raised pose every move passes through (not a camera view)</span>
+    </div>
+  </section>
+</main>
+
+<div class="stopbar">
+  <div class="info" id="stopInfo">Connecting…</div>
+  <button id="stop">STOP<small>Space / Esc · holds the arm where it is</small></button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;      // last /api/state
+let lost = false;      // the state poll is failing
+let pending = null;    // view just clicked, until the server reports the move
+let stopFail = "";     // a STOP that did not go through; stays on screen until one does
+let speed = "slow";
+try { speed = localStorage.getItem("controlSpeed") || speed; } catch (e) {}
+
+const motionState = () => (state && state.motion) || {};
+const isMoving = () => pending !== null || !!motionState().moving;
+
+async function request(url, options, timeoutMs) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { ...options, signal: ctl.signal });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+    return j;
+  } catch (e) {
+    throw e.name === "AbortError" ? new Error("no answer from capture_server.py") : e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const post = (url, body, timeoutMs = 8000) =>
+  request(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, timeoutMs);
+
+function note(text, cls = "") { $("msg").className = "msg " + cls; $("msg").textContent = text; }
+
+// ---- polling: 4x per second while moving, 1x otherwise ----
+let seq = 0, applied = 0, gen = 0, timer = null;
+async function refresh() {
+  const n = ++seq;
+  try {
+    const s = await request("/api/state", {}, 2500);
+    if (n < applied) return;   // an older answer arrived late
+    applied = n; state = s; lost = false;
+  } catch (e) {
+    if (n < applied) return;
+    applied = n; lost = true;
+  }
+  render();
+}
+async function loop(g) {
+  await refresh();
+  if (g === gen) timer = setTimeout(() => loop(g), isMoving() ? 250 : 1000);
+}
+function kick() { gen++; clearTimeout(timer); return loop(gen); }
+
+// ---- actions ----
+let starting = null;   // the /api/goto request while it is in flight
+async function go(name, recover = false) {
+  if (isMoving()) return;
+  pending = name; note(""); render();
+  starting = post("/api/goto", recover ? { view: name, recover: true } : { view: name, speed });
+  try {
+    await starting;
+    stopFail = "";
+  } catch (e) {
+    note(`Could not start "${name}": ${e.message}`, "bad");
+  }
+  starting = null;
+  await kick();   // a move that motion refuses (limp arm, unknown pose, ...) is already over by now: its error is in state
+  pending = null; render();
+}
+
+function recover() {
+  if (!confirm("Recover to transit: the arm lifts straight up from where it is, slowly.\n\nIs someone at the arm, and is the way up clear?")) return;
+  go(state.transit, true);
+}
+
+async function setChecked(name, checked) {
+  if (checked && !confirm(`Mark "${name}" as checked?\n\nYou watched this view's move run cleanly on the real arm, there and back?`)) return;
+  try {
+    await post("/api/checked", { view: name, checked });
+    note(checked ? `"${name}" marked as checked: it may now run at normal speed.` : `"${name}" is unchecked again: it runs slow.`, "ok");
+  } catch (e) {
+    note(`Could not mark "${name}": ${e.message}`, "bad");
+  }
+  kick();
+}
+
+async function sendStop() {
+  try {
+    const r = await post("/api/stop", {}, 4000);
+    stopFail = "";
+    note(r.was_moving ? `Stopped on the way to "${r.view}". The arm is holding where it is.` : "Hold sent (nothing was moving).", "ok");
+    return r;
+  } catch (e) {
+    stopFail = `STOP FAILED (${e.message}). Press again, or pull the follower's power plug.`;
+    note(stopFail, "bad");
+  }
+}
+
+async function stop() {
+  // Never blocked by anything else on the page: its own request, no dependence on the state poll.
+  const racing = starting;   // a click that may reach the server after this STOP
+  $("stop").classList.add("pressed");
+  const first = await sendStop();
+  if (racing) {
+    await racing.catch(() => {});
+    const second = await sendStop();
+    if (first && first.was_moving && second && !second.was_moving) note(`Stopped on the way to "${first.view}". The arm is holding where it is.`, "ok");
+  }
+  $("stop").classList.remove("pressed");
+  pending = null;
+  render();
+  kick();
+}
+
+async function holdHere() {
+  try {
+    const r = await post("/api/torque", { on: true });
+    note(r.was_moving ? `Stopped on the way to "${r.view}". The arm is holding where it is.` : "Holding (joints 1-7; the gripper stays limp).", "ok");
+  } catch (e) {
+    note("Hold failed: " + e.message, "bad");
+  }
+  kick();
+}
+
+function setSpeed(name) {
+  speed = name;
+  try { localStorage.setItem("controlSpeed", name); } catch (e) {}
+  render();
+}
+
+// ---- rendering ----
+function fillSelect(el, items, value, label) {
+  const want = JSON.stringify(items);
+  if (el.dataset.items !== want) {
+    el.innerHTML = "";
+    items.forEach((it) => { const o = document.createElement("option"); o.value = it; o.textContent = label(it); el.appendChild(o); });
+    el.dataset.items = want;
+  }
+  if (document.activeElement !== el) el.value = value;
+}
+
+let gridKey = null;
+function buildGrid() {
+  const cards = state.cards || [];
+  const key = JSON.stringify([cards, state.sim]);
+  if (key === gridKey) return;
+  gridKey = key;
+  const grid = $("grid");
+  grid.innerHTML = "";
+  if (!cards.length) {
+    grid.innerHTML = `<div class="empty">No saved views yet. Capture some on the <a href="/">Capture</a> page.</div>`;
+    return;
+  }
+  const make = (tag, cls, text) => Object.assign(document.createElement(tag), { className: cls, textContent: text || "" });
+  cards.forEach((v) => {
+    const name = v.name;
+    const card = make("div", "card");
+    card.dataset.name = name; card.tabIndex = 0; card.setAttribute("role", "button");
+    const thumb = make("div", "thumb");
+    if (v.snapshot) {
+      const img = document.createElement("img");
+      img.alt = ""; img.loading = "lazy";
+      img.src = `/views/${encodeURIComponent(name)}.jpg?t=${encodeURIComponent(v.captured_at || "")}`;
+      img.onerror = () => { thumb.textContent = "no image"; };
+      thumb.appendChild(img);
+    } else {
+      thumb.textContent = "no image";
+    }
+    const meta = make("div", "meta");
+    meta.append(make("span", "name", name), make("span", "tag"));
+    const flags = make("div", "flags");
+    if (v.limit_notes && v.limit_notes.length) {
+      const limit = make("span", "flag limit", "\u26A0 at a joint limit");
+      limit.title = "Saved pose is at a joint limit; re-capture it a bit away from the stop. The arm stops just short, so the picture differs slightly from the snapshot.\n" + v.limit_notes.join("\n");
+      flags.append(limit);
+    }
+    flags.append(v.checked ? make("span", "flag checked", "\u2713 checked") : make("span", "flag unchecked", "unchecked: runs slow"));
+    const mark = make("button", "mark", v.checked ? "Uncheck" : "Mark as checked");
+    mark.disabled = !!state.sim;
+    mark.title = state.sim ? "Views are read-only in --sim" : (v.checked ? "Make this view run slow again" : "After you watched its move run cleanly on the real arm");
+    mark.onclick = (e) => { e.stopPropagation(); setChecked(name, !v.checked); };
+    mark.onkeydown = (e) => e.stopPropagation();   // Enter here marks; it must not also start the move
+    flags.append(mark);
+    card.append(thumb, meta, make("div", "desc", v.description), flags);
+    card.onclick = () => go(name);
+    card.onkeydown = (e) => { if (e.key === "Enter") go(name); };
+    grid.appendChild(card);
+  });
+}
+
+function whereText() {
+  // [text, needs attention]
+  if (!state.connected) return ["No data from the arm. Is it plugged in and visible in Station?", true];
+  if (state.where_error) return [state.where_error, true];
+  const w = state.where;
+  if (!w) return ["checking where the arm is\u2026", false];
+  if (w.where === "view") return [`at "${w.view}"`, false];
+  if (w.where === "hub") return ["at the transit pose", false];
+  if (w.where === "spoke") return [`between "${w.view}" and the transit pose`, false];
+  return ["Not at a known pose: there is no checked path from here. Move it by hand to the transit pose (Capture page: Go limp, pose it, Hold here), or use Recover to transit with someone watching the arm.", true];
+}
+
+function resultText(r) {
+  if (!r) return ["", ""];
+  if (r.ok) return [`Last move: reached "${r.view}"` + (r.duration ? ` (${r.duration} s)` : ""), "ok"];
+  if (r.error === "stopped") return [`Last move: stopped on the way to "${r.view}".`, ""];
+  return ["", ""];   // failures and refusals go in the alert box instead
+}
+const failure = (r) => (r && !r.ok && r.error !== "stopped" ? r : null);
+
+let lastProgress = 0;
+function render() {
+  const m = motionState();
+  const moving = isMoving();
+  const target = pending !== null ? pending : m.view;
+  const failed = moving ? null : failure(m.last_result);
+  const [whereLine, whereWarn] = state ? whereText() : ["", false];
+
+  // Headline + sticky bar: usable even before the first state arrives.
+  let headline = "Connecting\u2026";
+  if (moving) headline = `Moving to ${target}`;
+  else if (state) headline = "Idle";
+  const info = $("stopInfo");
+  if (lost) {
+    $("headline").className = "lost";
+    $("headline").textContent = "No connection to capture_server.py";
+    info.className = "info bad";
+    info.textContent = stopFail || "No connection to capture_server.py. STOP still tries; the power plug always works.";
+  } else {
+    $("headline").className = "";
+    $("headline").textContent = headline;
+    info.className = "info" + (stopFail ? " bad" : "");
+    info.textContent = stopFail || (moving && m.phase ? `${headline} \u00B7 ${m.phase}` : (!moving && state && !whereWarn ? `${headline} \u00B7 ${whereLine}` : headline));
+    // Refusals and aborts say what to do next; keep them in view wherever the page is scrolled.
+    const problem = !stopFail && (failed ? `"${failed.view}": ${failed.error}` : (!moving && whereWarn ? whereLine : ""));
+    if (problem) info.append(Object.assign(document.createElement("span"), { className: "err", textContent: problem }));
+  }
+  document.body.style.paddingBottom = (document.querySelector(".stopbar").offsetHeight + 16) + "px";
+
+  // Speed selector works without state too.
+  const options = (state && state.speed_options) || { slow: 200, normal: 400 };
+  if (!(speed in options)) speed = "slow";
+  document.querySelectorAll("#speed button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.speed === speed)));
+  $("speedHint").textContent = `${options[speed]} steps/s` + (speed !== "slow" ? " \u00B7 unchecked views still run slow" : "") + (moving ? " \u00B7 applies to the next move" : "");
+
+  if (!state) return;
+
+  $("arm").innerHTML = "";
+  $("arm").append("Arm ", Object.assign(document.createElement("b"), { textContent: state.bus + (state.sim ? " (simulated)" : "") }));
+  if (!lost) $("joints").textContent = state.joints;
+  fillSelect($("camera"), state.cameras, state.camera, (q) => "camera " + q.split("/").pop().slice(0, 6));
+  $("badge").textContent = state.cameras.length ? "live" : (state.sim ? "simulated arm \u00B7 no camera" : "no camera");
+
+  $("where").className = "where" + (whereWarn && !moving ? " warn" : "");
+  $("where").textContent = moving ? "" : whereLine;
+
+  // Phase, route steps and progress.
+  const route = (moving && m.moving && m.route) || [];
+  $("route").innerHTML = "";
+  route.forEach((seg, i) => {
+    const li = document.createElement("li");
+    li.textContent = seg;
+    li.className = i + 1 < m.phase_index ? "done" : (i + 1 === m.phase_index ? "now" : "");
+    if (i + 1 === m.phase_index) li.setAttribute("aria-current", "step");
+    $("route").appendChild(li);
+  });
+  if (moving) {
+    const phase = !m.moving ? "check" : (m.phase || "moving");
+    $("phase").innerHTML = "";
+    $("phase").append(Object.assign(document.createElement("b"), { textContent: phase === "check" ? "checking the arm and planning the route" : phase }));
+    if (m.moving && m.phase_count > 0 && m.phase_index > 0) $("phase").append(` \u00B7 step ${m.phase_index} of ${m.phase_count}`);
+    const p = m.moving ? Math.max(0, Math.min(1, Number(m.progress) || 0)) : 0;
+    $("barFill").style.transition = p < lastProgress ? "none" : "";   // a new segment starts at 0: jump, don't rewind
+    $("barFill").style.width = (p * 100).toFixed(1) + "%";
+    lastProgress = p;
+    $("bar").className = "bar";
+  } else {
+    $("phase").textContent = "";
+    $("bar").className = "bar idle";
+    $("barFill").style.width = "0"; lastProgress = 0;
+  }
+
+  // Last result: failures and refusals loud, everything else quiet.
+  $("alert").hidden = !failed;
+  if (failed) {
+    $("alert").innerHTML = "";
+    $("alert").append(Object.assign(document.createElement("small"), { textContent: `Move to "${failed.view}" did not complete` }), failed.error || "unknown error");
+  }
+  const [text, cls] = resultText(m.last_result);
+  $("result").className = "msg " + cls + (moving ? " stale" : "");
+  $("result").textContent = text;
+
+  const torque = state.connected ? state.torque : null;
+  $("torque").className = "torque " + (torque === "holding" ? "on" : "off");
+  $("torque").textContent = torque === "holding" ? "arm is holding" : torque === "limp" ? "arm is limp: support it, then Hold here before moving" : "no data from the arm";
+  const unknown = !moving && !state.where_error && state.where && state.where.where === "unknown";
+  $("recover").hidden = !(unknown && torque === "holding" && state.has_transit);
+
+  buildGrid();
+  $("grid").classList.toggle("locked", moving);
+  document.querySelectorAll("#grid .card").forEach((card) => {
+    const name = card.dataset.name;
+    const isTarget = moving && name === target;
+    const isCurrent = !moving && name === state.current_view;
+    card.classList.toggle("target", isTarget);
+    card.classList.toggle("current", isCurrent);
+    card.setAttribute("aria-disabled", String(moving));
+    card.querySelector(".tag").textContent = isTarget ? "moving\u2026" : (isCurrent ? "here" : "");
+  });
+
+  const atHub = !moving && state.where && state.where.where === "hub";
+  $("transit").disabled = moving || !state.has_transit;
+  $("transit").className = atHub ? "current" : "";
+  $("transit").textContent = moving && target === state.transit ? "Going to transit\u2026" : "Go to transit";
+  $("transitHint").textContent = !state.has_transit ? "No transit pose saved yet: capture one named \"transit\" on the Capture page. Nothing can move without it."
+    : atHub ? "the arm is at the transit pose" : "the safe raised pose every move passes through (not a camera view)";
+}
+
+// ---- wiring ----
+$("stop").onclick = stop;
+$("hold").onclick = holdHere;
+$("recover").onclick = recover;
+$("transit").onclick = () => go(state.transit);
+document.querySelectorAll("#speed button").forEach((b) => { b.onclick = () => setSpeed(b.dataset.speed); });
+$("camera").onchange = () => post("/api/camera", { queue: $("camera").value }).then(kick, kick);
+$("live").onerror = () => { $("badge").textContent = "no camera"; setTimeout(() => { $("live").src = "/stream?" + Date.now(); }, 2000); };
+
+// Space and Esc always mean STOP on this page, whatever has focus.
+const isSpace = (e) => e.key === " " || e.code === "Space";
+window.addEventListener("keydown", (e) => {
+  if (isSpace(e) || e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    if (!e.repeat) stop();
+  }
+}, true);
+window.addEventListener("keyup", (e) => { if (isSpace(e)) { e.preventDefault(); e.stopPropagation(); } }, true);  // no click on a focused button
+
+render();
+kick();
+</script>
+</body>
+</html>

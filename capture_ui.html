@@ -14,6 +14,11 @@
   header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   header h1 { font-size: 16px; margin: 0 8px 0 0; }
   header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  nav { display: flex; gap: 4px; }
+  nav[hidden] { display: none; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 13px; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+  nav a:hover { color: var(--text); }
+  nav a.here { color: var(--text); background: var(--panel-2); border-color: var(--line); }
   select, input, button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
   button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
@@ -58,6 +63,7 @@
 <body>
 <header>
   <h1>View Capture</h1>
+  <nav id="nav" hidden><a href="/" class="here">Capture</a><a href="/control">Control</a></nav>
   <label>Follower arm <select id="bus"></select></label>
   <label>Camera <select id="camera"></select></label>
   <div id="joints">connecting…</div>
@@ -75,7 +81,7 @@
       <button id="hold">Hold here</button>
       <span id="torque" class="torque"></span>
     </div>
-    <p class="hint"><b>Go limp</b>, move the follower by hand, <b>Hold here</b> to lock it, check the picture, then <b>Save</b> (or Enter). Set the follower to "(Self-controlled)" in Station first so the leader doesn't fight you.</p>
+    <p class="hint"><b>Go limp</b>, move the follower by hand, <b>Hold here</b> to lock it, check the picture, then <b>Save</b> (or Enter). The follower must be on "(Self-controlled)" in Station. Hold here locks joints 1-7; the gripper (camera mount) stays limp. Every move passes through the pose saved as <b>transit</b>: re-capturing a view clears its "checked" mark.</p>
   </section>
 
   <section>
@@ -109,6 +115,9 @@ let state = null;
 let step = 0;
 try { step = Number(localStorage.getItem("captureStep")) || 0; } catch (e) {}
 
+// state.motion comes from a capture_server.py that also serves /control (older ones don't send it).
+const moving = () => !!(state && state.motion && state.motion.moving);
+
 function steps() {
   if (!state) return [];
   const guided = state.guided.map((g) => g.name);
@@ -134,7 +143,7 @@ function render() {
   $("stepName").textContent = cur.name;
   $("stepDesc").textContent = cur.description || "";
   $("save").textContent = saved ? "Retake view" : "Save view";
-  $("save").disabled = state.capturing;
+  $("save").disabled = state.capturing || moving();
 
   $("grid").innerHTML = "";
   all.forEach((v, i) => {
@@ -181,10 +190,13 @@ async function refresh() {
   }
   fillSelect($("bus"), Object.keys(state.buses), state.bus, (s) => `${s} (${state.buses[s]})`);
   fillSelect($("camera"), state.cameras, state.camera, (q) => "camera " + q.split("/").pop().slice(0, 6));
-  const limp = state.buses[state.bus] === "limp";
+  const limp = state.torque ? state.torque === "limp" : state.buses[state.bus] === "limp";
   $("joints").textContent = state.joints;
   $("torque").className = "torque " + (limp ? "off" : "on");
-  $("torque").textContent = limp ? "limp: move it by hand, then Hold here" : "holding: hands off, check the picture";
+  $("torque").textContent = moving() ? `moving to ${state.motion.view} (STOP is on the Control page; Hold here stops it too)`
+    : state.connected === false ? "no data from the arm: is it plugged in and visible in Station?"
+    : limp ? "limp: move it by hand, then Hold here" : "holding: hands off, check the picture";
+  $("nav").hidden = !state.motion;
   render();
 }
 
@@ -244,7 +256,7 @@ $("customAdd").onclick = async () => {
 $("camera").onchange = () => post("/api/camera", { queue: $("camera").value }).then(refresh);
 $("bus").onchange = () => post("/api/bus", { bus: $("bus").value }).then(refresh);
 $("live").onerror = () => { $("badge").textContent = "no camera"; setTimeout(() => { $("live").src = "/stream?" + Date.now(); }, 2000); };
-$("live").onload = () => { $("badge").textContent = "live"; };
+$("live").onload = () => { $("badge").textContent = state && !state.cameras.length ? "no camera" : "live"; };
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (e.key === "Enter") { e.preventDefault(); $("save").click(); }

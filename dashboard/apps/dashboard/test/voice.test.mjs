@@ -61,7 +61,7 @@ test("voice command badges reflect dashboard outcomes", () => {
 });
 test("unavailable reason when waiting for the stream", () => {
   const s = V.voiceStatus({ state: "unavailable", wake_phrase: "hey robot" });
-  assert.equal(s.detail, "Starts with the video stream."); assert.equal(s.sev, "neutral");
+  assert.equal(s.detail, "Starts when a paired dashboard connects."); assert.equal(s.sev, "neutral");
 });
 
 test("popup: wake -> partial -> final -> command, replacement, no_speech", () => {

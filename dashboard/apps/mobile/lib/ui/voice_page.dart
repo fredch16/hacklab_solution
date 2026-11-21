@@ -5,7 +5,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 String voiceStateLabel(String state, String? error) => switch (state) {
-  'unavailable' => 'Voice · Starts with the video stream',
+  'unavailable' => 'Voice · Waiting for a paired dashboard',
   'loading_model' => 'Voice · Loading models…',
   'listening' => 'Voice · Listening for the wake phrase',
   'wake_detected' => 'Voice · Listening for command',

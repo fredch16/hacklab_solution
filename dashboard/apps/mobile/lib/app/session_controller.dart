@@ -60,7 +60,6 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     capture.sender = (type, payload, {requestId}) =>
         server.sendMessage(type, payload, requestId: requestId);
     capture.addListener(_publish);
-    capture.addListener(_followStream);
     recording.addListener(_publish);
     voice.addListener(_publish);
     voice.sender = (type, payload, {requestId}) =>
@@ -71,6 +70,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
       if (capture.streamState != 'idle' && !server.viewerInfo.connected) {
         capture.stopStream('browser_stop');
       }
+      _syncVoice();
       notifyListeners();
     });
     _batterySub = deviceSource.batteryEvents.listen((b) {
@@ -109,6 +109,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   String? appVersion;
   Timer? _poll;
   var _busy = false;
+  var _ending = false;
 
   bool get sessionRunning =>
       phase == AppPhase.active || phase == AppPhase.interrupted;
@@ -204,19 +205,24 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> endSession() async {
-    if (!sessionRunning) return;
-    _poll?.cancel();
-    await voice.end();
-    await recording.end();
-    await capture.end();
-    await server.stop();
+    if (!sessionRunning || _ending) return;
+    _ending = true;
     try {
-      await _wakelock(false);
-    } catch (_) {}
-    keepScreenOn = false;
-    sessionStartedUtc = null;
-    phase = AppPhase.ready;
-    notifyListeners();
+      _poll?.cancel();
+      await voice.end();
+      await recording.end();
+      await capture.end();
+      await server.stop();
+      try {
+        await _wakelock(false);
+      } catch (_) {}
+      keepScreenOn = false;
+      sessionStartedUtc = null;
+      phase = AppPhase.ready;
+      notifyListeners();
+    } finally {
+      _ending = false;
+    }
   }
 
   Future<void> requestPermission(Permission p) async {
@@ -264,19 +270,22 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Voice listens while the video stream (WebRTC peer) is up.
-  void _followStream() {
-    final streaming =
-        capture.streamState == 'connecting' ||
-        capture.streamState == 'connected';
-    if (streaming && sessionRunning) {
-      voice.start();
+  /// An authenticated dashboard can receive commands with the camera off.
+  void _syncVoice() {
+    final viewer = server.viewerInfo;
+    if (!_ending &&
+        phase == AppPhase.active &&
+        permissions['microphone'] == 'granted' &&
+        viewer.paired &&
+        viewer.connected) {
+      unawaited(voice.start());
     } else {
-      voice.stop();
+      unawaited(voice.stop());
     }
   }
 
   void _publish() {
+    _syncVoice();
     server.notifyStateChanged();
     notifyListeners();
   }
@@ -288,7 +297,6 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     _serverSub.cancel();
     _batterySub.cancel();
     capture.removeListener(_publish);
-    capture.removeListener(_followStream);
     recording.removeListener(_publish);
     voice.removeListener(_publish);
     server.dispose();

@@ -63,7 +63,7 @@ class VoiceController extends ChangeNotifier implements VoicePort {
 
   bool listening = false;
 
-  /// Listening follows the video stream: start with the peer.
+  /// Start listening for the active paired dashboard.
   Future<void> start() async {
     if (listening) return;
     listening = true;

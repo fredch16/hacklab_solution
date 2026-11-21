@@ -21,12 +21,14 @@ _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any ag
 | Slice 5 — original file download over LAN | ⏳ Not started |
 | Slice 6 — iOS | ⏳ Not started (needs Mac + iPhone) |
 
+Voice now starts on the authenticated dashboard connection before video. [Lifecycle tests and owner check](../../docs/evidence/pairing-starts-voice-2026-11-22.md).
+
 ## Owner decisions (binding)
 - HTTPS: **self-signed** certificate, browser click-through (ADR 0001). Cellular addresses excluded from cert/URLs.
 - Pairing: **QR shown in browser, scanned by phone**, code as fallback.
 - Camera starts only on browser **Start video**; stops when video stops.
 - Recording: started/stopped from the **web dashboard** (and phone); separate from Start video; browser may start and stop; **always with audio**; saved to **Movies/LocalVision**; quality best effort (no settings UI).
-- Voice: fixed **Hey** plus a name **typed in the dashboard** (persisted on phone); **English only**; command ends after **~1 s silence**, 15 s cap, 5 s no-speech; transcripts **session-only, in memory**; listening **starts with the video stream**; must run simultaneously with streaming and recording; no audio leaves the phone.
+- Voice: fixed **Hey** plus a name **typed in the dashboard** (persisted on phone); **English only**; command ends after **~1 s silence**, 15 s cap, 5 s no-speech; transcripts **session-only, in memory**; listening **starts when the paired dashboard connects**, with the camera optional; must run simultaneously with streaming and recording; no audio leaves the phone.
 - Dashboard: wake word shows a bold assistant-style popup (like "Hey Google"/Alexa).
 - Commits: author **Ajay Chodankar <achodankar28@gmail.com>** (repo-local git config).
 

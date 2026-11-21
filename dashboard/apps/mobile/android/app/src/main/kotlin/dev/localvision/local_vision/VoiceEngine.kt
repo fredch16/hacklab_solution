@@ -83,13 +83,13 @@ class VoiceEngine(
         )
     }
 
-    /** Stream started: begin listening if a phrase is set and the microphone is allowed. */
+    /** Dashboard connected: begin listening if a phrase is set and the microphone is allowed. */
     fun start() {
         sessionActive = true
         beginIfPossible()
     }
 
-    /** Stop listening (stream ended). [clear] also forgets this session's transcripts (session end). */
+    /** Stop listening. [clear] also forgets this session's transcripts (session end). */
     fun stop(clear: Boolean = false) {
         sessionActive = false
         pause()

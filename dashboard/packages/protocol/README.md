@@ -179,7 +179,7 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 End of command: VAD silence ≥ 1.0 s after speech started, or 15 s since wake (`max_duration`); if no speech within 5 s of wake → final with empty text and `end_reason:"no_speech"`. Cooldown 1 s after final before next wake. **No audio ever leaves the phone.**
 
 ### Voice owner update (2026-11-21) — supersedes above where conflicting
-- **Voice listening starts when the PC starts the video stream** (with the WebRTC peer) and stops when the stream stops. Mic permission still requested at session start. Snapshot `voice.state` = `unavailable` with reason "Starts with the video stream" while no stream.
+- **Voice listening starts when a paired dashboard opens its authenticated event socket** while the phone is foreground with microphone permission. A video offer is optional. Closing or revoking the viewer, backgrounding the phone, or ending the session stops listening. A reconnect re-arms voice without replaying past transcripts.
 - **Static voice commands (demo)** — The dashboard requires a fresh, silence-ended `voice.transcript.final` and agreement with `acoustic_text`. The dashboard normalizes and matches the whole text, allowing polite phrases before or after it.
   - "start recording" (also "begin recording", "record") → `recording.start`
   - "stop recording" (also "end recording") → `recording.stop` (no confirmation for voice)

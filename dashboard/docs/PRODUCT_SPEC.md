@@ -21,7 +21,7 @@ Build a **self-contained mobile field camera + local voice interface**, controll
 
 `Idle -> Permissions/Pairing -> Ready -> Live (video and passive wake listening) -> Recording (optional) -> Finalizing -> Ready with saved recording -> Transfer (optional)`.
 
-Phone may stream and listen with **recording off**. Starting/stopping recording must not reset remote WebRTC session or offline speech pipeline. Viewer disconnect leaves an active local recording running. Voice follows the video stream. Reconnecting restores transcript history for display and never executes old utterances. Local camera preview must remain visible even when no computer is connected.
+Phone may stream and listen with **recording off**. Starting/stopping recording must not reset remote WebRTC session or offline speech pipeline. Viewer disconnect leaves an active local recording running. Voice starts when the paired dashboard connects and the phone is foreground with microphone permission. It pauses when the viewer disconnects. Reconnecting restores transcript history for display and never executes old utterances. Local camera preview must remain visible even when no computer is connected.
 
 ## Target profiles (proposals, NOT measured guarantees)
 

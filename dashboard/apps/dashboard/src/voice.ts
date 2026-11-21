@@ -139,7 +139,7 @@ const ERR: Record<string, string> = {
   MODEL_MISSING: "The voice model is missing on the phone.",
   PERMISSION_MIC: "Microphone permission is not granted on the phone.",
   VOICE_INTERRUPTED: "Voice was interrupted — the microphone may be in use by another app.",
-  VOICE_PROCESSING_FAILED: "Voice processing stopped. Restart the video stream to retry.",
+  VOICE_PROCESSING_FAILED: "Voice processing stopped. Reconnect the paired dashboard to retry.",
   INVALID_WAKE_PHRASE: "The phone rejected the wake phrase.",
 };
 export function voiceStatus(v: { state?: string | null; error?: string | null; wake_phrase?: string | null } | null | undefined): VoiceStatus {
@@ -151,7 +151,7 @@ export function voiceStatus(v: { state?: string | null; error?: string | null; w
     case "muted": return { icon: "✕", text: "Muted", detail: "Wake detection and transcription are off.", sev: "neutral" };
     case "loading_model": return { icon: "↻", text: "Loading model…", detail: null, sev: "warn" };
     case "error": return { icon: "!", text: "Error", detail: (v.error && ERR[v.error]) || (v.error ? `Voice error (${v.error}).` : "Voice failed on the phone."), sev: "bad" };
-    case "unavailable": return { icon: "–", text: "Unavailable", detail: v.wake_phrase ? "Starts with the video stream." : "Set a wake name in the dashboard.", sev: "neutral" };
+    case "unavailable": return { icon: "–", text: "Unavailable", detail: v.wake_phrase ? "Starts when a paired dashboard connects." : "Set a wake name in the dashboard.", sev: "neutral" };
     default: return { icon: "–", text: "Unavailable", detail: null, sev: "neutral" };
   }
 }

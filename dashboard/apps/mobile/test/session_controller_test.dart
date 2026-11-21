@@ -16,6 +16,8 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'fakes.dart';
 
+class _RealHttpOverrides extends HttpOverrides {}
+
 class _NoDevice implements DeviceStatusSource {
   final events = StreamController<BatteryStatus>.broadcast();
   @override
@@ -26,12 +28,15 @@ class _NoDevice implements DeviceStatusSource {
 
 class _Perms implements PermissionPort {
   String camera = 'not_requested';
+  String microphone = 'not_requested';
   String grantOnRequest = 'granted';
   @override
   Future<String> status(Permission p) async =>
-      p == Permission.camera ? camera : 'not_requested';
+      p == Permission.camera ? camera : microphone;
   @override
-  Future<String> request(Permission p) async => camera = grantOnRequest;
+  Future<String> request(Permission p) async => p == Permission.camera
+      ? camera = grantOnRequest
+      : microphone = grantOnRequest;
   @override
   Future<void> openSettings() async {}
 }
@@ -142,6 +147,56 @@ void main() {
 
         await c.endSession();
         expect(cam.cameraRunning, isFalse);
+      });
+    },
+  );
+
+  testWidgets(
+    'paired dashboard starts voice without video and disconnect stops it',
+    (tester) async {
+      await tester.runAsync(() async {
+        await c.init();
+        await c.startSession();
+        expect(cam.voiceCalls, isEmpty);
+
+        c.pairing.createOneTimeCode();
+        final result = c.pairing.authorizeViewer(c.pairing.codeState.code!);
+        final origin = 'https://127.0.0.1:${c.server.port}';
+        final client = HttpOverrides.runWithHttpOverrides(
+          HttpClient.new,
+          _RealHttpOverrides(),
+        )..badCertificateCallback = (_, _, _) => true;
+        final socket = await WebSocket.connect(
+          'wss://127.0.0.1:${c.server.port}/api/v1/events',
+          headers: {'Origin': origin, 'Cookie': 'lvc_session=${result.token}'},
+          customClient: client,
+        );
+        final incoming = StreamIterator(socket);
+        await incoming.moveNext();
+        await pumpEventQueue();
+        expect(cam.voiceCalls, ['start']);
+        expect(cam.calls, isEmpty);
+        expect(c.capture.streamState, 'idle');
+
+        await c.capture.offer('v=0');
+        await c.capture.stopStream('browser_stop');
+        await pumpEventQueue();
+        expect(cam.voiceCalls, ['start']);
+
+        c.didChangeAppLifecycleState(AppLifecycleState.paused);
+        await pumpEventQueue();
+        expect(cam.voiceCalls, ['start', 'stop']);
+        c.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await pumpEventQueue();
+        expect(cam.voiceCalls, ['start', 'stop', 'start']);
+        expect(cam.cameraRunning, isFalse);
+
+        await socket.close();
+        await incoming.cancel();
+        await pumpEventQueue();
+        expect(cam.voiceCalls, ['start', 'stop', 'start', 'stop']);
+        client.close(force: true);
+        await c.endSession();
       });
     },
   );

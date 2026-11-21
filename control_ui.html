@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Arm Control</title>
+<style>
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --ink: #17202b; --ink2: #556274; --line: #d6dde5;
+  --accent: #2f5d8a; --arc: #cfe0f0; --needle: #17202b; --target: #d07a00;
+  --stop: #c62828; --stop-ink: #ffffff; --ok: #2e7d4f; --warn: #a86b00; --err: #c62828;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #11161c; --panel: #19212b; --ink: #e3e9f0; --ink2: #9aa8b8; --line: #2c3744;
+    --accent: #7fb0e0; --arc: #26405a; --needle: #e3e9f0; --target: #f0a640;
+    --ok: #6cc596; --warn: #e2b25c; --err: #f08a80; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 14px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { font-size: 17px; margin: 0; font-weight: 600; }
+.pill { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; padding: 3px 10px;
+  border-radius: 999px; border: 1.5px solid currentColor; }
+.pill.idle { color: var(--ink2); } .pill.moving { color: var(--accent); } .pill.holding { color: var(--ok); }
+.pill.offline { color: var(--err); }
+.meta { color: var(--ink2); font: 12px var(--mono); }
+main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+h2 { font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: .06em; color: var(--ink2); font-weight: 600; }
+#stop { width: 100%; padding: 18px; font: 700 22px var(--sans); letter-spacing: .08em; color: var(--stop-ink);
+  background: var(--stop); border: 0; border-radius: 8px; cursor: pointer; }
+#stop:active { transform: translateY(1px); }
+#stop:focus-visible, .view:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.hint { color: var(--ink2); font-size: 12px; }
+.views { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.view { display: grid; gap: 4px; text-align: left; padding: 0 0 8px; background: var(--bg); color: var(--ink);
+  border: 1.5px solid var(--line); border-radius: 6px; cursor: pointer; overflow: hidden; font: inherit; }
+.view img, .view .noimg { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; background: var(--line); }
+.view b, .view span { padding: 0 8px; }
+.view span { color: var(--ink2); font-size: 12px; }
+.view.near { border-color: var(--ok); }
+.view.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.view:disabled { cursor: not-allowed; opacity: .55; }
+.progress { height: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.progress div { height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+#motion { font: 13px var(--mono); }
+.dials { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 520px) { .dials { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.dial { display: grid; justify-items: center; gap: 2px; }
+.dial svg { width: 100%; max-width: 120px; height: auto; }
+.dial .lbl { font: 600 12px var(--mono); }
+.dial .val { font: 12px var(--mono); color: var(--ink2); font-variant-numeric: tabular-nums; }
+svg .rim { fill: none; stroke: var(--line); stroke-width: 6; }
+svg .arc { fill: none; stroke: var(--arc); stroke-width: 6; }
+svg .needle { stroke: var(--needle); stroke-width: 3; stroke-linecap: round; }
+svg .hub { fill: var(--needle); }
+svg .tgt { fill: var(--target); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink2); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }
+#log { list-style: none; margin: 0; padding: 0; font: 12px var(--mono); max-height: 260px; overflow-y: auto; display: grid; gap: 2px; }
+#log li { display: flex; gap: 10px; }
+#log time { color: var(--ink2); }
+.s-reached { color: var(--ok); } .s-stopped, .s-timeout, .s-stalled { color: var(--warn); } .s-error { color: var(--err); }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 10px 16px; border-radius: 6px; font-size: 13px; max-width: 90vw; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera Arm · Control</h1>
+  <span id="state" class="pill offline">offline</span>
+  <span class="meta" id="near">nearest: –</span>
+  <span class="meta" id="bus">bus: –</span>
+  <span class="meta" id="conn">events: connecting</span>
+</header>
+
+<main>
+  <section>
+    <button id="stop" title="Stop (Esc or Space)">STOP</button>
+    <div class="hint">Esc or Space stops at any time. Click a view to move there; only one move at a time.</div>
+    <h2>Views</h2>
+    <div class="views" id="views"></div>
+  </section>
+
+  <section>
+    <h2>Current move</h2>
+    <div id="motion">–</div>
+    <div class="progress"><div id="bar"></div></div>
+    <h2>Joints (encoder steps, 0–4095)</h2>
+    <div class="dials" id="dials"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--arc)"></i>calibrated range</span>
+      <span><i class="sw" style="background:var(--needle)"></i>present position</span>
+      <span><i class="sw" style="background:var(--target)"></i>target of the current move</span>
+    </div>
+    <h2>Events</h2>
+    <ul id="log"></ul>
+  </section>
+</main>
+<div id="toast" hidden></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const FULL = 4096;
+let ui = null, views = [], dials = {};
+
+function polar(pos, r) {
+  const a = (pos / FULL) * 2 * Math.PI;
+  return [50 + r * Math.sin(a), 50 - r * Math.cos(a)];
+}
+function arcPath(min, max, r) {
+  const size = ((max - min) % FULL + FULL) % FULL;
+  if (size < 2) return "";
+  const [x1, y1] = polar(min, r), [x2, y2] = polar(min + size, r);
+  return `M${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${size > FULL / 2 ? 1 : 0} 1 ${x2.toFixed(2)},${y2.toFixed(2)}`;
+}
+function makeDial(id, label) {
+  const el = document.createElement("div");
+  el.className = "dial";
+  el.innerHTML = `<svg viewBox="0 0 100 100" aria-label="motor ${id}">
+      <circle class="rim" cx="50" cy="50" r="40"/><path class="arc" d=""/>
+      <line class="needle" x1="50" y1="50" x2="50" y2="14"/><circle class="hub" cx="50" cy="50" r="4"/>
+      <circle class="tgt" cx="50" cy="10" r="5" visibility="hidden"/></svg>
+    <div class="lbl">${label}</div><div class="val">–</div>`;
+  $("dials").appendChild(el);
+  return { el, arc: el.querySelector(".arc"), needle: el.querySelector(".needle"),
+           tgt: el.querySelector(".tgt"), val: el.querySelector(".val"), range: null };
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 3500);
+}
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {},
+                                body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`${r.status} ${data.error || ""}: ${data.detail || ""}`);
+  return data;
+}
+async function go(name) {
+  try { await api("POST", "/motions", { view: name }); }
+  catch (e) { toast(e.message); }
+}
+async function stop() {
+  try { await api("POST", "/stop"); toast("Stopped: holding position"); }
+  catch (e) { toast("Stop failed: " + e.message); }
+}
+
+function renderViews() {
+  $("views").innerHTML = "";
+  for (const v of views) {
+    const b = document.createElement("button");
+    b.className = "view"; b.dataset.name = v.name;
+    b.title = v.via.length ? `via ${v.via.join(", ")}` : v.description;
+    const img = v.snapshot ? `<img src="/snapshots/${encodeURIComponent(v.name)}.jpg" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'noimg'}))">` : `<div class="noimg"></div>`;
+    b.innerHTML = `${img}<b>${v.name}</b><span>${v.description || ""}</span>`;
+    b.onclick = () => go(v.name);
+    $("views").appendChild(b);
+  }
+}
+
+function render() {
+  if (!ui) return;
+  const st = $("state"); st.textContent = ui.state; st.className = "pill " + ui.state;
+  const n = ui.nearest_view;
+  $("near").textContent = n ? `nearest: ${n.view} (${n.distance} steps${n.at ? ", at view" : ""})` : "nearest: –";
+  $("bus").textContent = "bus: " + (ui.bus || "–");
+  const m = ui.motion;
+  $("motion").textContent = m ? `${m.motion_id}  ${m.path.join(" → ")}  ${m.state}  ${m.duration_s}s${m.error ? "  " + m.error : ""}` : "no move yet";
+  $("bar").style.width = m ? `${Math.round(m.progress * 100)}%` : "0";
+  const moving = ui.state === "moving";
+  for (const b of document.querySelectorAll(".view")) {
+    b.disabled = moving;
+    b.classList.toggle("near", !!(n && n.at && n.view === b.dataset.name));
+    b.classList.toggle("target", !!(moving && m && m.view === b.dataset.name));
+  }
+  const joints = ui.joints || {};
+  for (const id of Object.keys(joints).sort((a, b) => a - b)) {
+    if (!dials[id]) dials[id] = makeDial(id, String(id) === String(ui.gripper) ? `M${id} gripper` : `M${id}`);
+    const d = dials[id], pos = joints[id];
+    const rg = (ui.ranges || {})[id];
+    const key = rg ? rg.join(",") : "";
+    if (d.range !== key) { d.range = key; d.arc.setAttribute("d", rg ? arcPath(rg[0], rg[1], 40) : ""); }
+    const [x, y] = polar(pos, 34);
+    d.needle.setAttribute("x2", x.toFixed(2)); d.needle.setAttribute("y2", y.toFixed(2));
+    const t = ui.target && ui.target[id];
+    if (t !== undefined && t !== null && m && (moving || m.state !== "reached")) {
+      const [tx, ty] = polar(t, 40);
+      d.tgt.setAttribute("cx", tx.toFixed(2)); d.tgt.setAttribute("cy", ty.toFixed(2));
+      d.tgt.setAttribute("visibility", "visible");
+      d.val.textContent = `${pos} → ${t}`;
+    } else {
+      d.tgt.setAttribute("visibility", "hidden");
+      d.val.textContent = String(pos);
+    }
+  }
+}
+
+function logEvent(ev) {
+  if (ev.kind !== "motion" || ev.state === "moving") return;
+  const li = document.createElement("li");
+  const t = new Date(ev.t * 1000).toLocaleTimeString();
+  li.innerHTML = `<time>${t}</time><span class="s-${ev.state}"></span>`;
+  li.lastChild.textContent = `${ev.motion_id} ${ev.view} ${ev.state}${ev.error ? " · " + ev.error : ""}`;
+  $("log").prepend(li);
+  while ($("log").children.length > 50) $("log").lastChild.remove();
+}
+function logStart(ev) {
+  if (ev.kind !== "motion" || ev.state !== "moving" || ev.progress !== 0) return;
+  if (logStart.last === ev.motion_id) return;
+  logStart.last = ev.motion_id;
+  const li = document.createElement("li");
+  li.innerHTML = `<time>${new Date(ev.t * 1000).toLocaleTimeString()}</time><span></span>`;
+  li.lastChild.textContent = `${ev.motion_id} ${ev.view} started`;
+  $("log").prepend(li);
+}
+
+async function poll() {
+  try {
+    ui = await api("GET", "/ui/state");
+    render();
+  } catch (e) {
+    const st = $("state"); st.textContent = "offline"; st.className = "pill offline";
+  }
+  setTimeout(poll, 200);
+}
+function connectEvents() {
+  const es = new EventSource("/events");
+  es.onopen = () => ($("conn").textContent = "events: live");
+  es.onerror = () => ($("conn").textContent = "events: reconnecting");
+  es.onmessage = (msg) => { const ev = JSON.parse(msg.data); logStart(ev); logEvent(ev); };
+}
+
+$("stop").onclick = stop;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" || (e.key === " " && e.target.tagName !== "INPUT")) { e.preventDefault(); stop(); }
+});
+
+(async () => {
+  try { views = (await api("GET", "/views")).views; renderViews(); }
+  catch (e) { toast("Control service not reachable: " + e.message); }
+  connectEvents();
+  poll();
+})();
+</script>
+</body>
+</html>

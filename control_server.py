@@ -172,6 +172,13 @@ class ControlServer:
             return await self.still(writer)
         if key == ("GET", ("events",)):
             return await self.events(writer)
+        if method == "GET" and not parts:
+            html = (ROOT / "control_ui.html").read_bytes()
+            return await self.send(writer, 200, html, "text/html; charset=utf-8")
+        if key == ("GET", ("ui",)) and parts == ["ui", "state"]:
+            return await self.send_json(writer, 200, self.mgr.ui_state())
+        if key == ("GET", ("snapshots",)) and len(parts) == 2:
+            return await self.snapshot(writer, parts[1])
         if parts and parts[0] in ("health", "status", "views", "motions", "stop", "still.jpg", "events"):
             raise HttpError(405, "method_not_allowed", f"{method} not allowed on {path}")
         raise HttpError(404, "not_found", f"no route {path}")
@@ -208,6 +215,19 @@ class ControlServer:
             "X-Nearest-View": (near or {}).get("view", ""),
             "X-Taken-At": f"{time.time():.3f}",
         })
+
+    async def snapshot(self, writer, name: str):
+        """Snapshot of a saved view (views.json "snapshot"), only for known views."""
+        view = name[:-4] if name.endswith(".jpg") else name
+        rec = self.mgr.views().get(view)
+        snap = rec and rec.get("snapshot")
+        if not snap:
+            raise HttpError(404, "no_snapshot", f"no snapshot for view {view!r}")
+        base = self.mgr.views_path.resolve().parent
+        path = (base / snap).resolve()
+        if base not in path.parents or not path.is_file():
+            raise HttpError(404, "no_snapshot", f"snapshot for {view!r} not found")
+        await self.send(writer, 200, path.read_bytes(), "image/jpeg")
 
     async def events(self, writer):
         q = self.mgr.subscribe()

@@ -55,6 +55,7 @@ class Motion:
     ended: float | None = None
     error: str | None = None
     max_error: float | None = None
+    target: dict = field(default_factory=dict)   # final view's joints, for the local UI only
 
     def public(self) -> dict:
         return {
@@ -167,6 +168,18 @@ class MotionManager:
             "bus": getattr(self.arm, "bus_serial", None),
         }
 
+    def ui_state(self) -> dict:
+        """Status plus calibrated ranges and the current target, for the local control UI."""
+        st = self.status()
+        try:
+            ranges = self.arm.ranges()
+        except RuntimeError:
+            ranges = {}
+        st["ranges"] = {m: list(r) for m, r in ranges.items()}
+        st["target"] = self.current.target if self.current else None
+        st["gripper"] = gripper_id(st["joints"]) if st["joints"] else None
+        return st
+
     def get_motion(self, motion_id: str) -> dict:
         m = self.history.get(motion_id)
         if m is None:
@@ -225,7 +238,8 @@ class MotionManager:
         except RuntimeError as e:
             raise ManagerError(409, "not_ready", str(e))
 
-        m = Motion(motion_id=f"m-{next(self._ids)}", view=view, path=path)
+        m = Motion(motion_id=f"m-{next(self._ids)}", view=view, path=path,
+                   target=dict(views[view]["joints"]))
         self.current = m
         self.history[m.motion_id] = m
         while len(self.history) > MAX_HISTORY:

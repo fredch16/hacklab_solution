@@ -7,6 +7,7 @@
 | `control_server.py` | HTTP server (REST + SSE) on `127.0.0.1:8100`, camera source for stills |
 | `motion_manager.py` | one move at a time as a background task: busy, stop, via, watchdog, timeout, events |
 | `ctl.py` | command-line client |
+| `control_ui.html` | local control page at http://127.0.0.1:8100/: views with snapshots, STOP (also Esc/Space), joint dials, events |
 | `motion.py` | unchanged behaviour; `move_to` got an `on_tick` callback for progress and the watchdog |
 | `go.py` | refuses to run while the control service is up (two writers must never drive the arm) |
 | `tests/test_control_sim.py` | everything above on the simulated arm, no hardware |
@@ -21,6 +22,17 @@ python3 control_server.py --bus 5B79016329 --gateway http://127.0.0.1:8400   # +
 ```
 
 Ctrl-C stops the service; a move in flight is cancelled and the arm holds.
+
+## Control page
+
+Open http://127.0.0.1:8100/ while the service runs (also with `--sim`):
+
+- **STOP** button, or Esc / Space anywhere on the page.
+- **Views** with their snapshots; click one to move there. Disabled while a move runs. Green border = the arm is at that view, blue = target of the running move.
+- **Joint dials** per motor, in encoder steps 0–4095: shaded arc = calibrated range from Station, needle = present position, orange dot = target of the current move.
+- **Current move** with progress bar, and the **event log**.
+
+It polls `GET /ui/state` (status + calibrated ranges + target joints) five times a second and listens to `GET /events`. It is a local test page, not the dashboard: it shows joint targets, which the MCP server never passes on to Claude.
 
 ## CLI
 
@@ -55,6 +67,7 @@ curl -N localhost:8100/events
 | `GET /motions/{id}` | `{motion_id, view, path, state, progress, duration_s, error}`; last 50 motions |
 | `POST /stop` | always `200` with the status; cancels a move or holds the current position |
 | `GET /still.jpg` | JPEG with headers `X-Joints`, `X-Nearest-View`, `X-Taken-At` · `409 moving` · `503 no_camera / camera_error` |
+| `GET /` · `GET /ui/state` · `GET /snapshots/{view}.jpg` | control page, its state (status + `ranges` + `target` + `gripper`), view snapshots (only files named in views.json, inside the views folder) |
 | `GET /events` | SSE. First a `status` event, then one `motion` event per state change and progress update (max 5/s), `: keep-alive` every 15 s |
 
 Motion states: `moving` → `reached` · `stalled` (a joint ended more than 40 steps short) · `timeout` (a leg took over 15 s; the arm holds) · `stopped` · `error` (watchdog: joint data older than 0.5 s; nothing more is written, the servos keep the last waypoint).

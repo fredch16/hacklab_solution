@@ -218,6 +218,23 @@ async def http_tests():
             assert got == want, (method, path, got, want)
         print("ok  invalid requests rejected:", [b[3] for b in bad])
 
+        # local control UI
+        _, headers, html = await call(ctl.request, base + "/")
+        assert headers["Content-Type"].startswith("text/html") and b"Camera Arm Control" in html
+        st = await call(ctl.get_json, base, "/ui/state")
+        assert st["ranges"]["1"] == [700, 3400] and st["target"]["1"] == 1400 and st["gripper"] == 6, st
+        (VIEWS.parent / "views").mkdir(exist_ok=True)
+        (VIEWS.parent / "views" / "left.jpg").write_bytes(b"\xff\xd8snap")
+        data = json.loads(VIEWS.read_text())
+        data["views"]["left"]["snapshot"] = "views/left.jpg"
+        data["views"]["home"]["snapshot"] = "../../etc/passwd"
+        VIEWS.write_text(json.dumps(data))
+        _, _, snap = await call(ctl.request, base + "/snapshots/left.jpg")
+        assert snap == b"\xff\xd8snap"
+        for p in ("/snapshots/home.jpg", "/snapshots/nope.jpg", "/snapshots/..%2F..%2Fetc%2Fpasswd"):
+            assert await call(status_of, ctl.request, base + p) == 404, p
+        print("ok  GET / (UI), /ui/state with ranges and target, snapshots without path escapes")
+
         # go --wait through the CLI, then stop via the CLI
         rc = await call(ctl.main, ["--url", base, "go", "top", "--wait"])
         assert rc == 0, rc

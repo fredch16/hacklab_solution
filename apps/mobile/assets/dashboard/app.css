@@ -67,3 +67,20 @@ input#code{min-height:52px;font:600 26px ui-monospace,Menlo,Consolas,monospace;l
 .wake-form{margin-top:12px}.wake-form .controls{margin-top:4px}
 .banner.ok{border-color:var(--teal);color:var(--teal)}
 .partial{margin:8px 0 0;font-style:italic;color:var(--t2)}
+/* voice popup */
+.vpop{position:absolute;left:50%;bottom:6%;transform:translateX(-50%);width:min(92%,460px);z-index:2;display:flex;gap:14px;align-items:center;padding:14px 16px;background:rgba(16,24,36,.94);border:1px solid var(--ink700);border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.45);animation:vpop-in 160ms ease-out}
+.vpop[hidden]{display:none}
+.vpop .pbody{min-width:0;flex:1}
+.ptitle{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--teal);font-weight:600}
+.psub{margin:2px 0 0;color:var(--t2);font-size:12px}.psub[hidden],.pres[hidden]{display:none}
+.ptext{margin:6px 0 0;font-size:19px;line-height:1.3;overflow-wrap:anywhere;max-height:5.2em;overflow:hidden}
+.ptext .tail{color:var(--t2);font-style:italic}
+.pres{margin:8px 0 0;font-weight:600;color:var(--t2)}.pres.rec{color:var(--rec)}.pres.bad{color:var(--danger)}
+.pclose{position:absolute;top:2px;right:4px;width:44px;height:44px;background:none;border:0;color:var(--t2);font-size:22px;cursor:pointer;border-radius:11px}
+.orb{flex:none}.orb .core{fill:var(--ink800);stroke:var(--teal);stroke-width:1.5}.orb .mic{fill:var(--teal)}.orb .mic-line{fill:none;stroke:var(--teal);stroke-width:2;stroke-linecap:round}
+.orb .ring{fill:none;stroke:var(--teal);stroke-width:1.5;opacity:0;transform-box:fill-box;transform-origin:center}
+.vpop.anim .ring{animation:vring 1.8s ease-out infinite}.vpop.anim .r2{animation-delay:.6s}.vpop.anim .r3{animation-delay:1.2s}
+@keyframes vring{0%{transform:scale(1);opacity:.7}100%{transform:scale(2);opacity:0}}
+@keyframes vpop-in{from{opacity:0;transform:translateX(-50%) scale(.96)}to{opacity:1;transform:translateX(-50%) scale(1)}}
+@media(prefers-reduced-motion:reduce){.vpop{animation:vpop-fade 160ms ease-out}.vpop.anim .ring{animation:none;opacity:.25}@keyframes vpop-fade{from{opacity:0}to{opacity:1}}}
+@media(max-width:640px){.vpop{width:96%;bottom:4%;padding:10px 12px;gap:10px}.orb{width:44px;height:44px}.ptext{font-size:16px}}

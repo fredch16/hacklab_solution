@@ -33,7 +33,9 @@ abstract class CameraPlatform {
 
   /// Offline voice (wake phrase + command transcription, ADR 0004).
   Future<void> voiceStart();
-  Future<void> voiceStop();
+
+  /// Stops listening; [clear] also drops this session's transcripts.
+  Future<void> voiceStop({bool clear = false});
 
   /// Null on success, else INVALID_WAKE_PHRASE.
   Future<String?> voiceSetPhrase(String phrase);
@@ -147,7 +149,8 @@ class ChannelCameraPlatform implements CameraPlatform {
   @override
   Future<void> voiceStart() => _call<void>('voiceStart');
   @override
-  Future<void> voiceStop() => _call<void>('voiceStop');
+  Future<void> voiceStop({bool clear = false}) =>
+      _call<void>('voiceStop', {'clear': clear});
   @override
   Future<String?> voiceSetPhrase(String phrase) =>
       _record('voiceSetPhrase', {'phrase': phrase});

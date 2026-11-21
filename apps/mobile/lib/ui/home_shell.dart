@@ -24,7 +24,7 @@ class _HomeShellState extends State<HomeShell> {
     final c = widget.controller;
     final pages = <Widget>[
       CapturePage(controller: c),
-      const VoicePage(),
+      VoicePage(controller: c),
       FilesPage(controller: c),
       LinkPage(controller: c),
     ];

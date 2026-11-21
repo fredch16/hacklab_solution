@@ -1,5 +1,5 @@
 import { qrCanvas } from "./qr.js";
-import { applyVoiceEvent, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakePhrase, voiceStatus, type LiveVoice } from "./voice.js";
+import { popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakePhrase, voiceStatus, type LiveVoice } from "./voice.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
@@ -103,6 +103,7 @@ function updateCountdown() {
   const el = document.getElementById("countdown");
   if (el && qr) el.textContent = `Expires in ${Math.max(0, Math.round((qr.expires - Date.now()) / 1000))} s`;
 }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && popup && !dash?.dlg.open) setPopup(null); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) void pollQr(); });
 
 async function submitPair(code: string) {
@@ -156,6 +157,7 @@ initVideo(sendWs, () => updateDash());
 function videoLost() {
   if (vs.phase === "connecting" || vs.phase === "live" || vs.phase === "stalled") stopVideo("Video stopped \u2014 connection to the phone was lost.", false);
   phoneStats = null;
+  setPopup(null);
 }
 
 function closeWs() {
@@ -173,7 +175,7 @@ function connect() {
     try {
       const env = JSON.parse(String(m.data)) as Envelope & { request_id?: string };
       if (env.type === "camera.stats") { phoneStats = env.payload as unknown as PhoneStats; phoneStatsAt = Date.now(); updateDash(); return; }
-      if (env.type.startsWith("voice.")) { live = applyVoiceEvent(live, env.type, env.payload); updateDash(); return; }
+      if (env.type.startsWith("voice.")) { live = applyVoiceEvent(live, env.type, env.payload); setPopup(popupReduce(popup, env.type, env.payload)); updateDash(); return; }
       if (env.type === "command.result") { onCommandResult(env); return; }
       if (env.type !== "session.snapshot") { handleSignal(env.type, env.request_id, env.payload); return; }
       const next = applyEnvelope(state, env, Date.now());
@@ -292,7 +294,7 @@ function perm(name: string, v: string | null) {
   return [name, h("span", `pill ${e[2]}`, icon(e[0]), e[1])] as [string, Node];
 }
 
-interface Dash { page: HTMLElement; hdr: HTMLElement; stale: HTMLElement; status: HTMLElement; overlay: HTMLElement; controls: HTMLElement; tags: HTMLElement; metrics: HTMLElement; phone: HTMLElement; recBox: HTMLElement; vStatus: HTMLElement; vMute: HTMLElement; vMsg: HTMLElement; vLive: HTMLElement; vList: HTMLElement; vAnnounce: HTMLElement; wakeInput: HTMLInputElement; saveBtn: HTMLButtonElement; otherBox: HTMLElement; recs: HTMLElement; dlg: HTMLDialogElement; grid: HTMLElement }
+interface Dash { page: HTMLElement; hdr: HTMLElement; stale: HTMLElement; status: HTMLElement; overlay: HTMLElement; controls: HTMLElement; tags: HTMLElement; metrics: HTMLElement; phone: HTMLElement; pop: HTMLElement; popTitle: HTMLElement; popSub: HTMLElement; popText: HTMLElement; popRes: HTMLElement; popAnnounce: HTMLElement; recBox: HTMLElement; vStatus: HTMLElement; vMute: HTMLElement; vMsg: HTMLElement; vLive: HTMLElement; vList: HTMLElement; vAnnounce: HTMLElement; wakeInput: HTMLInputElement; saveBtn: HTMLButtonElement; otherBox: HTMLElement; recs: HTMLElement; dlg: HTMLDialogElement; grid: HTMLElement }
 let dash: Dash | null = null;
 let phraseDirty = false, phraseNote: string | null = null, lastPhrase: string | null | undefined = undefined, announced = "";
 
@@ -306,9 +308,57 @@ function patch(el: HTMLElement, nodes: Node[]) {
   }
 }
 
+// ---- voice popup ----
+let popup: Popup | null = null, popupTimer: number | undefined, popupHold = false;
+function setPopup(p: Popup | null) {
+  const changed = p !== popup;
+  popup = p;
+  if (changed) { clearTimeout(popupTimer); if (p && p.phase === "done" && !popupHold) popupTimer = window.setTimeout(() => setPopup(null), 4000); }
+  renderPopup();
+}
+const svgEl = (tag: string, attrs: Record<string, string>, cls?: string) => {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (cls) e.setAttribute("class", cls);
+  return e;
+};
+function buildOrb() {
+  const svg = svgEl("svg", { viewBox: "0 0 64 64", width: "64", height: "64" }, "orb");
+  svg.setAttribute("aria-hidden", "true");
+  for (const n of [1, 2, 3]) svg.append(svgEl("circle", { cx: "32", cy: "32", r: "16" }, `ring r${n}`));
+  svg.append(svgEl("circle", { cx: "32", cy: "32", r: "16" }, "core"));
+  svg.append(svgEl("rect", { x: "28", y: "22", width: "8", height: "14", rx: "4" }, "mic"));
+  svg.append(svgEl("path", { d: "M25 32a7 7 0 0 0 14 0M32 39v4" }, "mic-line"));
+  return svg;
+}
+function renderPopup() {
+  const d = dash; if (!d) return;
+  d.pop.hidden = !popup;
+  if (!popup) return;
+  const v = popupView(popup);
+  d.pop.classList.toggle("anim", v.animating);
+  d.popTitle.textContent = v.title;
+  d.popSub.textContent = v.subtitle ?? ""; d.popSub.hidden = !v.subtitle;
+  d.popText.replaceChildren(v.stable ? document.createTextNode(v.stable) : "", ...(v.tail ? [h("span", "tail", v.tail)] : []));
+  if (!v.stable && !v.tail && v.animating) d.popText.replaceChildren(h("span", "tail", "Say your command\u2026"));
+  d.popRes.hidden = !v.result;
+  d.popRes.className = `pres ${v.result?.kind ?? ""}`;
+  d.popRes.textContent = v.result?.text ?? "";
+  if (d.popAnnounce.textContent !== v.announce) d.popAnnounce.textContent = v.announce;
+}
+
 function buildDash(): Dash {
   const hdr = h("header", "top"), stale = h("div"), status = h("p", "cam-status"), overlay = h("div", "vp-text");
-  const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay));
+  const popTitle = h("p", "ptitle"), popSub = h("p", "psub"), popText = h("p", "ptext"), popRes = h("p", "pres"), popAnnounce = h("div", "sr-only");
+  popAnnounce.setAttribute("aria-live", "polite"); popAnnounce.setAttribute("role", "status");
+  const x = h("button", "pclose", "\u00D7"); x.type = "button"; x.setAttribute("aria-label", "Dismiss voice popup"); x.onclick = () => setPopup(null);
+  const pop = h("div", "vpop", x, buildOrb(), h("div", "pbody", popTitle, popSub, popText, popRes));
+  pop.hidden = true; pop.setAttribute("role", "group"); pop.setAttribute("aria-label", "Voice command");
+  const hold = () => { popupHold = true; clearTimeout(popupTimer); };
+  const release = () => { popupHold = false; if (popup?.phase === "done") { clearTimeout(popupTimer); popupTimer = window.setTimeout(() => setPopup(null), 4000); } };
+  pop.addEventListener("mouseenter", hold); pop.addEventListener("focusin", hold);
+  pop.addEventListener("mouseleave", release); pop.addEventListener("focusout", release);
+  const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay), pop, popAnnounce);
   const controls = h("div", "controls"), tags = h("div", "tags"), metrics = h("div"), phone = h("div");
   const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
   const recs = h("div", "contents");
@@ -343,7 +393,7 @@ function buildDash(): Dash {
   stop.onclick = () => { dlg.close(); sendCommand("recording.stop", {}); };
   clearInterval(dashTimer);
   dashTimer = window.setInterval(() => { if (state.snapshot?.recording.state === "recording") updateDash(); }, 1000);
-  return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, recBox, vStatus, vMute, vMsg, vLive, vList, vAnnounce, wakeInput, saveBtn, otherBox, recs, dlg, grid };
+  return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, pop, popTitle, popSub, popText, popRes, popAnnounce, recBox, vStatus, vMute, vMsg, vLive, vList, vAnnounce, wakeInput, saveBtn, otherBox, recs, dlg, grid };
 }
 
 const BUSY_REC = ["starting", "recording", "stopping", "finalizing"];
@@ -397,7 +447,8 @@ function updateVoice(d: Dash, snap: Snapshot, offline: boolean) {
   patch(d.vLive, nodes);
   const list = live.transcripts;
   patch(d.vList, list.length ? list.map((t) => h("li", null, h("strong", null, t.text || "(no speech)"),
-    h("span", "muted tnum", `${formatLocal(t.started_utc)} \u00B7 ${endReasonLabel(t.end_reason)}`))) : [h("li", "muted", "No transcripts yet.")]);
+    h("span", "muted tnum", `${formatLocal(t.started_utc)} \u00B7 ${endReasonLabel(t.end_reason)}`),
+    ...(commandBadge(t, live.commands[t.id]) ? [h("span", "pill neutral cmd", commandBadge(t, live.commands[t.id]) as string)] : []))) : [h("li", "muted", "No transcripts yet.")]);
   const top = list[0];
   if (top && top.id !== announced) { if (announced !== "") d.vAnnounce.textContent = top.text || "No speech heard"; announced = top.id; }
 }

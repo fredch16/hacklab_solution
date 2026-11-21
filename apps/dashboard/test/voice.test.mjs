@@ -61,3 +61,47 @@ test("wake phrase validation", () => {
   assert.equal(V.validateWakePhrase("hey r2d2").ok, false);
   assert.equal(V.validateWakePhrase("don't stop").ok, true);
 });
+
+test("voice.command badges, from event and from snapshot", () => {
+  let l = V.applyVoiceEvent(V.initialLive(), "voice.transcript.final", final("u1", "start recording"));
+  l = V.applyVoiceEvent(l, "voice.command", { utterance_id: "u1", command: "recording.start", ok: true, error: null });
+  assert.equal(V.commandBadge(l.transcripts[0], l.commands.u1), "▶ Started recording");
+  l = V.applyVoiceEvent(l, "voice.command", { utterance_id: "u1", command: "recording.start", ok: false, error: "LOW_STORAGE" });
+  assert.match(V.commandBadge(l.transcripts[0], l.commands.u1), /^✕ .*storage/i);
+  assert.equal(V.commandBadge({ id: "x", text: "", command: "recording.stop" }), "■ Stopped recording");
+  assert.equal(V.commandBadge({ id: "x", text: "", command: null }), null);
+  assert.equal(V.commandBadge({ id: "x", text: "" }, { command: "none", ok: true, error: null }), null);
+  const m = V.mergeSnapshotVoice(l, { state: "listening", transcripts: [] });
+  assert.ok(m.commands.u1);
+});
+test("unavailable reason when waiting for the stream", () => {
+  const s = V.voiceStatus({ state: "unavailable", wake_phrase: "hey robot" });
+  assert.equal(s.detail, "Starts with the video stream."); assert.equal(s.sev, "neutral");
+});
+
+test("popup: wake -> partial -> final -> command, replacement, no_speech", () => {
+  let p = V.popupReduce(null, "voice.wake_detected", { utterance_id: "u1", phrase: "hey robot" });
+  assert.equal(p.phase, "listening");
+  assert.deepEqual([V.popupView(p).title, V.popupView(p).subtitle, V.popupView(p).animating], ["Listening…", "Wake phrase “hey robot”", true]);
+  p = V.popupReduce(p, "voice.transcript.partial", { utterance_id: "u1", text: "start the rec" });
+  assert.deepEqual([V.popupView(p).stable, V.popupView(p).tail], ["start the ", "rec"]);
+  assert.equal(V.popupReduce(p, "voice.transcript.partial", { utterance_id: "other", text: "x" }), p);
+  p = V.popupReduce(p, "voice.transcript.final", { utterance_id: "u1", text: "start recording", end_reason: "silence" });
+  assert.equal(V.popupView(p).animating, false);
+  assert.equal(V.popupView(p).stable, "start recording");
+  assert.equal(V.popupView(p).result, null); // command result not here yet
+  assert.equal(V.popupReduce(p, "voice.transcript.partial", { utterance_id: "u1", text: "late" }).text, "start recording");
+  const ok = V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.start", ok: true });
+  assert.deepEqual(V.popupView(ok).result, { kind: "rec", text: "▶ Starting recording" });
+  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.stop", ok: true })).result.text, "■ Stopping recording");
+  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "none", ok: true })).result.text, "No matching command");
+  const bad = V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.start", ok: false, error: "LOW_STORAGE" }));
+  assert.equal(bad.result.kind, "bad"); assert.match(bad.result.text, /storage/i);
+  // a new wake replaces immediately
+  const n = V.popupReduce(ok, "voice.wake_detected", { utterance_id: "u2", phrase: "hey robot" });
+  assert.equal(n.utteranceId, "u2"); assert.equal(n.command, null); assert.equal(n.text, "");
+  // no speech
+  const ns = V.popupReduce(n, "voice.transcript.final", { utterance_id: "u2", text: "", end_reason: "no_speech" });
+  assert.equal(V.popupView(ns).result.text, "Didn’t hear a command");
+  assert.equal(V.popupReduce(null, "voice.transcript.final", { utterance_id: "u9", text: "x" }), null);
+});

@@ -120,7 +120,8 @@ class FakeCameraPlatform implements CameraPlatform {
   @override
   Future<void> voiceStart() async => voiceCalls.add('start');
   @override
-  Future<void> voiceStop() async => voiceCalls.add('stop');
+  Future<void> voiceStop({bool clear = false}) async =>
+      voiceCalls.add(clear ? 'stop+clear' : 'stop');
   @override
   Future<String?> voiceSetPhrase(String phrase) async {
     voiceCalls.add('phrase:$phrase');

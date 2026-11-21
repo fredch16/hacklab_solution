@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import '../platform/device_status.dart';
 import '../app/session_controller.dart';
 import 'record_card.dart';
+import 'voice_page.dart';
 import 'session_button.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -15,7 +16,11 @@ class CapturePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([controller, controller.recording]),
+    listenable: Listenable.merge([
+      controller,
+      controller.recording,
+      controller.voice,
+    ]),
     builder: (context, _) {
       final c = controller;
       final d = c.device;
@@ -67,6 +72,7 @@ class CapturePage extends StatelessWidget {
               ],
             ),
           ),
+          VoiceLine(controller: c),
           RecordCard(controller: c),
           AppCard(
             title: 'Device health',
@@ -302,6 +308,45 @@ class _CameraViewportState extends State<CameraViewport> {
                 ),
               ),
         ),
+      ),
+    );
+  }
+}
+
+/// Compact voice status + latest transcript for the Capture tab.
+class VoiceLine extends StatelessWidget {
+  const VoiceLine({super.key, required this.controller});
+  final SessionController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final v = controller.voice;
+    final last = v.transcripts.isEmpty
+        ? null
+        : v.transcripts.first['text'] as String;
+    return AppCard(
+      title: 'Voice',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            voiceStateLabel(v.state, v.voice['error'] as String?),
+            style: const TextStyle(fontSize: 14, color: Tok.textSecondary),
+          ),
+          if (v.partial != null && v.partial!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                v.partial!,
+                style: const TextStyle(fontSize: 16, color: Tok.blue),
+              ),
+            )
+          else if (last != null && last.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('“$last”', style: const TextStyle(fontSize: 16)),
+            ),
+        ],
       ),
     );
   }

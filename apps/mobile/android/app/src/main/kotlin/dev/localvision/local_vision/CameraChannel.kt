@@ -34,7 +34,6 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
     init {
         camera = CameraSession(activity, activity, engine.renderer, vision, emit)
         recorder = MasterRecorder(activity, camera, audio, store, emit)
-        voice.registerDebugInjection(activity)
         camera.onBackgrounded = { recorder.stopForLifecycle("background") }
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "dev.localvision/camera").setMethodCallHandler { call, result ->
@@ -55,7 +54,7 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
                     result.success(mapOf("ok" to (err == null), "error" to err))
                 }
                 "voiceStart" -> { voice.start(); result.success(null) }
-                "voiceStop" -> { voice.stop(); result.success(null) }
+                "voiceStop" -> { voice.stop(call.argument<Boolean>("clear") == true); result.success(null) }
                 "voiceSetPhrase" -> {
                     val err = voice.setPhrase(call.argument<String>("phrase"))
                     result.success(mapOf("ok" to (err == null), "error" to err))

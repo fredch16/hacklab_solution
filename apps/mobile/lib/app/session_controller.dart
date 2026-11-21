@@ -60,6 +60,8 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     capture.sender = (type, payload, {requestId}) =>
         server.sendMessage(type, payload, requestId: requestId);
     capture.addListener(_publish);
+    capture.addListener(_followStream);
+    voice.commandRunner = (id, type) => relay.execute(id, type);
     recording.addListener(_publish);
     voice.addListener(_publish);
     voice.sender = (type, payload, {requestId}) =>
@@ -166,7 +168,6 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
       phase = AppPhase.active;
       _poll = Timer.periodic(pollInterval, (_) => _refresh());
       await _requestCameraPermission();
-      await voice.start();
     } catch (e) {
       phase = AppPhase.error;
       errorMessage = 'Could not start the local server: ${e.runtimeType}';
@@ -264,6 +265,18 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Voice listens while the video stream (WebRTC peer) is up.
+  void _followStream() {
+    final streaming =
+        capture.streamState == 'connecting' ||
+        capture.streamState == 'connected';
+    if (streaming && sessionRunning) {
+      voice.start();
+    } else {
+      voice.stop();
+    }
+  }
+
   void _publish() {
     server.notifyStateChanged();
     notifyListeners();
@@ -276,6 +289,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     _serverSub.cancel();
     _batterySub.cancel();
     capture.removeListener(_publish);
+    capture.removeListener(_followStream);
     recording.removeListener(_publish);
     voice.removeListener(_publish);
     server.dispose();

@@ -106,6 +106,28 @@ One controlling program (the web server). Follower "(Self-controlled)" in Statio
 13. Mark each view checked after a clean there-and-back run. One full tour, then normal speed.
 14. Read `motion_log.jsonl`; set `ARRIVE_TOL` to measured sag + 15 and tune the lag/load/current limits.
 
+## First real session (Sat 21 Nov, 16:08–16:14)
+
+The first moves on the real follower, at first-run speed (100 steps/s), one person at the arm. Full log: [real-session-2026-11-21-motion_log.jsonl](real-session-2026-11-21-motion_log.jsonl).
+
+| Move | Result | Worst lag (steps) | Peak load (0–1000) | Peak current (raw) |
+|---|---|---|---|---|
+| recover → transit | ok, 24 s | 26 | 72 | 3 |
+| transit → top | ok, 15 s | 43 | 180 | 21 |
+| top → wide, top → transit (3 tries) | **stopped: "motor 2 is not following (61 steps behind)"** | 60 | 252 | 40 |
+| after the fix: → transit, wide, transit, wide, top | ok, 12–28 s each | 25–59 | 112–224 | 7–34 |
+| top → transit (old server still running the tight leash) | stopped as above | 60 | 252 | 39 |
+| → transit, transit → right | ok, 5 s and 32 s | 26, 47 | 100, 200 | 5, 25 |
+| right → transit | ok, 32 s | **100** | 400 | 77 |
+
+What it showed:
+- The route (rise → turn → descend through transit) works on the real arm for `top`, `wide` and `right`; 10 moves completed.
+- The 60-step leash was too tight: the shoulder (M2) rests 20–35 steps short of its goal under load and needs more than 60 to start lifting. Fixed the same hour: leash 100 / 120 / 160 steps, segments start from the goal the joint is already holding, and a hold keeps a little of that effort so repeated aborts don't lower the arm.
+- Rising out of `right` used the whole 100-step leash (lag 100, load 400). `left`, `right` and `side_low` hold the arm furthest out, sit on the shoulder's joint limit, and should be re-captured less extended before they are relied on.
+- The mirroring guard fired for real: Station's record said the follower was linked although its page showed "(Self-controlled)". `go.py --unlink` clears it.
+- Two temperature samples read 64 °C and 150 °C in the log while every other read was 33–53 °C. Treated as misreads of the register, not verified.
+- Not yet done from the protocol: the Stop test with three presses, the soft-object block test, `left`, `close`, `side_low`, `home`, normal speed, marking views as checked.
+
 ## Known limits
 
 - No collision model at runtime: safety rests on taught poses, joint ordering, supervision and guards.

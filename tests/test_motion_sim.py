@@ -168,7 +168,7 @@ async def main():
     r = await go_to_view(stuck, "top", max_speed=400)
     check(not r["ok"] and "motor 2" in r["error"] and "not following" in r["error"], f"stuck joint: {r['error']}")
     check(await still(stuck), "holding after a stuck joint")
-    check(abs(stuck._goal[2] - stuck.joints()[2]) <= 2, "goal pulled back to the measured position")
+    check(abs(stuck._goal[2] - stuck.joints()[2]) <= motion.RELAX_TOL, "goal pulled back next to the measured position")
     check(r["hold"] == "confirmed", "the abort hold was read back")
 
     blind = SimArm()
@@ -310,7 +310,7 @@ async def main():
     check(sag.writes == before and sag._goal[2] == sag._pos[2] + 35, "hold leaves a sagging joint's goal alone")
     sag._goal[2] = sag._pos[2] + 200                        # ...but a joint still pushing far gets pulled back
     await motion.hold(sag)
-    check(abs(sag._goal[2] - sag._pos[2]) <= 1, "hold pulls back a goal that is far from the joint")
+    check(abs(sag._goal[2] - sag._pos[2]) <= motion.FREEZE_TOL, "hold pulls back a goal that is far from the joint")
 
     # --- the controller's hold after stopping a move (stop_hold) ----------------------------
     idle = SimArm(start={**VIEWS["top"], 8: 1279})

@@ -79,9 +79,11 @@ STATUS_IGNORE = 0x01   # voltage bit; not a motion fault
 
 
 def lead_limit(peak_speed: float) -> float:
-    """Leash: how far a commanded goal may be ahead of the measured position (60 / 80 / 120
-    steps at 100 / 200 / 400 steps/s). Bounds how far the arm can still travel if we go blind."""
-    return 40 + 0.2 * peak_speed
+    """Leash: how far a commanded goal may be ahead of the measured position (100 / 120 / 160
+    steps at 100 / 200 / 400 steps/s). Bounds how far the arm can still travel if we go blind.
+    First real session: the loaded shoulder rests ~20-35 steps short of its goal and needed more
+    than 60 to start lifting out of `top`, so 60 stopped every move back up."""
+    return 80 + 0.2 * peak_speed
 
 
 _move_lock = asyncio.Lock()
@@ -347,7 +349,13 @@ async def hold(arm, keep_within: int = FREEZE_TOL, moving: tuple = ()):
         return "limp"           # nothing is energised, so there is nothing to hold
     # For a joint that was being driven, the register read-back lags our writes and the last
     # write may or may not have arrived, so its register cannot be trusted: always rewrite it.
-    goals = {m: tel[m]["pos"] for m in held
+    # Rewritten joints keep up to `keep_within` steps of the effort they had: goal := position
+    # would drop a loaded joint by its sag every time a move is stopped.
+    def near(m):
+        pull = max(-keep_within, min(keep_within, tel[m]["goal"] - tel[m]["pos"]))
+        return tel[m]["pos"] + pull
+
+    goals = {m: near(m) for m in held
              if m in moving or abs(tel[m]["goal"] - tel[m]["pos"]) > keep_within}
     if goals:
         await _write(arm, goals)
@@ -525,7 +533,11 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                 and all(abs(again[m]["pos"] - tel[m]["pos"]) <= 6 for m in ids)):
             return 0.0
         tel = again
-    start = {m: tel[m]["pos"] for m in ids}
+    # Start from the goal the joint is already holding (a loaded joint rests a little short of
+    # it); starting from the measured position would first take that holding effort away and
+    # let the arm dip. Only if the register is far off do we start from where the joint is.
+    start = {m: tel[m]["goal"] if abs(tel[m]["goal"] - tel[m]["pos"]) <= HELD_GOAL_TOL else tel[m]["pos"]
+             for m in ids}
     dist = max(abs(goal[m] - start[m]) for m in ids)
     duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours

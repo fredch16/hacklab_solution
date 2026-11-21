@@ -134,11 +134,11 @@ Envelopes all carry the shared `sequence`. Max 1 offer per second accepted (else
 ### `GET /api/v1/capabilities` (auth) and snapshot field `capabilities_version`
 ```json
 {"lenses":[{"id":"0","facing":"back","kind":"wide|ultrawide|tele|front|other","focal_mm":6.9,"zoom_range":[1.0,10.0],
-  "video":[{"width":3840,"height":2160,"fps":[30,60],"codecs":["hevc","avc"],"hdr":true,"verified":"untested|passed|failed","measured":null|{"fps":29.9,"bitrate_bps":...}}],
+  "video":[{"width":3840,"height":2160,"fps":30,"codecs":["hevc","avc"],"hdr":true,"tests":{"hevc":{"result":"passed|failed","fps":29.9,"bitrate_bps":...,"tested_utc":"..."}}}],
   "stabilization":["off","on","preview"],"exposure_comp":[-12,12],"exposure_step":0.1667,"torch":true,"af_modes":["continuous_video","auto"]}],
  "audio":{"sample_rates":[48000],"channels":[1,2]}}
 ```
-Derived from Camera2 `CameraCharacteristics` + `MediaCodecInfo` + `EncoderProfiles`; nothing hardcoded per model.
+One `video` entry per (width, height, fps). `tests` holds results per codec; a missing codec key = untested. Derived from Camera2 `CameraCharacteristics` + `MediaCodecInfo` + `EncoderProfiles`; nothing hardcoded per model.
 
 ### Snapshot additions
 `"recording": {"state":"idle|starting|recording|stopping|finalizing|available|failed","id":null|"rec-…","started_utc","elapsed_ms","bytes","profile":{actual lens/width/height/fps/codec/hdr},"audio":{"sample_rate","channels"},"error":null|"<CODE>","warning":null|"LOW_STORAGE|THERMAL"}`

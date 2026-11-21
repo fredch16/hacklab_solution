@@ -2,7 +2,7 @@ import { qrCanvas } from "./qr.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
-  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, type PhoneStats, UNAVAILABLE, type Envelope, type Snapshot, type State,
+  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, type PhoneStats, type Capabilities, type CameraSettings, type RecordingInfo, commandErrorMessage, currentQuality, diffSettings, exposureLabel, findLens, formatAudio, formatBytes as fmtBytes, formatElapsed, formatProfile, formatZoom, hdrSupported, lensLabel, liveElapsed, lockedKeys, qualityOptions, recordingStateLabel, settingsForLens, validateSettings, warningMessage, UNAVAILABLE, type Envelope, type Snapshot, type State,
 } from "./state.js";
 
 type View = "boot" | "pairing" | "dashboard" | "terminal";
@@ -19,6 +19,7 @@ let attempt = 0;
 let retryTimer: number | undefined;
 let retryIn = 0;
 let tick: number | undefined;
+let dashTimer: number | undefined;
 
 const root = document.getElementById("app") as HTMLElement;
 
@@ -50,7 +51,7 @@ async function start() {
 
 function setView(v: View) {
   view = v;
-  if (v !== "dashboard" && dash) { videoLost(); vs.phase = "idle"; vs.message = ""; dash = null; }
+  if (v !== "dashboard" && dash) { videoLost(); vs.phase = "idle"; vs.message = ""; clearInterval(dashTimer); dash = null; for (const e of pending.values()) clearTimeout(e.timer); pending.clear(); }
   if (v === "pairing") { if (!pairPoll && pairMode === "qr") void requestQr(); } else stopPairing();
   render();
 }
@@ -115,11 +116,63 @@ async function submitPair(code: string) {
 async function unpair() {
   closeWs();
   await api("/api/v1/unpair", "POST", {});
-  state = initialState(); pairMsg = ""; setView("pairing");
+  state = initialState(); caps = null; capsVer = undefined; pairMsg = ""; setView("pairing");
 }
 
 let phoneStats: PhoneStats | null = null;
 let phoneStatsAt = 0;
+
+// ---- commands + capabilities ----
+const pending = new Map<string, { kind: "rec" | "set"; timer: number }>();
+let recMsg = "", setMsg = "", forceSet = false;
+let caps: Capabilities | null = null, capsVer: unknown = undefined, capsBusy = false, capsErr = "";
+const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
+const recBusy = () => [...pending.values()].some((p) => p.kind === "rec");
+const setMessage = (kind: "rec" | "set", m: string) => { if (kind === "rec") recMsg = m; else setMsg = m; };
+
+function sendCommand(type: string, payload: object, kind: "rec" | "set"): boolean {
+  const id = rid();
+  setMessage(kind, "");
+  if (!sendWs({ version: 1, type, request_id: id, payload })) { setMessage(kind, "Not connected to the phone."); updateDash(); return false; }
+  const timer = window.setTimeout(() => { pending.delete(id); setMessage(kind, "No response from the phone."); forceSet = true; updateDash(); }, 10000);
+  pending.set(id, { kind, timer });
+  updateDash();
+  return true;
+}
+
+function onCommandResult(env: { request_id?: string; payload?: any }) {
+  const p = env.payload ?? {};
+  const id = env.request_id ?? p.request_id;
+  const e = id ? pending.get(id) : undefined;
+  if (!e) return;
+  clearTimeout(e.timer); pending.delete(id);
+  if (!p.ok) { setMessage(e.kind, commandErrorMessage(p.error, p.message)); forceSet = true; }
+  updateDash();
+}
+
+async function loadCaps(ver: unknown) {
+  if (capsBusy) return;
+  capsBusy = true;
+  const r = await api("/api/v1/capabilities");
+  capsBusy = false;
+  capsVer = ver;
+  if (r && r.status === 200 && Array.isArray(r.json?.lenses)) { caps = r.json as Capabilities; capsErr = ""; }
+  else capsErr = r ? "Could not load camera capabilities from the phone." : pairErrorMessage("network");
+  const cv = state.snapshot?.capabilities_version ?? null;
+  if (cv !== capsVer && conn === "connected") void loadCaps(cv);
+  updateDash();
+}
+
+function applyPatch(want: CameraSettings) {
+  const cur = state.snapshot?.camera_settings ?? {};
+  const p = diffSettings(cur, want);
+  if (Object.keys(p).length === 0) return;
+  const recording = isRecordingActive(state.snapshot?.recording);
+  const bad = recording && lockedKeys(p).length ? "That setting can't be changed while recording. Stop the recording first." : validateSettings(caps, p, cur);
+  if (bad) { setMsg = bad; forceSet = true; updateDash(); return; }
+  sendCommand("camera.settings.set", p, "set");
+}
+const isRecordingActive = (r: RecordingInfo | undefined) => !!r && ["starting", "recording", "stopping", "finalizing"].includes(r.state);
 const sendWs = (o: object) => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(o)); return true; } return false; };
 initVideo(sendWs, () => updateDash());
 function videoLost() {
@@ -142,9 +195,12 @@ function connect() {
     try {
       const env = JSON.parse(String(m.data)) as Envelope & { request_id?: string };
       if (env.type === "camera.stats") { phoneStats = env.payload as unknown as PhoneStats; phoneStatsAt = Date.now(); updateDash(); return; }
+      if (env.type === "command.result") { onCommandResult(env); return; }
       if (env.type !== "session.snapshot") { handleSignal(env.type, env.request_id, env.payload); return; }
       const next = applyEnvelope(state, env, Date.now());
       conn = "connected"; attempt = 0; state = next;
+      const cv = next.snapshot?.capabilities_version ?? null;
+      if (next.snapshot && cv !== capsVer && !capsBusy) void loadCaps(cv);
       if (view === "dashboard") render();
     } catch { /* malformed frame: ignore */ }
   };
@@ -256,7 +312,7 @@ function perm(name: string, v: string | null) {
   return [name, h("span", `pill ${e[2]}`, icon(e[0]), e[1])] as [string, Node];
 }
 
-interface Dash { page: HTMLElement; hdr: HTMLElement; stale: HTMLElement; status: HTMLElement; overlay: HTMLElement; controls: HTMLElement; tags: HTMLElement; metrics: HTMLElement; phone: HTMLElement; rail: HTMLElement; grid: HTMLElement }
+interface Dash { page: HTMLElement; hdr: HTMLElement; stale: HTMLElement; status: HTMLElement; overlay: HTMLElement; controls: HTMLElement; tags: HTMLElement; metrics: HTMLElement; phone: HTMLElement; recBox: HTMLElement; setBox: HTMLElement; otherBox: HTMLElement; recs: HTMLElement; dlg: HTMLDialogElement; grid: HTMLElement }
 let dash: Dash | null = null;
 
 /** Replace children only if the markup changed, so buttons are not rebuilt under the pointer every second. */
@@ -274,8 +330,114 @@ function buildDash(): Dash {
   const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay));
   const controls = h("div", "controls"), tags = h("div", "tags"), metrics = h("div"), phone = h("div");
   const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
-  const rail = h("aside", "rail"), grid = h("main", "grid", h("div", "main-col", cam), rail);
-  return { page: h("div", "page", hdr, stale, grid), hdr, stale, status, overlay, controls, tags, metrics, phone, rail, grid };
+  const recs = h("div", "contents");
+  const recBox = h("div", "contents"), setBox = h("div", "contents"), otherBox = h("div", "contents");
+  const rail = h("aside", "rail", recBox, setBox, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
+
+  const title = h("h2", null, "Stop recording?"); title.id = "dlg-t";
+  const keep = h("button", "btn primary", "Keep recording"); keep.type = "button"; keep.autofocus = true;
+  const stop = h("button", "btn danger", "Stop recording"); stop.type = "button";
+  const dlg = h("dialog", "dlg", title, h("p", "muted", "The recording is finalized and saved on the phone."), h("div", "controls", keep, stop));
+  dlg.setAttribute("aria-labelledby", "dlg-t");
+  keep.onclick = () => dlg.close();
+  stop.onclick = () => { dlg.close(); sendCommand("recording.stop", {}, "rec"); };
+  clearInterval(dashTimer);
+  dashTimer = window.setInterval(() => { if (state.snapshot?.recording.state === "recording") updateDash(); }, 1000);
+  return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, recBox, setBox, otherBox, recs, dlg, grid };
+}
+
+const BUSY_REC = ["starting", "recording", "stopping", "finalizing"];
+
+function recordingCard(s: Snapshot, offline: boolean): Node {
+  const r = s.recording, st = r.state, on = st === "recording";
+  const el = liveElapsed(r, state.receivedAt, Date.now());
+  const pill = h("span", `pill tnum ${on ? "rec" : st === "failed" ? "bad" : "neutral"}`, icon(on ? "\u25CF" : st === "failed" ? "!" : "\u25CB"), on ? `REC ${formatElapsed(el)}` : recordingStateLabel(st));
+  const rows: [string, string | Node][] = [["State", pill]];
+  if (BUSY_REC.includes(st)) rows.push(["Elapsed", formatElapsed(el)], ["Size", fmtBytes(r.bytes)], ["Profile", formatProfile(r.profile)], ["Audio", `\u266A ${formatAudio(r.audio)}`]);
+  const kids: Node[] = [kv(rows)];
+  const warn = warningMessage(r.warning);
+  if (warn) kids.push(banner("warn", "!", warn));
+  if (r.error) kids.push(banner("bad", "\u2715", commandErrorMessage(r.error)));
+  if (recMsg) kids.push(banner("bad", "\u2715", recMsg));
+  const busy = recBusy();
+  const rb = h("button", "btn primary", "Record"); rb.dataset.focus = "record"; rb.disabled = offline || busy || BUSY_REC.includes(st);
+  rb.onclick = () => void sendCommand("recording.start", {}, "rec");
+  const ctl = h("div", "controls", rb);
+  if (on) {
+    const sb = h("button", "btn danger", "Stop"); sb.dataset.focus = "stop"; sb.disabled = busy || offline;
+    sb.onclick = () => { const d = dash?.dlg; if (d && typeof d.showModal === "function") d.showModal(); else if (confirm("Stop recording?")) sendCommand("recording.stop", {}, "rec"); };
+    ctl.append(sb);
+  }
+  kids.push(ctl);
+  return card("Recording", ...kids);
+}
+
+function banner(kind: string, ic: string, text: string) { const b = h("p", `banner ${kind}`, icon(ic), " " + text); b.setAttribute("role", kind === "bad" ? "alert" : "status"); return b; }
+
+function sel(id: string, opts: [string, string][], value: string, disabled: boolean, onChange: (v: string) => void) {
+  const e = h("select"); e.id = id; e.disabled = disabled;
+  for (const [v, l] of opts) { const o = h("option", null, l); o.value = v; if (v === value) o.setAttribute("selected", ""); e.append(o); }
+  e.value = value;
+  e.onchange = () => onChange(e.value);
+  return e;
+}
+function check(id: string, on: boolean, disabled: boolean, onChange: (v: boolean) => void) {
+  const e = h("input"); e.type = "checkbox"; e.id = id; e.disabled = disabled; e.checked = on; if (on) e.setAttribute("checked", "");
+  e.onchange = () => onChange(e.checked);
+  return e;
+}
+function range(id: string, min: number, max: number, step: number, value: number, show: (v: number) => string, onCommit: (v: number) => void) {
+  const e = h("input"); e.type = "range"; e.id = id; e.min = String(min); e.max = String(max); e.step = String(step);
+  e.setAttribute("value", String(value)); e.value = String(value);
+  const out = h("output", "tnum", show(value)); out.htmlFor = id;
+  e.oninput = () => { out.textContent = show(Number(e.value)); };
+  e.onchange = () => onCommit(Number(e.value));
+  return [e, out];
+}
+const field = (lab: string, id: string, ...ctl: Node[]) => { const l = h("label", null, lab); l.htmlFor = id; return h("div", "field", l, h("div", "ctl", ...ctl)); };
+
+function settingsCard(s: Snapshot): Node {
+  if (!caps) {
+    const kids: Node[] = [h("p", "muted", capsErr || "Loading camera capabilities\u2026")];
+    if (capsErr) { const b = h("button", "btn", "Retry"); b.dataset.focus = "capsretry"; b.onclick = () => { capsErr = ""; void loadCaps(s.capabilities_version ?? null); updateDash(); }; kids.push(b); }
+    return card("Camera settings", ...kids);
+  }
+  const cur = s.camera_settings ?? {};
+  const recording = isRecordingActive(s.recording);
+  const lens = findLens(caps, cur.lens_id);
+  const kids: Node[] = [];
+  if (recording) kids.push(h("p", "muted", "Lens, quality, stabilization and HDR can't change while recording."));
+  kids.push(field("Lens", "set-lens", sel("set-lens", caps.lenses.map((l) => [l.id, lensLabel(l)]), cur.lens_id ?? "", recording, (v) => applyPatch(settingsForLens(caps, v, cur)))));
+  const q = qualityOptions(lens), cq = currentQuality(lens, cur);
+  const qopts: [string, string][] = cq ? [] : [["", "Select quality\u2026"]];
+  q.forEach((o) => qopts.push([o.key, o.label]));
+  const badge = cq ? h("span", `pill ${cq.verified === "passed" ? "ok" : cq.verified === "failed" ? "bad" : "neutral"}`, icon(cq.verified === "passed" ? "\u2713" : cq.verified === "failed" ? "\u2715" : "?"), cq.badge) : null;
+  kids.push(field("Quality", "set-quality", sel("set-quality", qopts, cq?.key ?? "", recording, (v) => {
+    const o = q.find((x) => x.key === v); if (o) applyPatch({ width: o.width, height: o.height, fps: o.fps, codec: o.codec, ...(cur.hdr && !o.hdr ? { hdr: false } : {}) });
+  }), ...(badge ? [badge] : [])));
+  const stab = lens?.stabilization ?? [];
+  if (stab.length) kids.push(field("Stabilization", "set-stab", sel("set-stab", stab.map((v) => [v, v === "preview" ? "On + preview" : v === "on" ? "On" : v === "off" ? "Off" : v] as [string, string]), cur.stabilization ?? "", recording, (v) => applyPatch({ stabilization: v }))));
+  if (hdrSupported(lens, cur)) kids.push(field("HDR", "set-hdr", check("set-hdr", !!cur.hdr, recording, (v) => applyPatch({ hdr: v }))));
+  kids.push(field("Orientation", "set-orient", sel("set-orient", [["auto", "Auto"], ["portrait", "Portrait lock"], ["landscape", "Landscape lock"]], cur.orientation_lock ?? "auto", false, (v) => applyPatch({ orientation_lock: v }))));
+  const zr = lens?.zoom_range;
+  if (zr && zr[1] > zr[0]) kids.push(field("Zoom", "set-zoom", ...range("set-zoom", zr[0], zr[1], 0.1, cur.zoom ?? zr[0], formatZoom, (v) => applyPatch({ zoom: v }))));
+  const er = lens?.exposure_comp;
+  if (er && er[1] > er[0]) kids.push(field("Exposure", "set-exp", ...range("set-exp", er[0], er[1], 1, cur.exposure_comp ?? 0, (v) => exposureLabel(v, lens?.exposure_step), (v) => applyPatch({ exposure_comp: v }))));
+  if (lens?.torch) kids.push(field("Torch", "set-torch", check("set-torch", !!cur.torch, false, (v) => applyPatch({ torch: v }))));
+  if (setMsg) kids.push(banner("bad", "\u2715", setMsg));
+  return card("Camera settings", ...kids);
+}
+
+function recordingsCard(s: Snapshot): Node {
+  const list = s.recordings ?? [];
+  const ul = h("ul", "recs");
+  if (!list.length) ul.append(h("li", "muted", "No recordings yet."));
+  for (const r of list) {
+    const meta = [formatLocal(r.created_utc, new Date(), true), formatElapsed(r.duration_ms), fmtBytes(r.size_bytes), r.width && r.height ? `${r.width}\u00D7${r.height}` : null,
+      r.fps_measured != null ? `${r.fps_measured.toFixed(1)} fps` : null, r.codec ? r.codec.toUpperCase() : null].filter(Boolean).join(" \u00B7 ");
+    ul.append(h("li", null, h("strong", null, r.filename), h("span", "muted", meta)));
+  }
+  return card("Recordings", ul);
 }
 
 function updateDash() {
@@ -311,20 +473,25 @@ function updateDash() {
   patch(d.tags, [
     ...(ph === "live" ? [h("span", "pill ok", icon("\u25CF"), "LIVE")] : []),
     h("span", "tag", webrtc),
-    h("span", "tag", "Local master \u00B7 " + stateLabel(snap?.recording.state ?? "not_started")),
+    snap?.recording.state === "recording" ? h("span", "pill rec", icon("\u25CF"), `Local master \u00B7 ${formatProfile(snap.recording.profile)}`)
+      : h("span", "tag", "Local master \u00B7 " + recordingStateLabel(snap?.recording.state ?? "idle")),
   ]);
   const strip = (r: [string, string][]) => h("dl", "kv strip", ...r.map(([k, v]) => h("div", "m", h("dt", null, k), h("dd", null, v))));
   patch(d.metrics, ph === "idle" ? [] : [strip(metricRows(ph === "stopped" ? null : st))]);
   const phoneOk = !live && Date.now() - phoneStatsAt < 5000 && (cs === "previewing" || cs === "transmitting");
   patch(d.phone, snap ? [h("p", "sub", "Phone encoder"), strip(phoneEncoderRows(phoneOk ? phoneStats : null))] : []);
 
-  patch(d.rail, snap ? railCards(snap) : [card("Waiting", h("p", "muted", "Waiting for the first snapshot from the phone\u2026"))]);
+  if (!snap) { patch(d.otherBox, [card("Waiting", h("p", "muted", "Waiting for the first snapshot from the phone\u2026"))]); return; }
+  patch(d.recBox, [recordingCard(snap, live)]);
+  if (forceSet) { d.setBox.replaceChildren(); forceSet = false; }
+  const ae = document.activeElement;
+  if (!(ae && d.setBox.contains(ae) && (ae.tagName === "INPUT" || ae.tagName === "SELECT"))) patch(d.setBox, [settingsCard(snap)]);
+  patch(d.recs, [recordingsCard(snap)]);
+  patch(d.otherBox, railCards(snap));
 }
 
 function railCards(s: Snapshot): Node[] {
   const v = s.viewer, n = s.network;
-  const recActive = s.recording.state === "recording";
-  const rec = h("span", `pill ${recActive ? "rec" : "neutral"}`, icon(recActive ? "●" : "○"), stateLabel(s.recording.state));
   const events = h("ul", "events");
   if (state.events.length === 0) events.append(h("li", "muted", "No changes yet."));
   for (const e of state.events) events.append(h("li", null, h("time", null, formatClock(e.at)), " ", e.text));
@@ -335,7 +502,6 @@ function railCards(s: Snapshot): Node[] {
       ["Screen kept on", s.keep_screen_on == null ? UNAVAILABLE : s.keep_screen_on ? "Yes" : "No"],
       perm("Camera permission", s.permissions.camera), perm("Microphone permission", s.permissions.microphone),
     ])),
-    card("Recording", kv([["State", rec]])),
     card("Voice", kv([["State", stateLabel(s.voice.state)]])),
     card("Device health", kv([
       ["Battery", batt], ["Thermal", stateLabel(s.thermal.status)],

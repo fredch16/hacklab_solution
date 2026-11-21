@@ -1,5 +1,15 @@
 package dev.localvision.local_vision
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.util.Log
+import java.io.File
+import java.nio.ByteBuffer
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
@@ -75,7 +85,71 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
         }
     }
 
+    // ---- SPIKE (debug): adb shell am broadcast -a dev.localvision.SPIKE --es mime video/hevc --ei w 3840 --ei h 2160 --ei fps 30 --ei seconds 20
+    private val activityRef = activity
+    private val spikeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            runSpike(
+                i.getStringExtra("mime") ?: "video/hevc",
+                i.getIntExtra("w", 3840), i.getIntExtra("h", 2160),
+                i.getIntExtra("fps", 30), i.getIntExtra("seconds", 20),
+                i.getIntExtra("mbps", 50),
+            )
+        }
+    }
+
+    init {
+        androidx.core.content.ContextCompat.registerReceiver(
+            activity, spikeReceiver, IntentFilter("dev.localvision.SPIKE"),
+            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+        )
+    }
+
+    private fun runSpike(mime: String, w: Int, h: Int, fps: Int, seconds: Int, mbps: Int) {
+        val file = File(activityRef.cacheDir, "spike.mp4").also { it.delete() }
+        Log.i("LVC", "SPIKE start $mime ${w}x$h@$fps ${mbps}Mbps ${seconds}s")
+        val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var track = -1
+        var t0 = -1L
+        var frames = 0
+        var out: VideoEncoderOutput? = null
+        val sink = object : VideoSink {
+            override fun onFormat(format: MediaFormat, width: Int, height: Int, rotationDegrees: Int) {
+                Log.i("LVC", "SPIKE format $format rot=$rotationDegrees")
+                muxer.setOrientationHint(rotationDegrees)
+                track = muxer.addTrack(format); muxer.start()
+            }
+            override fun onSample(data: ByteBuffer, info: MediaCodec.BufferInfo, ptsUs: Long) {
+                if (track < 0) return
+                if (t0 < 0) t0 = ptsUs
+                info.presentationTimeUs = ptsUs - t0
+                muxer.writeSampleData(track, data, info); frames++
+            }
+            override fun onEnded() {
+                try { if (track >= 0) muxer.stop() } catch (e: Throwable) { Log.w("LVC", "SPIKE muxer stop: $e") }
+                muxer.release()
+                main.post {
+                    camera.attachVideo(null, null)
+                    camera.stop("record")
+                    Log.i("LVC", "SPIKE done frames=$frames actual=${out?.actualWidth}x${out?.actualHeight}")
+                    MediaFileProbe.log("LVC", MediaFileProbe.probe(file))
+                }
+            }
+            override fun onError(code: String, t: Throwable?) { Log.e("LVC", "SPIKE error $code $t") }
+        }
+        val spec = VideoSpec(mime, w, h, fps, mbps * 1_000_000)
+        camera.onVideoBindFailed = { Log.e("LVC", "SPIKE bind failed $it") }
+        camera.start("record") { id ->
+            if (id == null) { Log.e("LVC", "SPIKE camera did not start"); return@start }
+            val o = VideoEncoderOutput(spec, sink)
+            out = o
+            camera.attachVideo(o, spec)
+            main.postDelayed({ o.finish() }, seconds * 1000L)
+        }
+    }
+
     fun dispose() {
+        try { activityRef.unregisterReceiver(spikeReceiver) } catch (_: Throwable) {}
         ticking = false
         main.removeCallbacks(tick)
         vision.dispose()

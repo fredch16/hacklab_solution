@@ -129,3 +129,67 @@ test("stats: missing data yields nulls and dashes", () => {
   const r = S.phoneEncoderRows({ capture: { width: 640, height: 360, fps_measured: 29.9 }, stream: { codec: "H264", encoder: "c2.x", width: 640, height: 360, fps: 29.7, bitrate_bps: 912000, quality_limitation: "none" } });
   assert.equal(r[2][1], "912 kbps · 29.7 fps");
 });
+
+const caps = { lenses: [
+  { id: "0", kind: "wide", focal_mm: 6.9, zoom_range: [1, 10], stabilization: ["off", "on"], exposure_comp: [-12, 12], exposure_step: 1 / 6, torch: true,
+    video: [{ width: 3840, height: 2160, fps: [30, 60], codecs: ["avc", "hevc"], hdr: true, verified: "passed", measured: { fps: 29.9 } }, { width: 1920, height: 1080, fps: [30], codecs: ["avc"], verified: "untested" }] },
+  { id: "1", kind: "front", zoom_range: [1, 2], torch: false, stabilization: ["off"], video: [{ width: 1280, height: 720, fps: [30], codecs: ["avc"], verified: "failed" }] },
+] };
+
+test("lens labels and quality options", () => {
+  assert.equal(S.lensLabel(caps.lenses[0]), "Wide · 6.9 mm");
+  assert.equal(S.lensLabel(caps.lenses[1]), "Front");
+  assert.equal(S.lensLabel({ id: "7", kind: "weird", video: [] }), "Camera 7");
+  const o = S.qualityOptions(caps.lenses[0]);
+  assert.equal(o.length, 5);
+  assert.equal(o[0].key, "3840x2160@60:hevc"); // biggest, fastest, hevc first
+  assert.equal(o[0].badge, "Tested ✓ 29.9 fps");
+  assert.equal(o[4].badge, "Untested");
+  assert.equal(S.qualityOptions(caps.lenses[1])[0].badge, "Failed");
+  assert.deepEqual(S.qualityOptions(undefined), []);
+});
+
+test("hdr only when current quality supports it", () => {
+  const l = caps.lenses[0];
+  assert.ok(S.hdrSupported(l, { width: 3840, height: 2160, fps: 30, codec: "hevc" }));
+  assert.ok(!S.hdrSupported(l, { width: 1920, height: 1080, fps: 30, codec: "avc" }));
+});
+
+test("settings diff, lens switch, validation", () => {
+  const cur = { lens_id: "0", width: 3840, height: 2160, fps: 30, codec: "hevc", zoom: 5, torch: false };
+  assert.deepEqual(S.diffSettings(cur, { zoom: 5, torch: true, hdr: undefined }), { torch: true });
+  const p = S.settingsForLens(caps, "1", cur);
+  assert.deepEqual(p, { lens_id: "1", width: 1280, height: 720, fps: 30, codec: "avc", zoom: 2 });
+  assert.equal(S.validateSettings(caps, p, cur), null);
+  assert.match(S.validateSettings(caps, { lens_id: "1" }, cur), /quality/);
+  assert.match(S.validateSettings(caps, { hdr: true, width: 1920, height: 1080, fps: 30, codec: "avc" }, cur), /HDR/);
+  assert.match(S.validateSettings(caps, { zoom: 11 }, cur), /Zoom/);
+  assert.match(S.validateSettings(caps, { exposure_comp: 13 }, cur), /Exposure/);
+  assert.match(S.validateSettings(caps, { exposure_comp: 1.5 }, cur), /Exposure/);
+  assert.match(S.validateSettings(caps, { torch: true, lens_id: "1", width: 1280, height: 720, fps: 30, codec: "avc" }, cur), /torch/);
+  assert.match(S.validateSettings(null, {}, cur), /not loaded/);
+  assert.deepEqual(S.lockedKeys({ zoom: 2, codec: "avc", torch: true }), ["codec"]);
+});
+
+test("elapsed + profile + audio formatting", () => {
+  assert.equal(S.formatElapsed(204000), "03:24");
+  assert.equal(S.formatElapsed(3723000), "1:02:03");
+  assert.equal(S.formatElapsed(null), "—");
+  const rec = { state: "recording", elapsed_ms: 10000, started_utc: null };
+  assert.equal(S.liveElapsed(rec, 1000, 3000), 12000);
+  assert.equal(S.liveElapsed({ state: "recording", started_utc: "2026-11-21T14:00:00Z" }, null, Date.parse("2026-11-21T14:00:05Z")), 5000);
+  assert.equal(S.liveElapsed({ state: "idle", elapsed_ms: null }, 1, 2), null);
+  assert.equal(S.formatProfile({ width: 3840, height: 2160, fps: 30, codec: "hevc" }), "3840×2160 · 30 fps · HEVC");
+  assert.equal(S.formatProfile(null), "—");
+  assert.equal(S.formatAudio({ sample_rate: 48000, channels: 2 }), "48 kHz · stereo");
+  assert.equal(S.exposureLabel(-6, 1 / 6), "−1.0 EV");
+});
+
+test("every slice 2 error code has a plain message", () => {
+  for (const c of ["ACTION_NOT_ALLOWED_WHILE_RECORDING", "PROFILE_UNSUPPORTED", "LOW_STORAGE", "RECORDING_FINALIZE_FAILED", "PERMISSION_MIC", "ALREADY_RECORDING", "NOT_RECORDING"])
+    assert.ok(!S.commandErrorMessage(c).startsWith("Command failed"), c);
+  assert.equal(S.commandErrorMessage("WEIRD", "x"), "Command failed (WEIRD). x");
+  assert.match(S.warningMessage("THERMAL"), /hot/);
+  assert.equal(S.warningMessage(null), null);
+  assert.equal(S.recordingStateLabel("idle"), "Not recording");
+});

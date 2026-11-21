@@ -190,3 +190,158 @@ export function phoneEncoderRows(p) {
         ["Limited by", st?.quality_limitation ? st.quality_limitation : "\u2014"],
     ];
 }
+// ---------- Slice 2: recording + camera settings ----------
+export function formatElapsed(ms) {
+    if (ms == null || !Number.isFinite(ms) || ms < 0)
+        return "\u2014";
+    const t = Math.floor(ms / 1000), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+/** Elapsed anchored to local receipt time (immune to phone/PC clock skew). */
+export function liveElapsed(rec, receivedAt, now) {
+    if (rec.state !== "recording")
+        return rec.elapsed_ms ?? null;
+    if (rec.elapsed_ms != null)
+        return rec.elapsed_ms + (receivedAt == null ? 0 : Math.max(0, now - receivedAt));
+    const t = rec.started_utc ? Date.parse(rec.started_utc) : NaN;
+    return Number.isNaN(t) ? null : Math.max(0, now - t);
+}
+export function formatProfile(p) {
+    if (!p)
+        return "\u2014";
+    const parts = [p.width && p.height ? `${p.width}\u00D7${p.height}` : null, p.fps != null ? `${p.fps} fps` : null, p.codec ? p.codec.toUpperCase() : null, p.hdr ? "HDR" : null].filter(Boolean);
+    return parts.length ? parts.join(" \u00B7 ") : "\u2014";
+}
+export function formatAudio(a) {
+    if (!a || a.sample_rate == null)
+        return "\u2014";
+    const ch = a.channels === 2 ? "stereo" : a.channels === 1 ? "mono" : a.channels != null ? `${a.channels} ch` : null;
+    return [`${a.sample_rate / 1000} kHz`, ch].filter(Boolean).join(" \u00B7 ");
+}
+export function recordingStateLabel(state) {
+    const m = { idle: "Not recording", starting: "Starting\u2026", recording: "Recording", stopping: "Stopping\u2026", finalizing: "Finalizing file\u2026", available: "Saved", failed: "Failed" };
+    return (state && m[state]) || label(state);
+}
+export function commandErrorMessage(code, message) {
+    const m = {
+        ACTION_NOT_ALLOWED_WHILE_RECORDING: "That setting can't be changed while recording. Stop the recording first.",
+        PROFILE_UNSUPPORTED: "The phone can't record with that quality setting. Choose another quality.",
+        LOW_STORAGE: "Not enough free storage on the phone to start recording (at least 2 GB needed).",
+        RECORDING_FINALIZE_FAILED: "The recording could not be finalized on the phone. The file may be incomplete.",
+        PERMISSION_MIC: "Microphone permission is not granted on the phone. Recordings need audio.",
+        PERMISSION_CAMERA: "Camera permission is not granted on the phone.",
+        ALREADY_RECORDING: "The phone is already recording.",
+        NOT_RECORDING: "The phone is not recording.",
+        BAD_REQUEST: "The phone rejected the request.",
+        CAMERA_UNAVAILABLE: "The phone camera is not available.",
+        DEVICE_IN_USE: "The camera is in use by another app.",
+        CAPABILITY_UNSUPPORTED: "The phone does not support that camera mode.",
+        CAMERA_FAILED: "The camera failed on the phone.",
+    };
+    const base = (code && m[code]) || `Command failed${code ? ` (${code})` : ""}.`;
+    return message && !(code && m[code]) ? `${base} ${message}` : base;
+}
+export function warningMessage(code) {
+    if (code === "LOW_STORAGE")
+        return "Phone storage is running low. Recording stops automatically if it gets too low.";
+    if (code === "THERMAL")
+        return "The phone is hot. Recording continues; let it cool if you can.";
+    return code ? `Warning: ${code}` : null;
+}
+// --- capabilities -> pickers ---
+export function lensLabel(l) {
+    const k = { wide: "Wide", ultrawide: "Ultra-wide", tele: "Telephoto", front: "Front" };
+    const name = (l.kind && k[l.kind]) || `Camera ${l.id}`;
+    return l.focal_mm != null && l.kind !== "front" ? `${name} \u00B7 ${l.focal_mm} mm` : name;
+}
+export const qualityKey = (w, h, fps, codec) => `${w}x${h}@${fps}:${codec}`;
+export function qualityBadge(verified, measured) {
+    if (verified === "passed")
+        return `Tested \u2713${measured?.fps != null ? ` ${measured.fps.toFixed(1)} fps` : ""}`;
+    if (verified === "failed")
+        return "Failed";
+    return "Untested";
+}
+/** Every resolution x fps x codec combination of a lens, biggest first. */
+export function qualityOptions(lens) {
+    if (!lens)
+        return [];
+    const out = [];
+    for (const v of lens.video)
+        for (const fps of v.fps)
+            for (const codec of v.codecs) {
+                const badge = qualityBadge(v.verified, v.measured);
+                out.push({ key: qualityKey(v.width, v.height, fps, codec), width: v.width, height: v.height, fps, codec, hdr: !!v.hdr, verified: v.verified ?? "untested", measured: v.measured ?? null, badge, label: `${v.width}\u00D7${v.height} \u00B7 ${fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
+            }
+    const rank = (c) => (c === "hevc" ? 0 : 1);
+    return out.sort((a, b) => b.width * b.height - a.width * a.height || b.fps - a.fps || rank(a.codec) - rank(b.codec));
+}
+export const findLens = (caps, id) => caps?.lenses.find((l) => l.id === id);
+export function currentQuality(lens, s) {
+    return qualityOptions(lens).find((o) => o.key === qualityKey(s?.width, s?.height, s?.fps, s?.codec));
+}
+export const hdrSupported = (lens, s) => !!currentQuality(lens, s)?.hdr;
+export function formatZoom(z) { return z == null ? "\u2014" : `${z.toFixed(1)}\u00D7`; }
+export function exposureLabel(steps, step) {
+    if (steps == null)
+        return "\u2014";
+    if (steps === 0 || !step)
+        return "0 EV";
+    const ev = steps * step;
+    return `${ev > 0 ? "+" : "\u2212"}${Math.abs(ev).toFixed(1)} EV`;
+}
+// --- settings diff / validation ---
+export const LOCKED_WHILE_RECORDING = ["lens_id", "width", "height", "fps", "codec", "hdr", "stabilization"];
+export const lockedKeys = (patch) => LOCKED_WHILE_RECORDING.filter((k) => patch[k] !== undefined);
+export function diffSettings(cur, want) {
+    const out = {};
+    for (const [k, v] of Object.entries(want))
+        if (v !== undefined && cur?.[k] !== v)
+            out[k] = v;
+    return out;
+}
+/** Patch for switching lens: keeps the current quality if the lens has it, else its first option; clamps zoom. */
+export function settingsForLens(caps, lensId, cur) {
+    const lens = findLens(caps, lensId);
+    const patch = { lens_id: lensId };
+    if (!lens)
+        return patch;
+    const opts = qualityOptions(lens);
+    if (opts.length && !opts.some((o) => o.key === qualityKey(cur?.width, cur?.height, cur?.fps, cur?.codec))) {
+        const o = opts[0];
+        Object.assign(patch, { width: o.width, height: o.height, fps: o.fps, codec: o.codec });
+    }
+    if (lens.zoom_range && cur?.zoom != null) {
+        const z = Math.min(Math.max(cur.zoom, lens.zoom_range[0]), lens.zoom_range[1]);
+        if (z !== cur.zoom)
+            patch.zoom = z;
+    }
+    return patch;
+}
+/** Returns a user-facing problem with the patch, or null if it looks valid for the capabilities. */
+export function validateSettings(caps, patch, cur) {
+    if (!caps)
+        return "Camera capabilities are not loaded yet.";
+    const m = { ...cur, ...patch };
+    const lens = findLens(caps, m.lens_id);
+    if (!lens)
+        return "Unknown lens.";
+    if (["lens_id", "width", "height", "fps", "codec"].some((k) => patch[k] !== undefined) && !currentQuality(lens, m))
+        return "This lens does not support that quality.";
+    if (patch.hdr === true && !hdrSupported(lens, m))
+        return "HDR is not supported at this quality.";
+    if (patch.stabilization != null && !(lens.stabilization ?? []).includes(patch.stabilization))
+        return "That stabilization mode is not supported.";
+    if (patch.orientation_lock != null && !["auto", "portrait", "landscape"].includes(patch.orientation_lock))
+        return "Unknown orientation setting.";
+    if (patch.zoom != null && lens.zoom_range && (patch.zoom < lens.zoom_range[0] || patch.zoom > lens.zoom_range[1]))
+        return "Zoom is outside the supported range.";
+    if (patch.exposure_comp != null) {
+        const r = lens.exposure_comp;
+        if (!Number.isInteger(patch.exposure_comp) || (r && (patch.exposure_comp < r[0] || patch.exposure_comp > r[1])))
+            return "Exposure is outside the supported range.";
+    }
+    if (patch.torch === true && !lens.torch)
+        return "This lens has no torch.";
+    return null;
+}

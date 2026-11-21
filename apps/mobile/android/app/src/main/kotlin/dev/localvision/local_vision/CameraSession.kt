@@ -19,6 +19,7 @@ import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraState
+import androidx.camera.core.DynamicRange
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -27,6 +28,7 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.VideoCapture
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LiveData
@@ -66,6 +68,11 @@ class CameraSession(
     private var stateLive: LiveData<CameraState>? = null
     private var stateObserver: Observer<CameraState>? = null
     private var started = false
+    private var video: VideoEncoderOutput? = null
+    private var videoSpec: VideoSpec? = null
+    @Volatile var targetFps = 30
+    /** Called when the camera cannot be bound with the video use case (error code). */
+    var onVideoBindFailed: ((String) -> Unit)? = null
     private var previewBound = false
     private var previewW = 0
     private var previewH = 0
@@ -219,7 +226,15 @@ class CameraSession(
         flushWaiters(false)
     }
 
-    private fun fpsRange(): Range<Int> = Range(30, 30)
+    private fun fpsRange(): Range<Int> = Range(targetFps, targetFps)
+
+    /** Adds/removes the recording encoder as a third use case (rebinds the camera). */
+    fun attachVideo(out: VideoEncoderOutput?, spec: VideoSpec?) {
+        video = out
+        videoSpec = spec
+        targetFps = spec?.fps ?: 30
+        if (started) main.post { bind() }
+    }
 
     /** Continuous video AF, auto exposure and white balance. */
     private fun <T> applyQuality(b: androidx.camera.core.ExtendableBuilder<T>) {
@@ -281,8 +296,23 @@ class CameraSession(
         lastFrameNs = System.nanoTime()
         Log.i(TAG, "bind")
 
+        val useCases = mutableListOf<androidx.camera.core.UseCase>(pv, an)
+        val vo = video
+        val vs = videoSpec
+        if (vo != null && vs != null) {
+            val vb = VideoCapture.Builder(vo)
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(ResolutionStrategy(Size(vs.width, vs.height), ResolutionStrategy.FALLBACK_RULE_NONE))
+                        .build()
+                )
+                .setTargetFrameRate(Range(vs.fps, vs.fps))
+            if (vs.hdr) vb.setDynamicRange(DynamicRange.HLG_10_BIT)
+            useCases.add(vb.build())
+        }
         try {
-            val cam = p.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, pv, an)
+            val cam = p.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
             camera = cam
             previewBound = true
             Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(
@@ -315,7 +345,13 @@ class CameraSession(
             stateObserver = obs
             live.observe(owner, obs)
         } catch (e: IllegalArgumentException) {
-            failed("CAPABILITY_UNSUPPORTED")
+            if (video != null) {
+                // The recording combination is not bindable: keep preview/stream alive without it.
+                Log.w(TAG, "bind with video failed: ${e.message}")
+                video = null; videoSpec = null; targetFps = 30
+                onVideoBindFailed?.invoke("PROFILE_UNSUPPORTED")
+                bind()
+            } else failed("CAPABILITY_UNSUPPORTED")
         } catch (e: Throwable) {
             failed("CAMERA_FAILED")
         }

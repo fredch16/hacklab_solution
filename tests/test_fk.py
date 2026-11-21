@@ -303,6 +303,22 @@ assert gap(VIEWS["transit"]) != gap(VIEWS["top"])
 slide = lambda pose: abs(fk.steps_to_angles(pose, RANGES)["rev_motor_08_2"])
 assert slide(VIEWS["top"]) > 0.025 and 0.015 < slide(VIEWS["transit"]) < 0.02
 
+# ---- per-part heights and self-clearance (used by motion.direct_plan) ---------------------------
+for n, pose in VIEWS.items():
+    for mp in ("viewer", "true_scale"):
+        parts = fk.part_heights(pose, RANGES, mp)
+        assert close_to(min(parts.values()), fk.min_height(pose, RANGES, mapping=mp)[0]), n
+        assert close_to(min(fk.part_heights(pose, RANGES, mp, meshes=False).values()),
+                        fk.min_height(pose, RANGES, meshes=False, mapping=mp)[0]), n
+        assert not any(k in parts for k in fk.STATIC_POINTS) and any(k.startswith("mesh:") for k in parts)
+        # the folded rest pose is the only one where the arm comes close to itself
+        gap = fk.self_clearance(pose, RANGES, mp)
+        assert (gap < 0.05) == (n == "home"), (n, gap)
+# M1 turns about the vertical: it changes neither heights nor how close the arm is to itself
+turned = {**VIEWS["top"], 1: VIEWS["top"][1] + 400}
+assert all(close_to(a, b, 1e-9) for a, b in zip(fk.part_heights(turned, RANGES).values(), fk.part_heights(VIEWS["top"], RANGES).values()))
+assert close_to(fk.self_clearance(turned, RANGES), fk.self_clearance(VIEWS["top"], RANGES))
+
 # ---- the views that are in views.json right now: report only -----------------------------------
 try:
     current = fk.load_views()

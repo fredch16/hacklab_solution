@@ -159,7 +159,8 @@ def table(results: dict, baseline: dict | None = None, markdown: bool = False) -
                 f" one group alone {sum(r['solo_pitch'] + r['solo_turn'] for r in rs):6.1f} s"
                 f" (pitch {sum(r['solo_pitch'] for r in rs):.1f}, turn {sum(r['solo_turn'] for r in rs):.1f}),"
                 f" nothing moving {sum(r['idle'] for r in rs):6.1f} s;"
-                f" lowest M1/M5 turn {min((r['turn_h'] for r in rs if r['turn_h'] is not None), default=0) * 100:.0f} cm;"
+                f" lowest M1/M5 turn on a hub route"
+                f" {min((r['turn_h'] for r in rs if r['turn_h'] is not None and 'rise' in r['route']), default=0) * 100:.0f} cm;"
                 f" worst dip below the end poses {max(r['dip'] for r in rs) * 100:.1f} cm;"
                 f" failed {sum(not r['ok'] for r in rs)}")
         if baseline and label in baseline:

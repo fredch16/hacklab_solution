@@ -219,8 +219,14 @@ async def main():
 
     # --- starting slightly off: the route pulls the arm onto the exact poses ----------
     near_hub = SimArm(start={**VIEWS[TRANSIT], 8: 1758, 2: VIEWS[TRANSIT][2] + 50, 3: VIEWS[TRANSIT][3] - 50})
+    motion.DIRECT = False
     r = await go_to_view(near_hub, "wide", max_speed=FAST)
     check(r["ok"] and r["route"] == ["rise", "turn", "descend"] and at(near_hub, "wide"), "near the hub: exact rise, then on")
+    motion.DIRECT = True
+    near_hub = SimArm(start={**VIEWS[TRANSIT], 8: 1758, 2: VIEWS[TRANSIT][2] + 50, 3: VIEWS[TRANSIT][3] - 50})
+    r = await go_to_view(near_hub, "wide", max_speed=FAST)
+    check(r["ok"] and r["route"] == ["direct"] and r["kind"] == "direct" and at(near_hub, "wide"),
+          "near the transit pose: one direct line that ends on the exact pose (tests/test_motion_opt.py has the rest)")
     raw_home = SimArm(start=dict(motion.load_views()["home"]))      # M2 = 1061, below the allowed 1101
     r = await go_to_view(raw_home, "home", max_speed=FAST)
     check(r["ok"] and r["route"] == ["descend"] and raw_home.joints()[2] >= ENV[2][0] - 5,
@@ -314,6 +320,8 @@ async def main():
     check(abs(sag._goal[2] - sag._pos[2]) <= motion.FREEZE_TOL, "hold pulls back a goal that is far from the joint")
 
     # --- blended moves: the turn overlaps rise and descent, but only above the clear height ----
+    # (the route through the hub; with DIRECT on most of these pairs take one direct line instead)
+    motion.DIRECT = False
     for speed, label in ((motion.SPEED_FAST, "fast"), (motion.SPEED_TURBO, "turbo")):
         for a, b in (("top", "right"), ("right", "left"), ("left", "close"), ("close", "home")):
             blend = SimArm(start={**VIEWS[a], 8: 1279})
@@ -357,6 +365,7 @@ async def main():
     r = await go_to_view(seq, "right", max_speed=motion.SPEED_FAST)
     check(r["ok"], "with BLEND off the move still runs, strictly in sequence")
     motion.BLEND = True
+    motion.DIRECT = True
 
     # --- turbo: rise and turn on the servos' own profile -------------------------------------
     quick = SimArm()

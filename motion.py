@@ -59,6 +59,24 @@ HOLD_ACCEL = 100       # a Stop brakes joints that were being driven as hard as 
 BLEND = True
 CLEAR_HEIGHT_M = 0.25
 CLEAR_POINTS = ("j5_forearm_roll", "j6_wrist_pitch", "j7_wrist_roll", "j8_gripper", "jaw_tip", "camera")
+# Direct moves: between two checked poses, at every speed, all seven joints go together along
+# one straight line in joint space instead of through the hub, when the geometry model (fk.py)
+# shows that line is no closer to the desk or to the arm itself than its two end poses (see
+# direct_plan()). A view with "direct": false in views.json never takes part (`home`).
+# A line that fails may still pass when it is lifted towards the hub in the middle: an "arc".
+DIRECT = True                      # False: every move goes through the hub, as before
+ARC = True                         # False: pairs whose straight line fails go through the hub
+DIRECT_SPEED_CAP = SPEED_FAST      # a streamed direct move or arc never runs faster than this
+DIRECT_TURBO_PROFILE = True        # turbo: a straight direct move that does not end lower than it starts
+                                   # runs on the servos' own profile, like a rise (False: streamed at fast)
+DIRECT_DIP_M = 0.01                # no part of the arm may go this far below where it is at the ends
+DIRECT_SELF_CLEAR_M = 0.05         # the arm must stay this far from itself (fk.self_clearance); `home` does not
+DIRECT_LIFTS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 1.0)   # how far towards the hub an arc may bulge
+DIRECT_LIFT_EXTRA = 0.1            # an arc is lifted this much more than the model says it needs
+DIRECT_SAMPLES = 48                # poses checked along a line
+DIRECT_TURN_TOL = None             # steps; set to e.g. 60 to allow direct moves only between views that
+                                   # share base yaw and forearm roll (then nothing sweeps sideways down low)
+PATH_SEGMENTS = ("direct", "arc")  # route segments that move every joint along one checked line
 TEMP_LIMIT = 70        # deg C, sustained: stop before a servo cooks
 MIN_SEGMENT_S = 0.8
 RATE_HZ = 30
@@ -103,11 +121,11 @@ def lead_limit(peak_speed: float) -> float:
 _move_lock = asyncio.Lock()
 # What the current/last move did, for stop_hold(): did it send any goal, which joints was its
 # current segment driving, and how did its own abort hold end.
-_last = {"wrote": False, "driving": (), "hold": None}
+_last = {"wrote": False, "driving": (), "hold": None, "line": ()}   # line: the direct line last driven (a, b)
 
 # Live state of the current/last move, for UIs to poll. Updated in place, never replaced.
 status = {"moving": False, "view": None, "phase": None, "phase_index": 0, "phase_count": 0,
-          "progress": 0.0, "error": None, "last_result": None, "route": [], "hold": None}
+          "progress": 0.0, "error": None, "last_result": None, "route": [], "kind": None, "hold": None}
 
 
 class MotionError(RuntimeError):
@@ -152,6 +170,13 @@ def view_checked(name: str) -> bool:
     Unchecked views only ever run at SPEED_FIRST. Re-capturing the view or the transit pose
     clears the flag."""
     return bool(_read_views_file().get(name, {}).get("checked"))
+
+
+def view_direct(name: str) -> bool:
+    """False when views.json says "direct": false for this view: every move from or to it goes
+    through the hub, whatever the geometry model thinks (`home`: its folded pose risks the arm
+    hitting itself, which the model does not check)."""
+    return _read_views_file().get(name, {}).get("direct") is not False
 
 
 def mark_checked(name: str, checked: bool = True):
@@ -227,13 +252,20 @@ def _near(present, pose, ids, tol=AT_TOL) -> bool:
     return all(abs(present[m] - pose[m]) <= tol for m in ids)
 
 
-def locate(present: dict[int, int], views: dict[str, dict[int, int]]) -> dict:
+def locate(present: dict[int, int], views: dict[str, dict[int, int]], links=None, prefer: tuple = ()) -> dict:
     """Classify the measured pose on the route network.
 
     {"where": "view", "view": name}    at a saved view
     {"where": "hub"}                   pitch joints at the transit configuration (any yaw/roll)
     {"where": "spoke", "view": name}   between a view and the hub: yaw/rolls are the view's and
                                        the pitch joints are all the same fraction of the way
+    {"where": "between", "view": a, "to": b, "s": 0..1}
+                                       on the direct line (or arc) from a to b, a fraction s of the
+                                       way: where a Stop during a direct move leaves the arm. Only
+                                       with `links` (the lines direct moves may use, see _Links).
+                                       Close to a view several lines run side by side; of those
+                                       within tolerance the one naming most of `prefer` (the
+                                       target, the line last driven) wins, then the closest.
     {"where": "unknown"}               anything else
     `views` must be clamped to the envelope, trusted (see view_problem) and include transit.
     This only decides which route applies; every route starts with a segment that pulls the
@@ -259,7 +291,165 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]]) -> dict:
         miss = max(abs(present[m] - (pose[m] + (hub[m] - pose[m]) * f)) for m in PITCH)
         if miss <= AT_TOL and (best is None or miss < best[0]):
             best = (miss, {"where": "spoke", "view": name})
+    if best is None and links is not None:
+        for a, b, plan in links.pairs():
+            miss, s = _on_path(present, views[a], views[b], hub, plan["lift"])
+            rank = (-sum(n in (a, b) for n in set(prefer)), miss)
+            if miss <= AT_TOL and (best is None or rank < best[0]):
+                best = (rank, {"where": "between", "view": a, "to": b, "s": round(s, 3)})
     return best[1] if best else {"where": "unknown"}
+
+
+# ---------------------------------------------------------------- direct lines between poses
+
+def _path_pose(a: dict, b: dict, hub: dict, lift: float, s: float) -> dict[int, float]:
+    """Pose a fraction `s` of the way along the direct line from pose `a` to pose `b`: every joint
+    the same fraction of its way. With `lift` > 0 the line becomes an arc: the pitch joints bulge
+    towards the hub's pitch configuration, by `lift` of the remaining distance at half-way and
+    not at all at either end. The same poses in reverse order give the path from b to a."""
+    out = {}
+    for m in MOVABLE:
+        x = a[m] + (b[m] - a[m]) * s
+        if lift and m in PITCH:
+            x += lift * 4.0 * s * (1.0 - s) * (hub[m] - x)
+        out[m] = x
+    return out
+
+
+def _on_path(present: dict, a: dict, b: dict, hub: dict, lift: float) -> tuple[float, float]:
+    """(how far the worst joint is from the path a -> b, at which fraction of it), closest point."""
+    def miss(s):
+        q = _path_pose(a, b, hub, lift, s)
+        return max(abs(present[m] - q[m]) for m in MOVABLE)
+    best = min((miss(i / 32), i / 32) for i in range(33))
+    for step in (1 / 64, 1 / 128, 1 / 256, 1 / 512):
+        for s in (best[1] - step, best[1] + step):
+            if 0.0 <= s <= 1.0:
+                best = min(best, (miss(s), s))
+    return best
+
+
+_direct_cache: dict = {}
+
+
+def _line_problem(a: dict, b: dict, hub: dict, lift: float, ranges, grip: int) -> str | None:
+    """Why the geometry model does not vouch for this line or arc, or None. See direct_plan()."""
+    import fk
+    n = DIRECT_SAMPLES
+    poses = [{**_path_pose(a, b, hub, lift, i / n), GRIPPER: grip} for i in range(n + 1)]
+    for mapping in ("viewer", "true_scale"):
+        gaps = [fk.self_clearance(p, ranges, mapping) for p in poses]
+        if min(gaps[0], gaps[-1]) < DIRECT_SELF_CLEAR_M:
+            return (f"an end pose folds the arm to within {min(gaps[0], gaps[-1]) * 100:.0f} cm of itself, "
+                    "and the model cannot check the arm against itself")
+        if min(gaps) < min(gaps[0], gaps[-1]) - DIRECT_DIP_M or min(gaps) < DIRECT_SELF_CLEAR_M:
+            return f"the arm would come within {min(gaps) * 100:.0f} cm of itself on the way"
+        heights = [fk.part_heights(p, ranges, mapping) for p in poses]
+        for part in heights[0]:
+            ends = min(heights[0][part], heights[-1][part])
+            low = min(h[part] for h in heights)
+            # Close to the desk the allowance shrinks: a part resting 1 cm up may dip 5 mm, not 1 cm.
+            if low < ends - min(DIRECT_DIP_M, max(ends, 0.0) / 2):
+                return (f"{part.replace('mesh:', '')} would dip to {low * 100:.1f} cm, "
+                        f"{(ends - low) * 100:.1f} cm below where it is at the end poses")
+    return None
+
+
+def direct_plan(a: dict[int, int], b: dict[int, int], hub: dict[int, int], ranges, grip: int = 1279) -> dict:
+    """May the arm go from pose `a` to pose `b` (both clamped, taught poses) in one move of all
+    seven joints, and along which path? {"ok": bool, "lift": float | None, "reason": str}.
+
+    The rule. The path is the straight line in joint space (lift 0), or failing that the same
+    line bulging towards the hub's pitch configuration in the middle (an arc, the smallest
+    DIRECT_LIFTS value that passes plus DIRECT_LIFT_EXTRA). A path passes when the geometry model
+    fk.py, at DIRECT_SAMPLES poses along it and in BOTH of its steps-to-angle mappings, shows:
+      1. Desk: no part of the arm (every key point, and the lowest vertex of every link mesh)
+         gets more than DIRECT_DIP_M (1 cm) lower than that same part is at the lower of the two
+         end poses; for a part that ends within 2 cm of the desk the allowance is half its height.
+         Comparing each part with itself at two poses a person taught cancels most of what the
+         model gets wrong; there is no absolute floor because taught views sit as low as 1 cm.
+      2. Itself: the arm never comes closer to itself (fk.self_clearance: centre lines of links
+         three or more joints apart) than at its end poses less 1 cm, and never closer than
+         DIRECT_SELF_CLEAR_M. The model has no self-collision meshes, so a folded end pose
+         (`home`, 3 cm) rules a pair out altogether: those moves keep going through the hub.
+    Not in the rule, on purpose: base yaw and forearm roll turn all the way along a direct move,
+    also below CLEAR_HEIGHT_M. The desk is taken to be clear for every move between checked views
+    (DIRECT_TURN_TOL restricts direct moves to views with the same heading). The model knows the
+    desk plane and nothing on it; it is advisory and was never measured against the real arm.
+    Who may use a line at all (both views checked, neither opted out) is decided in _Links.
+
+    History: review round 1 removed an earlier shortcut (any pair whose yaw and rolls matched went
+    direct, unchecked, which allowed the 130 degree sweep home -> top). The reviewers' models
+    showed that lifting the shoulder alone out of `home` hits the desk and that left <-> right,
+    right <-> side_low, close <-> side_low and close <-> right go below it on a straight line;
+    rule 1 rejects all of those as straight lines, rule 2 keeps `home` out."""
+    turn_gap = max(abs(a[m] - b[m]) for m in (1, 5))
+    key = (tuple(sorted((tuple(a[m] for m in MOVABLE), tuple(b[m] for m in MOVABLE)))),
+           tuple(hub[m] for m in PITCH), tuple(sorted((m, tuple(r)) for m, r in ranges.items())), grip,
+           DIRECT_DIP_M, DIRECT_SELF_CLEAR_M, DIRECT_LIFTS, DIRECT_LIFT_EXTRA, DIRECT_SAMPLES, DIRECT_TURN_TOL)
+    if key in _direct_cache:
+        return _direct_cache[key]
+    if DIRECT_TURN_TOL is not None and turn_gap > DIRECT_TURN_TOL:
+        plan = {"ok": False, "lift": None, "reason": f"base yaw or forearm roll differ by {turn_gap} steps"}
+    else:
+        plan, reason = None, ""
+        for lift in DIRECT_LIFTS:
+            problem = _line_problem(a, b, hub, lift, ranges, grip)
+            if problem is None and lift > 0:        # an arc gets a little more lift than it needs
+                more = min(1.0, lift + DIRECT_LIFT_EXTRA)
+                if _line_problem(a, b, hub, more, ranges, grip) is None:
+                    lift = more
+            if problem is None:
+                plan = {"ok": True, "lift": lift,
+                        "reason": "straight line" if lift == 0 else f"arc lifted {lift:.0%} towards the hub: {reason}"}
+                break
+            reason = reason or problem              # why the straight line was refused
+            if "folds the arm" in problem:
+                break                               # no lift changes an end pose
+        plan = plan or {"ok": False, "lift": None, "reason": reason}
+    if len(_direct_cache) > 400:
+        _direct_cache.clear()
+    _direct_cache[key] = plan
+    return plan
+
+
+class _Links:
+    """The direct lines the arm may use right now: between two trusted poses that are both marked
+    checked (the transit pose counts as checked) and pass direct_plan(). Worked out on demand."""
+
+    def __init__(self, views: dict, ranges, grip: int):
+        self.views, self.ranges = views, ranges
+        self.grip = int(round(grip / 50.0)) * 50     # the limp gripper wobbles; do not re-plan for a step
+        self._flags: dict[str, tuple[bool, bool]] = {}
+
+    def _flag(self, name: str) -> tuple[bool, bool]:    # (checked, may go direct), read once
+        if name not in self._flags:
+            self._flags[name] = (name == TRANSIT or view_checked(name), view_direct(name))
+        return self._flags[name]
+
+    def plan(self, a: str, b: str) -> dict:
+        """{"ok", "lift", "reason"} for the pair, in either order."""
+        no = {"ok": False, "lift": None}
+        if a == b or a not in self.views or b not in self.views:
+            return {**no, "reason": "not two known poses"}
+        for name in (a, b):
+            checked, direct = self._flag(name)
+            if not checked:
+                return {**no, "reason": f"'{name}' is not marked checked"}
+            if not direct:
+                return {**no, "reason": f"'{name}' is set to always go through the transit pose"}
+        plan = direct_plan(self.views[a], self.views[b], self.views[TRANSIT], self.ranges, self.grip)
+        if plan["ok"] and plan["lift"] and not ARC:
+            return {**no, "reason": plan["reason"].split(": ", 1)[-1]}
+        return plan
+
+    def pairs(self):
+        names = sorted(self.views)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                plan = self.plan(a, b)
+                if plan["ok"]:
+                    yield a, b, plan
 
 
 # ---------------------------------------------------------------- planning
@@ -268,21 +458,86 @@ def _pick(pose, ids):
     return {m: pose[m] for m in ids}
 
 
+def route_kind(start_view: str, target_view: str) -> tuple[str, str]:
+    """("direct" | "arc" | "hub", why) for a move from one saved view to another, from views.json
+    alone: no arm needed, nothing is read from Station. For UIs. It uses the calibration the views
+    were captured with and a closed gripper; a move on the arm decides again with live values
+    (describe() / go_to_view() report that as `kind`), and anything that starts elsewhere than
+    exactly at `start_view` (on a spoke, after a Stop) is planned from where the arm is."""
+    raw = _read_views_file()
+    for name in (start_view, target_view, TRANSIT):
+        if name not in raw:
+            return "hub", f"no saved pose '{name}'"
+    if start_view == target_view:
+        return "hub", "already there: only a small correction along the view's own path"
+    if not DIRECT:
+        return "hub", "direct moves are switched off (motion.DIRECT)"
+    try:
+        import fk  # noqa: F401
+        ranges = {int(m): tuple(r) for m, r in raw[TRANSIT]["ranges"].items()}
+        env = envelope(ranges)
+        views = {n: clamp_pose({int(k): v for k, v in raw[n]["joints"].items()}, env)
+                 for n in (start_view, target_view, TRANSIT)}
+    except Exception as e:      # no geometry model, no calibration record, bad calibration
+        return "hub", f"cannot check a direct line ({e})"
+    plan = _Links(views, ranges, 1279).plan(start_view, target_view)
+    if not plan["ok"]:
+        return "hub", plan["reason"]
+    return ("arc" if plan["lift"] else "direct"), plan["reason"]
+
+
+class _PathGoal(dict):
+    """The goal of a "direct" / "arc" segment: {motor: goal} for all seven joints, plus the line it
+    runs along: path = (pose a, pose b, hub, lift, from fraction, to fraction), see _path_pose(),
+    and the names of its two ends."""
+    path: tuple = ()
+    ends: tuple = ()
+
+
+def _path_segment(views: dict, a: str, b: str, lift: float, s0: float, s1: float) -> tuple[str, dict]:
+    goal = _PathGoal({m: int(round(x)) for m, x in _path_pose(views[a], views[b], views[TRANSIT], lift, s1).items()})
+    goal.path = (views[a], views[b], views[TRANSIT], lift, s0, s1)
+    goal.ends = (a, b)
+    return ("arc" if lift else "direct", goal)
+
+
 def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, int]],
-               allow_unknown_start: bool = False) -> list[tuple[str, dict[int, int]]]:
+               allow_unknown_start: bool = False, links=None, direct: bool = False) -> list[tuple[str, dict[int, int]]]:
     """Ordered segments [(name, {motor: goal})] from the measured pose to `target`.
 
-    Each segment moves one joint group; everything else holds still. `views` must be clamped,
-    trusted and include the transit pose. Raises MotionError when the arm is not on the network.
-    Segments that turn out to need no motion are skipped when they run, so a route always
-    states the full sequence: being "at the hub" within tolerance still gets an exact rise.
+    Through the hub (always, unless `direct`): rise, turn, descend. Each of those moves one joint
+    group; everything else holds still. With `direct` and `links` (see _Links), a move that starts
+    at a pose with a direct line to the target is a single "direct" segment (or "arc", a lifted
+    line) that moves all seven joints together; go_to_view() and describe() plan that way. A pose part-way along such a line (after a Stop)
+    always continues along it, whatever `direct` says: to either end, or to the nearer end and on
+    from there.
+    `views` must be clamped, trusted and include the transit pose. Raises MotionError when the
+    arm is not on the network. Segments that turn out to need no motion are skipped when they
+    run, so a route always states the full sequence: being "at the hub" within tolerance still
+    gets an exact rise.
     """
     hub = views[TRANSIT]
-    loc = locate(present, views)
+    loc = locate(present, views, links, prefer=(target,) + tuple(_last["line"]))
     if loc["where"] == "unknown" and not allow_unknown_start:
         raise MotionError(
             "the arm is not at a known pose, so there is no checked path from here. "
             "Move it by hand to the transit pose (Go limp, pose it, Hold here)")
+    if loc["where"] == "between":
+        a, b, s = loc["view"], loc["to"], loc["s"]
+        lift = links.plan(a, b)["lift"]
+        if target in (a, b):
+            return [_path_segment(views, a, b, lift, s, 1.0 if target == b else 0.0)]
+        near = a if s < 0.5 else b                  # finish the line at its nearer end, then go on from there
+        first = _path_segment(views, a, b, lift, s, 0.0 if near == a else 1.0)
+        return [first] + plan_route({**present, **views[near]}, target, views, links=links, direct=direct)
+    if direct and links is not None:
+        # At a view, or at the transit pose itself (the hub with transit's own yaw and rolls).
+        at = loc.get("view") if loc["where"] == "view" else (
+            TRANSIT if loc["where"] == "hub" and _near(present, hub, MOVABLE) else None)
+        if at and at != target:
+            plan = links.plan(at, target)
+            if plan["ok"]:
+                return [_path_segment(views, at, target, plan["lift"], 0.0, 1.0)]
     if loc.get("view") == target and target != TRANSIT:
         # At the target or on its own spoke: straight down the spoke onto the exact pose.
         return [("descend", _pick(views[target], PITCH))]
@@ -569,15 +824,30 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     # let the arm dip. Only if the register is far off do we start from where the joint is.
     start = {m: tel[m]["goal"] if abs(tel[m]["goal"] - tel[m]["pos"]) <= HELD_GOAL_TOL else tel[m]["pos"]
              for m in ids}
-    dist = max(abs(goal[m] - start[m]) for m in ids)
+    path = getattr(goal, "path", None)
+    if path:
+        # A direct line or arc: every joint follows _path_pose(). The arm starts a little off that
+        # line (sag, or wherever a Stop left it); the difference fades out along the way.
+        pa, pb, phub, lift, s0, s1 = path
+        off = {m: start[m] - x for m, x in _path_pose(pa, pb, phub, lift, s0).items()}
+
+        def shape(k):
+            q = _path_pose(pa, pb, phub, lift, s0 + (s1 - s0) * k)
+            return {m: q[m] + (1.0 - k) * off[m] for m in ids}
+        pts = [shape(i / 16) for i in range(17)]              # the arc makes some joints travel further
+        dist = max(sum(abs(q[m] - p[m]) for p, q in zip(pts, pts[1:])) for m in ids)
+    else:
+        def shape(k):
+            return {m: start[m] + (goal[m] - start[m]) * k for m in ids}
+        dist = max(abs(goal[m] - start[m]) for m in ids)
     duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours
     servo_accel = max(SERVO_ACCEL, int(peak_speed / 20))     # enough acceleration to keep up when fast
     leash = lead_limit(peak_speed)
 
     def waypoint(s):   # inside the calibrated envelope even if the arm started just outside it
-        k = _ease(s)
-        return {m: min(max(int(round(start[m] + (goal[m] - start[m]) * k)), env[m][0]), env[m][1]) for m in ids}
+        q = shape(_ease(s))
+        return {m: min(max(int(round(q[m])), env[m][0]), env[m][1]) for m in ids}
 
     sent: deque = deque()                                    # (time, goals) we wrote recently
     if turbo:
@@ -693,16 +963,36 @@ def _height(pose: dict[int, int], ranges) -> float:
                for mapping in ("viewer", "true_scale") for point in CLEAR_POINTS)
 
 
+def _ends_lower(present: dict, goal: dict, ranges) -> bool:
+    """Does a move from the measured pose to `goal` bring the far end of the arm (forearm, wrist,
+    gripper, camera: CLEAR_POINTS) closer to the desk? By the geometry model, 1 cm allowance."""
+    return _height({**present, **goal}, ranges) < _height(present, ranges) - DIRECT_DIP_M
+
+
+def _kind(route: list[str]) -> str | None:
+    """What kind of route this is, for UIs: "direct" (straight line, every joint together), "arc"
+    (the same, lifted towards the hub in the middle) or "hub" (rise, turn, descend)."""
+    if not route:
+        return None
+    if any(seg not in PATH_SEGMENTS for seg in route):
+        return "hub"
+    return "arc" if "arc" in route else "direct"
+
+
 def _segment_speed(seg: str, max_speed: float) -> tuple[float, bool]:
     """(speed, turbo) for one segment. Turbo: rise and turn on the servos' own profile, the
     descent streamed at fast. Otherwise the descent is capped at normal: coming down onto a
     view is where an overshoot would matter."""
+    if seg in PATH_SEGMENTS:
+        # Streamed on the leash, which keeps the arm on the line the model checked. (In turbo a
+        # straight line that does not end lower than it starts is upgraded, see _go_to_view.)
+        return min(max_speed, DIRECT_SPEED_CAP), False
     if seg != "descend":
         return max_speed, max_speed >= SPEED_TURBO
     return (SPEED_FAST if max_speed >= SPEED_TURBO else min(max_speed, SPEED_NORMAL)), False
 
 
-async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx: dict) -> float:
+async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx: dict, index0: int = 0) -> float:
     """Run rise / turn / descend with the turn overlapping the other two above CLEAR_HEIGHT_M.
 
       rise starts at once; the turn starts as soon as the measured pose is above the clear
@@ -729,7 +1019,7 @@ async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx
         while True:
             running = [n for n, t in tasks.items() if not t.done()]
             ctx["moving"] = _last["driving"] = tuple(sorted({m for n in running for m in segs[n]}))
-            status.update(phase="+".join(running) or status["phase"], phase_index=len(tasks))
+            status.update(phase="+".join(running) or status["phase"], phase_index=index0 + len(tasks))
             for t in tasks.values():
                 if t.done() and not t.cancelled() and t.exception():
                     raise t.exception()
@@ -767,7 +1057,7 @@ async def _inspect(arm, target: str | None = None) -> dict:
     `blockers` lists every reason a move cannot start right now (empty = good to go).
     `where` is filled in whenever the joints are readable and transit is trusted, also while
     the arm is limp, so a person can see the arm reach the hub while posing it by hand."""
-    out = {"blockers": [], "where": None, "present": None, "views": None, "env": None}
+    out = {"blockers": [], "where": None, "present": None, "views": None, "env": None, "links": None}
     blockers = out["blockers"]
     raw = _read_views_file()
     if TRANSIT not in raw:
@@ -803,7 +1093,14 @@ async def _inspect(arm, target: str | None = None) -> dict:
              for name, view in raw.items() if not problems[name]}
     out.update(present=present, views=views, env=env)
     if TRANSIT in views:
-        out["where"] = locate(present, views)
+        if DIRECT:
+            try:
+                import fk  # noqa: F401  (direct lines are only as good as the geometry model)
+                out["links"] = _Links(views, ranges, present[GRIPPER])
+            except Exception:
+                pass
+        out["where"] = locate(present, views, out["links"],
+                              prefer=((target,) if target else ()) + tuple(_last["line"]))
     limp = [m for m in MOVABLE if not tel[m]["torque"]]
     if limp:
         blockers.append("the arm is limp; press 'Hold here' first (with the arm supported)")
@@ -827,13 +1124,14 @@ async def describe(arm, name: str | None = None, allow_unknown_start: bool = Fal
     """Where the arm is and whether a move (to `name`) could start now. Moves nothing.
 
     {"ok": bool, "error": first blocker or None, "blockers": [...], "where": {...} | None,
-     "route": [segment names]}"""
+     "route": [segment names], "kind": "direct" | "arc" | "hub" | None}
+    `kind` says how the move to `name` would go from here (see _kind); None without a route."""
     try:
         info = await _inspect(arm, name)
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        return {"ok": False, "error": str(e), "blockers": [str(e)], "where": None, "route": []}
+        return {"ok": False, "error": str(e), "blockers": [str(e)], "where": None, "route": [], "kind": None}
     blockers, route = list(info["blockers"]), []
     if (info["where"] or {}).get("where") == "unknown" and not allow_unknown_start:
         blockers.append("the arm is not at a known pose; move it by hand to the transit pose "
@@ -841,24 +1139,26 @@ async def describe(arm, name: str | None = None, allow_unknown_start: bool = Fal
     if name and info["views"] and name in info["views"] and TRANSIT in info["views"]:
         try:
             route = [seg for seg, _ in plan_route(info["present"], name, info["views"],
-                                                  allow_unknown_start=allow_unknown_start)]
+                                                  allow_unknown_start=allow_unknown_start, links=info["links"],
+                                                  direct=not allow_unknown_start)]
         except MotionError as e:
             if str(e) not in blockers and "not at a known pose" not in str(e):
                 blockers.append(str(e))
     return {"ok": not blockers, "error": blockers[0] if blockers else None, "blockers": blockers,
-            "where": info["where"], "route": route}
+            "where": info["where"], "route": route, "kind": _kind(route)}
 
 
 async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
                      allow_unknown_start: bool = False) -> dict:
     """Move to a saved view. The interface everyone codes against:
-    {"ok", "view", "error", "duration", "route", "hold"}.
+    {"ok", "view", "error", "duration", "route", "kind", "hold"}.
+    `kind`: "direct" (one straight move of all joints), "arc" (the same, lifted) or "hub"; None if refused.
 
     Cancel the task running this to stop: the arm holds where it is and CancelledError propagates.
     `allow_unknown_start` is the supervised "recover to transit" path; it forces SPEED_FIRST.
     `hold` is None when nothing was commanded, else "confirmed" / "unconfirmed" after an abort.
     """
-    refused = {"ok": False, "view": name, "duration": 0.0, "route": [], "hold": None}   # same keys as a result
+    refused = {"ok": False, "view": name, "duration": 0.0, "route": [], "kind": None, "hold": None}   # same keys as a result
     if name not in load_views():
         return {**refused, "error": f"unknown view; known: {sorted(load_views())}"}
     if _move_lock.locked():
@@ -884,9 +1184,9 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
     async with _move_lock:
         t0 = time.time()
         stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
-        result = {"ok": False, "view": name, "error": None, "duration": 0.0, "route": [], "hold": None}
+        result = {"ok": False, "view": name, "error": None, "duration": 0.0, "route": [], "kind": None, "hold": None}
         status.update(moving=True, view=name, phase="check", phase_index=0, phase_count=0,
-                      progress=0.0, error=None, route=[], hold=None)
+                      progress=0.0, error=None, route=[], kind=None, hold=None)
         # Until a waypoint is sent, a refusal must not write anything.
         # "moving": the joints the current segment is driving (empty between segments).
         ctx = {"wrote": False, "moving": ()}
@@ -905,42 +1205,53 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             info = await _inspect(arm, name)
             if info["blockers"]:
                 raise MotionError(info["blockers"][0])
-            present, views, env = info["present"], info["views"], info["env"]
-            route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start)
-            start = info["where"].get("view")
-            checked = [view_checked(v) for v in (name, start) if v and v != TRANSIT]
-            if allow_unknown_start or not checked or not all(checked):
+            present, views, env, links = info["present"], info["views"], info["env"], info["links"]
+            where = info["where"]
+            involved = [v for v in (name, where.get("view"), where.get("to")) if v and v != TRANSIT]
+            if allow_unknown_start or not involved or not all(view_checked(v) for v in involved):
                 # Unchecked view, or no checked view involved at all (hub -> transit): slowest speed.
                 max_speed = min(max_speed, SPEED_FIRST)
+            route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start, links=links,
+                               direct=not allow_unknown_start)
             result["route"] = [seg for seg, _ in route]
-            status.update(route=result["route"], phase_count=len(route))
-            blend = BLEND and max_speed >= SPEED_FAST and len(route) > 1
+            result["kind"] = _kind(result["route"])
+            status.update(route=result["route"], kind=result["kind"], phase_count=len(route))
+            # Direct lines first, one after the other; whatever is left goes through the hub.
+            lines = [(seg, goal) for seg, goal in route if seg in PATH_SEGMENTS]
+            rest = route[len(lines):]
+            blend = BLEND and max_speed >= SPEED_FAST and len(rest) > 1
             if blend:
                 try:
                     import fk  # noqa: F401  (the clear-height check needs the geometry model)
                 except Exception:
                     blend = False
-            if blend:
-                status.update(phase="+".join(result["route"][:1]), phase_index=1, progress=0.0)
-                result["duration"] += await _run_blended(arm, route, max_speed, env, stats, ctx)
-            else:
-                expect = dict(present)      # where each joint should be as the route progresses
-                moved: set[int] = set()
-                for i, (seg, goal) in enumerate(route, 1):
-                    status.update(phase=seg, phase_index=i, progress=0.0)
-                    # Hand-off: joints this segment does not move must be where earlier segments left them.
-                    now = arm.joints(max_age_s=STALE_S)
-                    for m in moved - set(goal):
-                        if abs(now[m] - expect[m]) > ARRIVE_TOL:
-                            raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
-                                              "needs it to be; not continuing")
-                    ctx["moving"] = _last["driving"] = tuple(goal)
-                    seg_speed, turbo = _segment_speed(seg, max_speed)
-                    result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
-                                                             {m: expect[m] for m in moved}, turbo=turbo)
-                    ctx["moving"] = _last["driving"] = ()
-                    expect.update(goal)
-                    moved |= set(goal)
+            expect = dict(present)      # where each joint should be as the route progresses
+            moved: set[int] = set()
+            for i, (seg, goal) in enumerate(route, 1):
+                if blend and i > len(lines):
+                    status.update(phase="+".join(result["route"][i - 1:i]), phase_index=i, progress=0.0)
+                    result["duration"] += await _run_blended(arm, rest, max_speed, env, stats, ctx,
+                                                             index0=len(lines))
+                    break
+                status.update(phase=seg, phase_index=i, progress=0.0)
+                # Hand-off: joints this segment does not move must be where earlier segments left them.
+                now = arm.joints(max_age_s=STALE_S)
+                for m in moved - set(goal):
+                    if abs(now[m] - expect[m]) > ARRIVE_TOL:
+                        raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
+                                          "needs it to be; not continuing")
+                ctx["moving"] = _last["driving"] = tuple(goal)
+                if seg in PATH_SEGMENTS:
+                    _last["line"] = goal.ends       # so a Stop on it is recognised as this line, not a neighbour
+                seg_speed, turbo = _segment_speed(seg, max_speed)
+                if (seg == "direct" and DIRECT_TURBO_PROFILE and max_speed >= SPEED_TURBO
+                        and not _ends_lower(arm.joints(max_age_s=STALE_S), goal, arm.ranges())):
+                    seg_speed, turbo = max_speed, True
+                result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
+                                                         {m: expect[m] for m in moved}, turbo=turbo)
+                ctx["moving"] = _last["driving"] = ()
+                expect.update(goal)
+                moved |= set(goal)
             result["ok"] = True
         except asyncio.CancelledError:
             # Stop may have been pressed because the arm touches something: stop pushing too.

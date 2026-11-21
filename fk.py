@@ -481,6 +481,64 @@ def _lowest(angles: dict[str, float], meshes: bool) -> tuple[float, str]:
     return best_h, best_name
 
 
+def part_heights(joints: dict, ranges: dict | None = None, mapping: str = "viewer",
+                 meshes: bool = True) -> dict[str, float]:
+    """Height (m) of every part of the arm that can come down, by name: the key points from fk()
+    except the two that cannot change height (the camera minus its CAMERA_RADIUS ball) and, with
+    meshes=True, the lowest vertex of each link below the shoulder ("mesh:<link>").
+    min(part_heights(...).values()) is min_height(...)[0]; this keeps the parts apart so a caller
+    can compare each part with where that same part was in another pose."""
+    points, link_pose, _ = _key_points(steps_to_angles(joints, ranges, mapping=mapping))
+    out = {name: (p[2] - CAMERA_RADIUS if name == "camera" else p[2])
+           for name, p in points.items() if name not in STATIC_POINTS}
+    if meshes:
+        for link, verts in mesh_points().items():
+            rot, pos = link_pose[link]
+            rz = rot[2]
+            out[f"mesh:{link}"] = min(rz[0] * v[0] + rz[1] * v[1] + rz[2] * v[2] for v in verts) + pos[2]
+    return out
+
+
+# The arm as a chain of straight "bones" between key points, for self_clearance(): (from, to,
+# how many joints from the base). The jaws and the camera both hang off the wrist roll.
+_BONES = (("floor", "j2_shoulder", 0), ("j2_shoulder", "j3_elbow", 1), ("j3_elbow", "j4_pitch", 2),
+          ("j4_pitch", "j5_forearm_roll", 3), ("j5_forearm_roll", "j6_wrist_pitch", 4),
+          ("j6_wrist_pitch", "j7_wrist_roll", 5), ("j7_wrist_roll", "jaw_tip", 6), ("j7_wrist_roll", "camera", 6))
+
+
+def _point_segment(p: Vec, a: Vec, b: Vec) -> float:
+    ab, ap = (b[0] - a[0], b[1] - a[1], b[2] - a[2]), (p[0] - a[0], p[1] - a[1], p[2] - a[2])
+    n = _dot(ab, ab)
+    t = 0.0 if n == 0 else max(0.0, min(1.0, _dot(ap, ab) / n))
+    return math.dist(p, (a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t))
+
+
+def self_clearance(joints: dict, ranges: dict | None = None, mapping: str = "viewer") -> float:
+    """How close the arm comes to itself (m): the smallest distance between the centre lines of
+    two "bones" of the arm that are at least three joints apart (floor-to-shoulder column,
+    shoulder-elbow, elbow-pitch, pitch-forearm, forearm-wrist, wrist-roll, roll-jaw tip,
+    roll-camera). Bones closer together in the chain are kept apart by the joint limits.
+
+    A coarse stand-in for a self-collision check, not one: centre lines only, so the real gap is
+    smaller by the thickness of both links (several cm), and the camera stalk and cables are not
+    in it. Good for one thing: telling a folded pose (`home`: about 3 cm) from an open one
+    (every other view: 12 cm or more) and seeing whether a path folds the arm further."""
+    points = _key_points(steps_to_angles(joints, ranges, mapping=mapping))[0]
+    base = points["j1_base_yaw"]
+    points = {**points, "floor": (base[0], base[1], 0.0)}
+    best = math.inf
+    for a0, a1, da in _BONES:
+        for b0, b1, db in _BONES:
+            if db - da < 3:
+                continue
+            pa, pb, qa, qb = points[a0], points[a1], points[b0], points[b1]
+            for k in range(5):                         # 5 points along the outer bone against the inner one
+                t = k / 4
+                q = (qa[0] + (qb[0] - qa[0]) * t, qa[1] + (qb[1] - qa[1]) * t, qa[2] + (qb[2] - qa[2]) * t)
+                best = min(best, _point_segment(q, pa, pb))
+    return best
+
+
 def _mappings(mapping: str) -> tuple[str, ...]:
     if mapping == "worst":
         return ("viewer", "true_scale")

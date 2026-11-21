@@ -2,23 +2,28 @@
 
 ## Current capture and command boundary
 
-The imported [Local Vision project](../dashboard/README.md) provides the Android capture app and its paired web dashboard. The phone owns audio/video capture, local recording, offline wake detection and speech-to-text. The browser receives video over WebRTC and final transcript text over the authenticated LAN event socket. It decides whether to start or stop recording and sends the normal recording request back to the phone. Manual capture controls remain available. See [the wire contract](../dashboard/packages/protocol/README.md).
+The laptop hosts the HackLab operator dashboard on loopback. The app on the Pixel owns capture, the audio/video master, wake detection and offline ASR. The laptop verifies the phone certificate and pairs using the existing approval flow. The phone's vision-only WebRTC feed stays peer-to-peer. Station owns the USB camera and publishes frames through `capture_server.py`.
 
 ```mermaid
 flowchart LR
-    Phone["Flutter app · camera, mic, offline speech, recorder"]
-    Browser["Paired dashboard · transcript and recording intent"]
-    Client["voice_bridge.py · dashboard-side command service, MCP client"]
-    MCP["Existing camera-arm MCP server"]
-    Arm["Existing capture_server.py · motion checks and control"]
-    Phone -- "Vision-only video and final transcript text" --> Browser
-    Browser -- "Authenticated recording start/stop" --> Phone
-    Browser -- "Eligible live transcript (loopback HTTP)" --> Client
-    Client -- "MCP: stop, go_to_view, get_status, list_views" --> MCP
+    Phone["Pixel · video, on-device recording, wake and ASR"]
+    Browser["Laptop dashboard · both feeds, transcripts, controls"]
+    Host["laptop_dashboard.py · paired signaling and USB recorder"]
+    Bridge["voice_bridge.py · grammar and optional Claude"]
+    MCP["Existing camera-arm MCP"]
+    Arm["capture_server.py · arm control & Station camera"]
+    Phone -- "Direct vision-only WebRTC" --> Browser
+    Phone <-- "Pinned HTTPS/WSS · transcripts, controls" --> Host
+    Browser <-- "Local UI, commands and robot frames" --> Host
+    Host -- "Spoken arm or free-phrased request" --> Bridge
+    Bridge --> MCP
     MCP --> Arm
+    MCP -- "record_camera" --> Host
+    Arm -- "Station camera frames" --> Host
+    Host -- "Direct arm stop" --> Arm
 ```
 
-The browser implements the recording grammar. Other live finals go to `voice_bridge.py` on the PC that runs the browser (`http://127.0.0.1:8210`), which maps a small local grammar to camera-arm MCP tools, asks Claude about what the grammar cannot place (optional, needs `ANTHROPIC_API_KEY`), and shows the result beside the transcript; see [the handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Future agents should begin with [dashboard/AGENTS.md](../dashboard/AGENTS.md) and [the MCP handoff contract](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). Keep the existing arm control and stop authority in `capture_server.py`.
+Phone masters retain native quality and audio. Robot clips are video-only and finalize when their tab loses visibility or its feed stops. Exact recording phrases use the phone's acoustic cross-check. Unqualified start or stop requests target the phone. [Startup, recording and acceptance guide](LAPTOP_DASHBOARD.md)
 
 ---
 

@@ -20,14 +20,14 @@ export function armBridgeUrl(search = location.search): string | null {
 const inflight = new Set<string>();
 
 /** POST one eligible final; resolves with the service's outcome or a transport failure. Never retried. */
-export async function forwardToArm(base: string, req: ArmRequest, timeoutMs = 15000): Promise<VoiceCommandResult | null> {
+export async function forwardToArm(base: string, req: ArmRequest, timeoutMs = 15000, throughLaptop = false): Promise<VoiceCommandResult | null> {
   const key = `${req.session_id}/${req.utterance_id}`;
   if (inflight.has(key)) return null;
   inflight.add(key);
   const ctl = new AbortController();
   const timer = window.setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(`${base}/api/v1/voice-command`, {
+    const r = await fetch(throughLaptop ? "/laptop/arm/voice" : `${base}/api/v1/voice-command`, {
       method: "POST", mode: "cors", credentials: "omit", cache: "no-store", signal: ctl.signal,
       headers: { "content-type": "application/json" }, body: JSON.stringify(req),
     });

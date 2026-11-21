@@ -11,6 +11,8 @@ PC voice page (Chrome/Safari) ──text─────────────�
 
 Everything goes through `voice_bridge.py` on the PC that runs the arm. It only ever calls four MCP tools: stop, go to a view, status, list views.
 
+The laptop dashboard also routes [phone and robot recording requests](LAPTOP_DASHBOARD.md#recording-and-speech) via the local gateway and MCP. This path requires a paired phone for speech and phone recording. For robot recording it additionally requires a visible dashboard tab and live robot feed.
+
 ## Start it
 
 On the Mac with the arm, after Station, `capture_server.py` and `mcp_server.py` are running (see the README):

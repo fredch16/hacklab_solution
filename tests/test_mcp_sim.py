@@ -75,10 +75,10 @@ async def main():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert set(tools) == {"list_views", "go_to_view", "get_status", "stop", "get_camera_image",
                               "get_scene", "update_scene", "remove_scene_object", "best_view",
-                              "preview_frame"}, set(tools)
+                              "preview_frame", "record_camera"}, set(tools)
         schema = json.dumps(tools["go_to_view"].input_schema)
         assert "enum" in schema and all(n in schema for n in names) and "transit" not in names, schema
-        print("ok  10 tools; go_to_view only accepts the saved views:", names)
+        print("ok  11 tools; go_to_view only accepts the saved views:", names)
 
         st = await wait_where(client)
         start_view = st["current_view"]

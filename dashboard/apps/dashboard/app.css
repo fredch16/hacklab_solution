@@ -96,3 +96,13 @@ input.txt{flex:1 1 160px;min-width:0;min-height:44px;background:var(--ink950);co
 @keyframes vfade{from{opacity:0}to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.vsheet{animation:vfade 200ms ease-out}.dot,.vbar{animation:none!important}.vsheet[data-mode=recognizing] .dot{height:28px}}
 @media(max-width:640px){.vsheet{bottom:14px;width:calc(100% - 16px);min-height:150px;padding:20px 48px 20px 18px;gap:14px}.vdots{width:60px;gap:7px}.dot{width:11px;height:11px}.vsheet[data-mode=recognizing] .dot{width:7px;height:11px}.vdone{width:44px;height:44px;font-size:22px}.ptext{font-size:22px}.pres{font-size:16px}}
+
+.camera-pair{display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
+@media(min-width:1150px){.camera-pair{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}}
+.robot-frame{aspect-ratio:16/9;background:var(--ink950);display:grid;place-items:center;overflow:hidden;border-radius:10px;margin:10px 0}
+.robot-frame img{width:100%;height:100%;object-fit:contain}
+.robot-unpaired{max-width:900px}
+.phone-setup-wrap{padding-bottom:0}
+.phone-setup .controls{margin-top:12px;align-items:end}
+.phone-setup .lbl{display:block;margin-bottom:4px}
+.phone-setup input{max-width:100%}

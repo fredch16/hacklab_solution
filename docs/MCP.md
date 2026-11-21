@@ -40,6 +40,7 @@ The MCP server reads the view names from the web server at start; restart it aft
 
 | Tool | Does | Returns |
 |---|---|---|
+| `record_camera(camera, action)` | Starts or stops one recorder, choosing `phone` for unqualified requests. Robot recording requires a visible live feed on the laptop. | `{ok, message, error}` from the [laptop dashboard](LAPTOP_DASHBOARD.md) |
 | `list_views()` | saved views and where the camera is | `{views: [{name, description, aliases, checked, shows}], current_view, moving, can_move, blockers}` |
 | `go_to_view(view)` | starts a move; `view` is an enum of the saved views (not `transit`) | at once: `{started, view, speed, first_run_speed, eta_hint, hint}`; `started: false` if already there |
 | `get_status()` | how the current or last move is going | `{moving, target_view, phase, route, progress, current_view, can_move, blockers, stopping, hold, error, last_result: {ok, view, error, duration, route}}` |

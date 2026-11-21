@@ -86,9 +86,28 @@ internal class WakeDetector(private val assets: AssetManager) {
             "begin recording" to "START", "begin the recording" to "START",
             "stop recording" to "STOP", "stop the recording" to "STOP",
             "end recording" to "STOP", "end the recording" to "STOP",
+            "start phone recording" to "START", "start phone camera recording" to "START",
+            "start camera recording" to "START", "begin camera recording" to "START",
+            "stop phone recording" to "STOP", "stop phone camera recording" to "STOP",
+            "stop camera recording" to "STOP", "end camera recording" to "STOP",
+            "start robot recording" to "ROBOT_START", "start robot camera recording" to "ROBOT_START",
+            "stop robot recording" to "ROBOT_STOP", "stop robot camera recording" to "ROBOT_STOP",
+            "end robot recording" to "ROBOT_STOP", "end robot camera recording" to "ROBOT_STOP",
             "stout recording" to "BLOCK",
         )
         phrases.joinToString("/") { (phrase, label) ->
+            val phones = phrase.uppercase(java.util.Locale.ROOT).split(' ').joinToString(" ") {
+                pronunciation.candidates(it).first()
+            }
+            "$phones #0.25 @$label"
+        }
+    }
+
+    private val namedRecordingKeywords by lazy {
+        listOf(
+            "phone camera recording" to "START", "phone recording" to "START",
+            "robot camera recording" to "ROBOT_START", "robot recording" to "ROBOT_START",
+        ).joinToString("/") { (phrase, label) ->
             val phones = phrase.uppercase(java.util.Locale.ROOT).split(' ').joinToString(" ") {
                 pronunciation.candidates(it).first()
             }
@@ -104,9 +123,11 @@ internal class WakeDetector(private val assets: AssetManager) {
     fun transcribeRecordingPhrase(samples: FloatArray): String? {
         val k = active ?: return null
         if (!phoneme) return null
-        return when (firstKeyword(k, recordingKeywords, samples)) {
+        return when (firstKeyword(k, recordingKeywords, samples) ?: firstKeyword(k, namedRecordingKeywords, samples)) {
             "START" -> "start recording"
             "STOP" -> "stop recording"
+            "ROBOT_START" -> "start robot recording"
+            "ROBOT_STOP" -> "stop robot recording"
             "BLOCK" -> null
             else -> if (firstKeyword(k, recordKeyword, samples) == "RECORD") "record" else null
         }

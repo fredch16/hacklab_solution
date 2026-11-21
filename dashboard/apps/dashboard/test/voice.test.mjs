@@ -141,3 +141,16 @@ test("arm results: badge, popup and transport failure", () => {
   assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u9", ...down })).result.kind, "bad");
   assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u9", command: "none", ok: true })).result.text, "No matching command");
 });
+
+test("camera recording targets are explicit and phone is the default", () => {
+  const final = (text, acoustic_text) => ({utterance_id: "target", text, acoustic_text, end_reason: "silence"});
+  const plan = (text, hint) => V.planVoiceCommand("voice.transcript.final", final(text, hint));
+  assert.equal(plan("start robot recording", "start robot recording")?.type, "robot.recording.start");
+  assert.equal(plan("robot camera recording", "start robot recording")?.type, "robot.recording.start");
+  assert.equal(plan("stop robot camera recording", "stop robot recording")?.type, "robot.recording.stop");
+  assert.equal(plan("phone camera recording", "start recording")?.type, "recording.start");
+  assert.equal(plan("start camera recording", "start recording")?.type, "recording.start");
+  assert.equal(plan("stop phone recording", "stop recording")?.type, "recording.stop");
+  assert.equal(plan("start robot recording", "start recording"), null);
+  assert.equal(plan("don't start robot recording", "start robot recording"), null);
+});

@@ -12,6 +12,8 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 
 ## Local Vision mobile app and dashboard
 
+The HackLab operator page now runs on the laptop. See the [laptop dashboard guide](docs/LAPTOP_DASHBOARD.md) for the phone and robot feeds, pairing, independent recording, and spoken commands.
+
 Source, build steps, and agent instructions live under [dashboard/](dashboard/README.md). The Flutter app records and transcribes on the phone. The paired browser interprets spoken recording requests and asks the phone's recorder to start or stop. Other spoken requests go to `voice_bridge.py` on the PC, which calls the camera-arm MCP server: run `.venv/bin/python voice_bridge.py` next to `mcp_server.py`. To enable Claude at runtime, open **Claude API key settings** in the paired dashboard’s Voice card, paste a key on the PC’s local settings page, and select **Save key**. The bridge uses it until restart. A startup key in the environment or `.env` also works. With a key loaded, loosely worded requests ("yo, show me the thing from da top") are interpreted by Claude; without it only the fixed phrases work. Voice mode without a phone: with the bridge running, open `http://127.0.0.1:8210/` in Chrome or Safari on the same PC (tap to talk, or hands-free after "Hey Claude"; the browser does the speech recognition). [Current architecture](docs/ARCHITECTURE.md)
 
 The bundled Whisper decoder uses Git LFS. Run `git lfs install` before cloning. In an existing checkout, run `git lfs pull` before building the Android app. The APK bundles the model for offline operation. The dashboard source was imported with 22 commits as the second parent of `fc86036`. Three commit IDs changed when the decoder entered Git LFS.

@@ -36,6 +36,8 @@
 
 ## Dashboard command routing and MCP handoff
 
+The HackLab integration now serves this UI on the laptop. Its [laptop dashboard guide](../../docs/LAPTOP_DASHBOARD.md) defines transport, dual recording, and browser visibility rules. The following phone-hosted path is kept for compatibility during the hardware cutover.
+
 1. **Phone capture and speech.** The phone shares one mic input between the master recording and offline KWS/VAD/ASR. Its paired WSS sends a live `voice.transcript.final` with the Whisper text and optional `acoustic_text` from the constrained phoneme decoder. Audio stays on the phone. No native or Dart transcript handler starts/stops recording.
 2. **Dashboard intent.** `apps/dashboard/src/main.ts` receives the live event for the active paired session and calls `planVoiceCommand` in `apps/dashboard/src/voice.ts`. A complete recording request that agrees with the second decode becomes `recording.start` or `recording.stop`. Pending requests and existing results are correlated by utterance. Snapshots restore history for display only. Lost connections never queue or replay voice requests.
 3. **Phone recorder.** The browser sends the ordinary paired command with request ID `voice:<utterance_id>`. The phone handles it through `SignalingRelay`, checks recorder state and prerequisites, and returns `command.result`. The browser displays the result beside the transcript. Manual phone and dashboard controls remain available.

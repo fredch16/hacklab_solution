@@ -12,7 +12,7 @@ export const MAX_TRANSCRIPTS = 50;
 export const initialLive = (): LiveVoice => ({ transcripts: [], commands: {} });
 
 export interface VoiceRecordingCommand {
-  type: "recording.start" | "recording.stop";
+  type: "recording.start" | "recording.stop" | "robot.recording.start" | "robot.recording.stop";
   request_id: string;
 }
 
@@ -27,17 +27,25 @@ export function planVoiceCommand(type: string, payload: unknown): VoiceRecording
     .replace(/^(?:(?:okay|ok|please|can you|could you|would you) )+/, "")
     .replace(/(?: (?:please|right now|now|thank you|okay|i think))+$/, "");
   const request_id = `voice:${utterance_id}`;
+  if ((request === "robot recording" || request === "robot camera recording" ||
+      /^(start|begin) (the )?robot (camera )?recording$/.test(request)) && acoustic_text === "start robot recording") {
+    return { type: "robot.recording.start", request_id };
+  }
+  if (/^(stop|end) (the )?robot (camera )?recording$/.test(request) && acoustic_text === "stop robot recording") {
+    return { type: "robot.recording.stop", request_id };
+  }
   if ((request === "record" && acoustic_text === "record") ||
-      (/^(start|begin) (the )?recording$/.test(request) && acoustic_text === "start recording")) {
+      ((/^(start|begin) (the )?(?:(?:phone )?(?:camera )?)recording$/.test(request) ||
+        /^phone (camera )?recording$/.test(request)) && acoustic_text === "start recording")) {
     return { type: "recording.start", request_id };
   }
-  if (/^(stop|end) (the )?recording$/.test(request) && acoustic_text === "stop recording") {
+  if (/^(stop|end) (the )?(?:phone )?(?:camera )?recording$/.test(request) && acoustic_text === "stop recording") {
     return { type: "recording.stop", request_id };
   }
   return null;
 }
 
-export interface ArmRequest { session_id: string; utterance_id: string; text: string }
+export interface ArmRequest { session_id: string; utterance_id: string; text: string; tab?: string; acoustic_text?: string }
 
 /**
  * A live final the recording grammar did not take, for the PC-side arm command service
@@ -71,7 +79,7 @@ const ARM_ERR: Record<string, string> = {
 };
 /** Text for an arm command outcome; null when the service took no action. */
 export function armText(c: VoiceCommandResult): string | null {
-  if (!c.command?.startsWith("arm")) return null;
+  if (!c.command?.startsWith("arm") && !c.command?.startsWith("robot.recording")) return null;
   if (c.message) return c.message;
   if (c.error) return ARM_ERR[c.error] ?? `Arm command failed (${c.error}).`;
   return "Done";

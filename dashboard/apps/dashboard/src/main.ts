@@ -1,3 +1,4 @@
+import { laptop, laptopRecord, robotCard, robotTab, socketUrl } from "./laptop.js";
 import { qrCanvas } from "./qr.js";
 import { armBridgeUrl, forwardToArm } from "./arm.js";
 import { armRequest, popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, planVoiceCommand, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
@@ -25,6 +26,8 @@ let tick: number | undefined;
 let dashTimer: number | undefined;
 
 const root = document.getElementById("app") as HTMLElement;
+let laptopPhoneSet = false;
+let robot: HTMLElement | null = null;
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string | null, ...kids: (Node | string | null)[]): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -38,8 +41,8 @@ async function api(path: string, method = "GET", body?: unknown): Promise<{ stat
   try {
     const r = await fetch(path, {
       method, credentials: "same-origin", cache: "no-store",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      headers: method === "POST" ? { "Content-Type": "application/json" } : undefined,
+      body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
     });
     return { status: r.status, json: await r.json().catch(() => ({})) };
   } catch { return null; }
@@ -55,7 +58,7 @@ async function start() {
 function setView(v: View) {
   view = v;
   if (v !== "dashboard" && dash) { videoLost(); vs.phase = "idle"; vs.message = ""; clearInterval(dashTimer); dash = null; for (const e of pending.values()) clearTimeout(e.timer); pending.clear(); live = initialLive(); voiceMsg = ""; }
-  if (v === "pairing") { if (!pairPoll && pairMode === "qr") void requestQr(); } else stopPairing();
+  if (v === "pairing") { if ((!laptop || laptopPhoneSet) && !pairPoll && pairMode === "qr") void requestQr(); } else stopPairing();
   render();
 }
 
@@ -163,6 +166,8 @@ function onCommandResult(env: { request_id?: string; payload?: any }) {
   updateDash();
 }
 
+const pendingRobotVoice = new Set<string>();
+
 function onVoiceEvent(type: string, payload: unknown) {
   // Command results are generated here from correlated command.result replies.
   if (type === "voice.command") return;
@@ -177,12 +182,31 @@ function onVoiceEvent(type: string, payload: unknown) {
         live = applyVoiceEvent(live, "voice.command", result);
         setPopup(popupReduce(popup, "voice.command", result));
       };
+      if (action?.type.startsWith("robot.recording.")) {
+        if (pendingRobotVoice.has(utterance_id)) return;
+        pendingRobotVoice.add(utterance_id);
+        const issuedIn = state.sessionId;
+        void laptopRecord("robot", action.type === "robot.recording.start" ? "start" : "stop").then((r) => {
+          pendingRobotVoice.delete(utterance_id);
+          if (state.sessionId !== issuedIn) return;
+          const result = { utterance_id, ...r };
+          live = applyVoiceEvent(live, "voice.command", result);
+          setPopup(popupReduce(popup, "voice.command", result));
+          updateDash();
+        });
+        return;
+      }
       const armReq = action ? null : armRequest(type, payload, state.sessionId);
-      const bridge = armReq ? armBridgeUrl() : null;
+      const bridge = armReq ? (laptop ? location.origin : armBridgeUrl()) : null;
       if (armReq && bridge) {
         // Not a recording command: the PC-side arm command service interprets it (MCP stays there).
-        void forwardToArm(bridge, armReq).then((r) => {
-          if (!r || Object.hasOwn(live.commands, utterance_id)) return;
+        const hint = (payload as { acoustic_text?: unknown }).acoustic_text;
+        if (laptop) {
+          armReq.tab = robotTab();
+          if (typeof hint === "string") armReq.acoustic_text = hint;
+        }
+        void forwardToArm(bridge, armReq, 15000, laptop).then((r) => {
+          if (!r || state.sessionId !== armReq.session_id || Object.hasOwn(live.commands, utterance_id)) return;
           const result = { utterance_id, ...r };
           live = applyVoiceEvent(live, "voice.command", result);
           setPopup(popupReduce(popup, "voice.command", result));
@@ -211,7 +235,7 @@ function closeWs() {
 function connect() {
   closeWs();
   conn = attempt === 0 && !state.snapshot ? "disconnected" : "reconnecting";
-  const sock = new WebSocket(`wss://${location.host}/api/v1/events`);
+  const sock = new WebSocket(socketUrl(laptop ? `/api/v1/events?tab=${robotTab()}` : "/api/v1/events"));
   ws = sock;
   sock.onmessage = (m) => {
     try {
@@ -261,6 +285,11 @@ function render() {
   const focused = (document.activeElement as HTMLElement | null)?.dataset?.focus;
   const typed = (document.getElementById("code") as HTMLInputElement | null)?.value ?? "";
   root.replaceChildren(view === "pairing" ? pairingView(typed) : view === "terminal" ? terminalView() : h("p", "boot", "Loading dashboard…"));
+  if (robot) {
+    const holder = h("div", "page robot-unpaired");
+    holder.append(robot);
+    root.append(holder);
+  }
   if (focused) (root.querySelector(`[data-focus="${focused}"]`) as HTMLElement | null)?.focus();
 }
 
@@ -274,8 +303,10 @@ function brand(extra?: Node) {
 function pairingView(typed: string) {
   const tls = h("details", "tls", h("summary", null, "Why does my browser say \u201CNot secure\u201D?"),
     h("p", "muted", "Expected. The phone creates its own certificate, so the browser cannot verify it. The connection is still encrypted and never leaves your local network. To be sure you reached your phone, compare the certificate SHA-256 fingerprint in the browser's certificate viewer with the one shown on the phone's Link tab."));
-  const body = pairMode === "qr" ? qrPanel() : codePanel(typed);
-  return h("main", "pair-wrap", brand(), h("section", "card pair", h("h1", null, "Pair this browser"), body, tls));
+  const body = laptop && !laptopPhoneSet
+    ? h("p", "muted", "Enter the phone’s address and fingerprint above to pair.")
+    : pairMode === "qr" ? qrPanel() : codePanel(typed);
+  return h("main", "pair-wrap", brand(), h("section", "card pair", h("h1", null, "Pair this browser"), body, laptop ? null : tls));
 }
 
 function qrPanel() {
@@ -401,7 +432,7 @@ function buildDash(): Dash {
   const hdr = h("header", "top"), stale = h("div"), status = h("p", "cam-status"), overlay = h("div", "vp-text");
   const vp = h("div", "viewport", videoEl, h("div", "overlay", overlay));
   const controls = h("div", "controls"), tags = h("div", "tags"), metrics = h("div"), phone = h("div");
-  const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
+  const cam = h("section", "card camera", h("h2", "mod", laptop ? "Phone camera" : "Camera"), status, vp, controls, tags, metrics, phone);
   const recs = h("div", "contents");
   const recBox = h("div", "contents"), otherBox = h("div", "contents");
   const vStatus = h("div"), vMute = h("div"), vMsg = h("div"), vList = h("ul", "recs"), vAnnounce = h("div", "sr-only");
@@ -424,7 +455,7 @@ function buildDash(): Dash {
     phraseDirty = false;
   };
   const bridge = armBridgeUrl();
-  const claudeSettings = bridge && /^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?$/.test(bridge)
+  const claudeSettings = !laptop && bridge && /^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?$/.test(bridge)
     ? h("a", "link", "Claude API key settings") : null;
   if (claudeSettings) {
     claudeSettings.href = `${bridge}/#claude-settings`;
@@ -432,7 +463,7 @@ function buildDash(): Dash {
     claudeSettings.rel = "noopener noreferrer";
   }
   const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, claudeSettings, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
-  const rail = h("aside", "rail", recBox, voiceCard, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
+  const rail = h("aside", "rail", recBox, voiceCard, otherBox), grid = h("main", "grid", h("div", "main-col", h("div", robot ? "camera-pair" : null, cam, robot), recs), rail);
 
   const title = h("h2", null, "Stop recording?"); title.id = "dlg-t";
   const keep = h("button", "btn primary", "Keep recording"); keep.type = "button"; keep.autofocus = true;
@@ -460,7 +491,7 @@ function recordingCard(s: Snapshot, offline: boolean): Node {
   if (r.error) kids.push(banner("bad", "\u2715", commandErrorMessage(r.error)));
   if (recMsg) kids.push(banner("bad", "\u2715", recMsg));
   const busy = isPending("rec");
-  const rb = h("button", "btn primary", "Record"); rb.dataset.focus = "record"; rb.disabled = offline || busy || BUSY_REC.includes(st);
+  const rb = h("button", "btn primary", laptop ? "Record phone camera" : "Record"); rb.dataset.focus = "record"; rb.disabled = offline || busy || BUSY_REC.includes(st);
   rb.onclick = () => void sendCommand("recording.start", {});
   const ctl = h("div", "controls", rb);
   if (on) {
@@ -585,4 +616,39 @@ function railCards(s: Snapshot): Node[] {
   ];
 }
 
-void start();
+async function startLaptop() {
+  robot = robotCard();
+  const address = h("input", "txt");
+  address.id = "phone-url"; address.placeholder = "https://192.168.1.20:8443"; address.required = true;
+  const pin = h("input", "txt");
+  pin.id = "phone-pin"; pin.placeholder = "SHA-256 fingerprint from Link"; pin.required = true;
+  const urlLabel = h("label", "lbl", "Phone HTTPS address"); urlLabel.htmlFor = address.id;
+  const pinLabel = h("label", "lbl", "Phone certificate fingerprint"); pinLabel.htmlFor = pin.id;
+  const save = h("button", "btn primary", "Connect phone"); save.type = "submit";
+  const note = h("p", "muted"); note.setAttribute("role", "status");
+  const form = h("form", "controls", h("div", null, urlLabel, address), h("div", null, pinLabel, pin), save);
+  const setup = h("details", "card phone-setup", h("summary", null, "Phone connection"), form, note);
+  root.before(h("div", "page phone-setup-wrap", setup));
+  const configured = await api("/laptop/phone");
+  address.value = configured?.json?.address ?? "";
+  laptopPhoneSet = !!address.value;
+  setup.open = !laptopPhoneSet;
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    const result = await api("/laptop/phone", "POST", {address: address.value, fingerprint: pin.value});
+    save.disabled = false;
+    if (result?.status !== 200) {
+      note.textContent = result?.json?.error ?? "Laptop dashboard unavailable.";
+      return;
+    }
+    laptopPhoneSet = true;
+    pin.value = "";
+    note.textContent = "Phone verified. Approve pairing on the phone.";
+    await start();
+  };
+  await start();
+}
+
+if (laptop) void startLaptop();
+else void start();

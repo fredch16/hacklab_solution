@@ -127,12 +127,45 @@ def _goto(view: dict) -> dict:
 # ---------- Claude step: for transcripts the grammar could not place ----------
 LLM_MODEL = "claude-haiku-5-5"       # one short classification per request; speed matters more than depth
 LLM_TIMEOUT_S = 6.0
-ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "none")
+RECORD_ACTIONS = {
+    "start_phone_recording": ("phone", "start"), "stop_phone_recording": ("phone", "stop"),
+    "start_robot_recording": ("robot", "start"), "stop_robot_recording": ("robot", "stop"),
+}
+ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "none", *RECORD_ACTIONS)
+RECORD_WORDS = re.compile(r"\b(?:record(?:s|ed|ing)?|film(?:s|ed|ing)?|rolling|roll (?:the|video))\b")
+RECORD_NEGATION = re.compile(r"\b(?:don't|do not|never|without|not|cancel)\b")
+CLEAR_RECORDING = re.compile(r"\b(?:start|begin|stop|end|finish|record|film|rolling|roll)\b")
+RECORD_BOTH = re.compile(r"\b(?:both|all cameras|(?:and|then) (?:start|stop|record|film))\b")
+EXACT_RECORDING = re.compile(r"(?:(start|begin|stop|end) (?:the )?)?(phone |robot )?(camera )?recording$")
+
+
+def recording_context(text: str, acoustic: str | None) -> tuple[str, str | None]:
+    """Return the intended camera and an exact action, 'reject', or None for Claude."""
+    words = re.sub(r"[^a-z0-9' ]", " ", text.lower())
+    words = re.sub(r"\s+", " ", words).strip()
+    words = re.sub(r"^(?:(?:hey|okay|ok|please|can you|could you|would you) )+", "", words)
+    words = FILLER_TAIL.sub("", words)
+    camera = "robot" if re.search(r"\brobot\b", words) else "phone"
+    exact = EXACT_RECORDING.fullmatch(words)
+    if words == "record":
+        return camera, "start" if acoustic == "record" else "reject"
+    if not RECORD_WORDS.search(words):
+        return camera, "unrelated"
+    if RECORD_NEGATION.search(words) or RECORD_BOTH.search(words):
+        return camera, "reject"
+    if exact:
+        verb, target, _ = exact.groups()
+        if not verb and not target:
+            return camera, "reject"
+        action = "stop" if verb in ("stop", "end") else "start"
+        hint = f"{action} robot recording" if camera == "robot" else f"{action} recording"
+        return camera, action if acoustic == hint else "reject"
+    return camera, None if CLEAR_RECORDING.search(words) else "reject"
 ASKABLE = ("no_match", "unknown_view")   # grammar outcomes worth a second opinion
 
 LLM_SYSTEM = """\
 You interpret one spoken request for a camera that a robot arm holds over a desk. The arm can move \
-the camera between saved views and nothing else. Your answer is executed by a program, so reply only \
+the camera between saved views and start or stop exactly one video recording. Your answer is executed by a program, so reply only \
 with the JSON object the schema asks for.
 
 The text comes from speech recognition on a phone, after a wake word. Expect leftovers of the wake \
@@ -148,8 +181,11 @@ table" mean the widest view).
 "that's enough", "careful").
 - get_status: the speaker asks where the camera is or what it is doing.
 - list_views: the speaker asks which views exist or what the camera can show.
+- start_phone_recording / stop_phone_recording: explicitly asks to start/stop recording with the phone, or asks for a recording without naming a camera.
+- start_robot_recording / stop_robot_recording: explicitly asks to start/stop recording with the robot USB camera. Use these only when the robot is named as the camera.
+Do not interpret questions, hypotheticals, negation, prior events, or ambiguous/multiple requests as recording actions. A request to stop the arm is distinct from stopping a recording.
 - none: everything else. Small talk, questions that are not about the camera, things it cannot do \
-(zoom, record, nudge a little to the left, follow an object), a view that is not in the list, a \
+(zoom, nudge a little to the left, follow an object), a view that is not in the list, a \
 request not to move ("don't go to the top"), or speech that was clearly not meant for the camera.
 
 go_to_view makes a real arm move near people, so use it only when the speaker clearly asks for a \
@@ -286,9 +322,14 @@ class Bridge:
         return {"llm": getattr(interpreter, "model", None), "claude_key_editable": self.llm_model is not None,
                 "claude_key_override": interpreter is not self.startup_interpreter}
 
-    async def _run(self, text: str) -> dict:
+    async def _run(self, text: str, tab: str | None = None, acoustic: str | None = None, session: str | None = None) -> dict:
         async with Client(self.target, read_timeout_seconds=10) as client:
             t = normalize(text)
+            camera, recording = recording_context(text, acoustic) if tab else (None, "unrelated")
+            if recording == "reject":
+                return self._refusal({"reason": "recording"}, [])
+            if recording in ("start", "stop"):
+                return await self._record(client, camera, recording, tab, session)
             # stop needs no view list: skip that round trip so it reaches the arm sooner
             listing = {} if STOP_RE.search(t) and "record" not in t else \
                 _data(await client.call_tool("list_views", {}))
@@ -296,12 +337,18 @@ class Bridge:
             p = plan(text, views)
             log.info("plan %r -> %s", text, p)
             interpreter = self.interpreter
-            if p["tool"] is None and p["reason"] in ASKABLE and interpreter and views:
-                # A stop word or anything about recording never gets here: plan() settles those first.
+            if (recording is None or (p["tool"] is None and p["reason"] in ASKABLE and views)) and interpreter:
+                # Recordings and arm actions are separate even if Claude mistakes one for the other.
                 better = await asyncio.to_thread(self._ask, interpreter, text, views, listing.get("current_view"))
-                if better:
+                if better and better["tool"] in RECORD_ACTIONS:
+                    target, action = RECORD_ACTIONS[better["tool"]]
+                    if recording is None and camera == target:
+                        return await self._record(client, target, action, tab, session)
+                elif better and recording == "unrelated":
                     p = better
                     log.info("plan %r -> %s (Claude step)", text, p)
+            if recording is None:
+                return self._refusal({"reason": "recording"}, [])
             if p["tool"] is None:
                 return self._refusal(p, views)
             res = _data(await client.call_tool(p["tool"], p["args"]))
@@ -320,6 +367,13 @@ class Bridge:
             names = [v["name"] for v in res.get("views", []) if v.get("checked")]
             return {"ok": True, "command": command, "error": None,
                     "message": "Views: " + (", ".join(names) if names else "none checked yet")}
+
+    async def _record(self, client, camera, action, tab, session):
+        result = _data(await client.call_tool("record_camera", {"camera": camera, "action": action, "tab": tab, "session": session}))
+        command = f"{'robot.' if camera == 'robot' else ''}recording.{action}"
+        if "_error" in result:
+            return {"ok": False, "command": command, "error": str(result["_error"]).upper(), "message": result["_detail"]}
+        return {"command": command, **result}
 
     def _ask(self, interpreter, text: str, views: list[dict], current_view) -> dict | None:
         try:
@@ -340,7 +394,7 @@ class Bridge:
                     "message": f"{p['view']} isn't checked on the real arm yet; use the /control page"}
         return {"ok": True, "command": "none", "error": None, "message": None}
 
-    def handle(self, session_id: str, utterance_id: str, text: str) -> dict:
+    def handle(self, session_id: str, utterance_id: str, text: str, tab=None, acoustic=None) -> dict:
         key = (session_id, utterance_id)
         with self.lock:
             if key in self.seen:
@@ -351,7 +405,7 @@ class Bridge:
             while len(self.seen) > self.max_seen:
                 self.seen.popitem(last=False)
         try:
-            out = asyncio.run(self._run(text))
+            out = asyncio.run(self._run(text, tab, acoustic, session_id if tab else None))
         except Exception as e:  # MCP server down, timeout, protocol error
             log.warning("MCP call failed: %r", e)
             out = {"ok": False, "command": "none", "error": "ARM_UNREACHABLE",
@@ -467,7 +521,11 @@ def make_handler(bridge: Bridge, extra_origins: set[str]):
                     raise ValueError
             except (ValueError, KeyError, TypeError):
                 return self._json(400, {"ok": False, "error": "BAD_REQUEST"})
-            out = bridge.handle(sid, uid, text)
+            tab, acoustic = req.get("tab"), req.get("acoustic_text")
+            if (self.headers.get("Origin") is not None or not ipaddress.ip_address(self.client_address[0]).is_loopback
+                    or not isinstance(tab, str) or not re.fullmatch(r"[a-f0-9]{32}", tab)):
+                tab = None
+            out = bridge.handle(sid, uid, text, tab, acoustic if isinstance(acoustic, str) else None)
             log.info("%s/%s %r -> %s", sid, uid, text, out)
             self._json(200, {"utterance_id": uid, **out})
 

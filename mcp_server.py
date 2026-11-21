@@ -58,6 +58,11 @@ views (list_views), and the control service moves the arm there safely.
   similar, before anything else. A person can also press STOP on the /control page.
 - Never loop on moves or status. One call, then decide.
 
+## Recording video
+- record_camera(camera, action) starts or stops one recording on an explicit request.
+- For recording without a named camera, choose phone. Choose robot only when the operator names it.
+- Robot recording requires a visible dashboard and live feed. The arm stop tool controls motion separately.
+
 ## Images and the scene
 - get_camera_image() returns the current camera image, only while the arm is not moving.
   Call it when the user asks what is visible or asks you to find something.
@@ -283,7 +288,7 @@ def status_from(st: dict) -> dict:
     }
 
 
-def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPServer:
+def build_server(control: Control, scene: SceneStore, views: list[dict], dashboard: Control | None = None) -> MCPServer:
     names = [v["name"] for v in views]
     if not names:
         raise RuntimeError("the arm web server has no views; capture some first (capture_server.py, page /)")
@@ -354,6 +359,17 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
         except ControlError as e:
             raise _tool_error(e)
         return {k: r.get(k) for k in ("ok", "hold", "was_moving", "view", "error") if k in r}
+
+    @mcp.tool(description="Start or stop one recording. Phone is the default camera for unqualified "
+                          "requests. Robot recording requires an actively viewed robot feed in the laptop dashboard.")
+    async def record_camera(camera: Literal["phone", "robot"], action: Literal["start", "stop"],
+                            tab: str | None = None, session: str | None = None) -> dict[str, Any]:
+        service = dashboard or Control("http://127.0.0.1:8300")
+        try:
+            result = await service.call("POST", "/laptop/recording", {"camera": camera, "action": action, "tab": tab, "session": session})
+        except ControlError as e:
+            raise _tool_error(e)
+        return result
 
     @mcp.tool(structured_output=False,
               description="The current camera image as JPEG, plus the view it was taken at. Only while the arm "
@@ -461,6 +477,7 @@ async def fetch_views(control: Control, wait_s: float) -> list[dict]:
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dashboard-url", default="http://127.0.0.1:8300")
     p.add_argument("--arm-url", default="http://127.0.0.1:8890",
                    help="capture_server.py base URL (default 8890; the --sim server usually runs on 8891)")
     p.add_argument("--host", default="127.0.0.1")
@@ -476,7 +493,7 @@ def main(argv=None):
     args = parse_args(argv)
     control = Control(args.arm_url)
     views = asyncio.run(fetch_views(control, args.wait))
-    mcp = build_server(control, SceneStore(args.scene), views)
+    mcp = build_server(control, SceneStore(args.scene), views, Control(args.dashboard_url))
     log.info("camera-arm MCP on http://%s:%d/mcp  arm=%s  views=%s",
              args.host, args.port, args.arm_url, [v["name"] for v in views])
     mcp.run("streamable-http", host=args.host, port=args.port, streamable_http_path="/mcp",

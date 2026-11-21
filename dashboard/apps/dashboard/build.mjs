@@ -1,13 +1,17 @@
-// tsc -> dist/, then copy flat files into the Flutter asset dir (not recursive there).
+// Build laptop assets. The legacy phone-hosted UI is an explicit compatibility build.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-const out = new URL("../mobile/assets/dashboard/", import.meta.url).pathname;
-rmSync("dist", { recursive: true, force: true });
+import { join } from "node:path";
+
+const dist = "dist";
+rmSync(dist, { recursive: true, force: true });
 execFileSync("npx", ["tsc"], { stdio: "inherit" });
-mkdirSync(out, { recursive: true });
-for (const f of readdirSync(out)) if (/\.(js|html|css)$/.test(f)) rmSync(out + f);
-for (const f of readdirSync("dist")) if (f.endsWith(".js")) cpSync("dist/" + f, out + f);
-cpSync("vendor/qrcode.js", out + "qrcode.js");
-cpSync("index.html", out + "index.html");
-cpSync("app.css", out + "app.css");
-console.log("copied to", out);
+cpSync("vendor/qrcode.js", join(dist, "qrcode.js"));
+cpSync("index.html", join(dist, "index.html"));
+cpSync("app.css", join(dist, "app.css"));
+if (process.argv.includes("--phone")) {
+  const out = new URL("../mobile/assets/dashboard/", import.meta.url).pathname;
+  mkdirSync(out, { recursive: true });
+  for (const f of readdirSync(out)) if (/\.(js|html|css)$/.test(f)) rmSync(join(out, f));
+  for (const f of readdirSync(dist)) cpSync(join(dist, f), join(out, f));
+}

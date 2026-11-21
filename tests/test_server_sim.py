@@ -863,7 +863,10 @@ def part_b():
         r = get("/api/settings")
         check(r[0] == 200 and set(r[1]["settings"]) == {"DIRECT", "ARC", "BLEND", "CLEAR_HEIGHT_M", "SPEED_TURBO"} and r[1]["settings"]["SPEED_TURBO"]["min"] == 1000,
               f"GET /api/settings: {r[0]}")
-        for bad in ({"SPEED_TURBO": 100}, {"CLEAR_HEIGHT_M": 2}, {"BLEND": "on"}, {"UNKNOWN": 1}, {}):
+        arc = r[1]["settings"]["ARC"]
+        check(arc["value"] is True and arc["default"] is True and arc.get("locked") is True,
+              f"Lift-over starts on and is locked: {arc}")
+        for bad in ({"ARC": False}, {"SPEED_TURBO": 100}, {"CLEAR_HEIGHT_M": 2}, {"BLEND": "on"}, {"UNKNOWN": 1}, {}):
             r = post("/api/settings", bad) if bad else send(connect(), "POST", "/api/settings", {})
             check(r[0] == 400, f"POST /api/settings {bad} is refused: {r}")
         r = post("/api/settings", {"SPEED_TURBO": 1500, "BLEND": False})
@@ -877,7 +880,7 @@ def part_b():
         check(r[0] == 409 and state()["settings"]["SPEED_TURBO"] == 1500, f"settings are refused while moving: {r}")
         post("/api/stop")
         r = post("/api/settings", {"defaults": True})
-        check(r[0] == 200 and not state()["settings_changed"], f"defaults: {r[0]}")
+        check(r[0] == 200 and not state()["settings_changed"] and state()["settings"]["ARC"] is True, f"defaults: {r[0]}")
         post("/api/sim", {"mirror": "5B61033001"})
         time.sleep(1.5); state(); time.sleep(0.3)
         s1 = state()

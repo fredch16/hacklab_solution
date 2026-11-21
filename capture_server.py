@@ -77,11 +77,10 @@ SETTINGS = {
                        "up to the transit pose, whenever the geometry model shows that path never dips below "
                        "its two end views. Off: every move goes up through transit. Views marked "
                        "\"direct\": false (home) always go through transit."},
-    "ARC": {"type": "bool", "label": "Lift over when straight would dip",
+    "ARC": {"type": "bool", "locked": True, "label": "Lift over when straight would dip",
             "help": "For pairs whose straight path would dip (left and right, for example): take the same "
-                    "path but lifted in the middle, instead of going all the way up through transit. Only the "
-                    "geometry model vouches for these: watch the first run of each pair. Off: those pairs go "
-                    "through transit."},
+                    "path lifted in the middle when it passes the geometry check. Otherwise use transit. "
+                    "Watch the first run of each pair."},
     "BLEND": {"type": "bool", "label": "Blend the turn into rise and descent",
               "help": "At Fast and Turbo the arm starts turning while it is still rising, and starts coming down "
                       "while it is still turning, but only high above the desk. Off: strictly rise, then turn, "
@@ -139,6 +138,8 @@ def check_settings(req: dict) -> dict:
                 value = int(value)
             else:
                 value = round(float(value), 3)
+        if spec.get("locked") and value != SETTING_DEFAULTS[name]:
+            raise Refused(f"{spec['label']} is always on", 400)
         changes[name] = value
     if not changes:
         raise Refused(f"nothing to change; send some of {list(SETTINGS)} or {{\"defaults\": true}}", 400)

@@ -97,7 +97,7 @@ All flags are module-level constants at the top of `motion.py`. All are on by de
 | Change | Flag | What it does | What it assumes |
 |---|---|---|---|
 | Direct moves | `DIRECT` | Between two checked views, at every speed, one segment `direct`: all seven joints along the straight joint-space line. Also view ↔ transit pose. | The geometry rule below; the desk is clear for moves between checked views (base yaw and forearm roll turn all the way along the line, also close to the desk). |
-| Arcs | `ARC` | A pair whose straight line fails the rule takes the same line with the pitch joints bulging towards the hub in the middle, one segment `arc`. The smallest lift that passes, plus 10%. | Same rule, same model. This is my addition for "the cheapest safe alternative"; with `ARC = False` those 16 pairs go through the hub. |
+| Arcs | `ARC` | A pair whose straight line fails the rule takes the same line with the pitch joints bulging towards the hub in the middle, one segment `arc`. The smallest lift that passes, plus 10%. | Same rule, same model. The control dashboard keeps lift-over enabled. Pairs without a model-checked arc use transit. |
 | Turbo direct | `DIRECT_TURBO_PROFILE` | In turbo a straight direct move that does not end lower than it starts (by the model) runs on the servos' own profile, like a rise. Moves that end lower, and all arcs, are streamed at fast on the leash, like a descent. | Per-joint speed and acceleration scaling keeps the servos on the line (true in the simulation, 46 steps off at worst). |
 | Wrist roll on its own (2a) | `M7_FREE`, `M7_FREE_MAX` | Hub route, blended: M7 runs from the first moment to the end instead of with the gated turn. | M7 only spins the gripper and camera about their own axis. Checked with fk.py: no clear point moves except the camera, which moves 14 mm across all saved views and 33 mm at the 300-step limit. The height gate counts the lower of where the camera is and where it is going. Above 300 steps M7 stays in the gated turn. |
 | Aligned turn (2b) | `ALIGN` | Hub route, blended: the turn (M1, M5) is slowed to fill the time between the rise clearing 25 cm and the descent coming back down to it. | Planned times. It saves no time; it removes racing and waiting. A turn the move is waiting for is never slowed. M1/M5 still never start below the clear height, and the descent never goes below it before they have arrived. |
@@ -153,7 +153,7 @@ Tested: Stop during a direct move, an arc, a turbo direct move and at seven mome
 | Symptom | Switch off |
 |---|---|
 | Any doubt about a direct move or arc | `DIRECT = False`: every move goes through the hub again |
-| Arcs come too close to the desk | `ARC = False` |
+| Arcs come too close to the desk | Turn off **Go straight from view to view** in Motion settings to route through transit |
 | Sideways sweeps close to the desk are not wanted | `DIRECT_TURN_TOL = 60`: direct only between views with the same heading |
 | One view misbehaves | `"direct": false` on that view in `views.json` |
 | Turbo direct leaves the line or overshoots | `DIRECT_TURBO_PROFILE = False` |

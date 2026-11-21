@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import fk
 import motion
 
-# This suite exercises every optimisation; the shipped defaults for ARC and turbo direct are off.
+# Exercise turbo direct as well as the default lift-over mode.
 motion.ARC = True
 motion.DIRECT_TURBO_PROFILE = True
 import virtual_time

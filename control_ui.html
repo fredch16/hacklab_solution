@@ -849,7 +849,8 @@ async function loadSettings() {
     input.id = "set_" + name;
     const value = el("span", "value"); value.id = "val_" + name;
     head.append(input, value);
-    row.append(head, el("p", "", `${spec.help} Default: ${settingText(spec, spec.default)}` + (spec.type === "bool" ? "." : `; allowed ${settingText(spec, spec.min)} to ${settingText(spec, spec.max)}.`)));
+    row.append(head, el("p", "", spec.locked ? spec.help
+      : `${spec.help} Default: ${settingText(spec, spec.default)}` + (spec.type === "bool" ? "." : `; allowed ${settingText(spec, spec.min)} to ${settingText(spec, spec.max)}.`)));
     box.appendChild(row);
   });
   renderSettings();
@@ -860,10 +861,10 @@ function renderSettings() {
   Object.entries(settingSpecs).forEach(([name, spec]) => {
     const input = $("set_" + name), value = $("val_" + name), v = values[name];
     if (!input || v === undefined) return;
-    input.disabled = moving || settingsBusy;
+    input.disabled = !!spec.locked || moving || settingsBusy;
     if (spec.type === "bool") input.setAttribute("aria-checked", String(!!v));
     else if (document.activeElement !== input) input.value = v;
-    if (spec.type === "bool" || document.activeElement !== input) value.textContent = settingText(spec, v);
+    if (spec.type === "bool" || document.activeElement !== input) value.textContent = spec.locked ? "Always on" : settingText(spec, v);
     value.className = "value" + (v !== spec.default ? " changed" : "");
   });
   $("settingsDefaults").disabled = moving || settingsBusy || !state.settings_changed;

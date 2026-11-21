@@ -86,7 +86,7 @@ ABOVE_SLACK_M = 0.02   # a stopped blended move counts as "above the clear heigh
 # direct_plan()). A view with "direct": false in views.json never takes part (`home`).
 # A line that fails may still pass when it is lifted towards the hub in the middle: an "arc".
 DIRECT = True                      # False: every move goes through the hub, as before
-ARC = False                         # False: pairs whose straight line fails go through the hub
+ARC = True                          # Try a model-checked lift before the hub route
 DIRECT_SPEED_CAP = SPEED_FAST      # a streamed direct move or arc never runs faster than this
 DIRECT_TURBO_PROFILE = False        # turbo: a straight direct move that does not end lower than it starts
                                    # runs on the servos' own profile, like a rise (False: streamed at fast)

@@ -16,7 +16,7 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 |---|---|
 | M0 arm + camera from our code | ✅ joints read, camera frames grabbed, torque control works on the real arms |
 | M1 saved viewpoints | ✅ 7 views + the `transit` pose in `views.json`. `left`/`right`/`side_low`/`home` sit on joint limits and should be re-captured slightly off the stops (and `left`/`right`/`side_low` with a level horizon) |
-| M2 move to a view | 🟡 built and reviewed: route network through the transit pose, guards, web control page. **76 checks pass on the simulated arm; not yet run on the real arm.** Next: the supervised test protocol in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
+| M2 move to a view | 🟡 built and reviewed: route network through the transit pose, guards, web control page. **Tested on the simulated arm only (91 motion checks, ~1600 server race checks); not yet run on the real arm.** Next: the supervised test protocol in [docs/MOTION_PLAN.md](docs/MOTION_PLAN.md) |
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
 | M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
 
@@ -47,7 +47,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python go.py --where` / `top` / `--tour 5` / `--mark-checked top` | M2 | Command-line moves; `--sim` for the simulated arm; Ctrl-C holds |
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
-| `python3 tests/test_motion_sim.py`, `python3 tests/test_fk.py` | | Motion layer and geometry model tests (no hardware) |
+| `python3 tests/test_motion_sim.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py` | | Motion layer, web-server race and geometry model tests (no hardware; about 75 s, 2 min and 5 s) |
 
 ## Interfaces between the pieces
 
@@ -62,8 +62,10 @@ The director uses Claude Opus 5.5 (`claude-opus-5-5`, effort `low` for snappy re
 
 - Set the follower to **"(Self-controlled)"** in Station before moving it; the code refuses while Station mirrors a leader onto it.
 - Every move goes **rise → turn → descend** through the taught `transit` pose, only from a known pose, only with the arm already holding. The gripper (camera mount) is never moved.
-- A move stops and holds if a joint doesn't follow, pushes at full effort, draws too much current, stops answering, is commanded by something else, or the data goes stale. **STOP** on the page, Space/Esc, or Ctrl-C holds the arm where it is.
-- Views nobody has watched on the real arm run at slow speed only. After a clean there-and-back run, mark the view as checked.
+- A move stops and holds if a joint doesn't follow, pushes at full effort, draws too much current, stops answering, goes limp, is commanded by something else, or the data goes stale. **STOP** on the page, Space/Esc, or Ctrl-C holds the arm where it is, and the page says if that hold could not be confirmed.
+- Views nobody has watched on the real arm run at first-run speed only (100 steps/s, 30–60 s per move). After a clean there-and-back run, mark the view as checked.
+- Use **one controlling program** per session (the web server). STOP on the page cannot stop a move started by `go.py` or `director.py` in another terminal.
+- With several arms connected, `--bus auto` may refuse to choose: pass `--bus 5B79016329`.
 - **Recalibrating the follower invalidates its saved views** (they are raw motor positions); the code detects this and asks for a re-capture.
 - First runs of anything new: slow, one person at the arm, power plug within reach.
 - **Never leave a powered arm unattended. Ask a mentor before touching the camera mount.** (hackathon rules)

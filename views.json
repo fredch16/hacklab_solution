@@ -1,3 +1,20 @@
 {
-  "views": {}
+  "views": {
+    "home": {
+      "joints": {
+        "1": 2118,
+        "2": 1140,
+        "3": 1914,
+        "4": 3160,
+        "5": 3144,
+        "6": 2004,
+        "7": 1065,
+        "8": 1279
+      },
+      "description": "safe rest pose, arm folded",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:22:09",
+      "snapshot": "views/home.jpg"
+    }
+  }
 }

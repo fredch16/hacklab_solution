@@ -70,6 +70,13 @@ class State:
             "views": data["views"],
         }
 
+    async def set_torque(self, on: bool):
+        if on:
+            # Lock where it is: goal = present first, so enabling torque can't jump to a stale goal.
+            await self.arm.write_goals(self.arm.joints())
+        await self.arm.set_torque(on)
+        await asyncio.sleep(0.2)
+
     async def do_capture(self, name: str, description: str) -> dict:
         if self.capturing:
             raise RuntimeError("already capturing")
@@ -160,6 +167,9 @@ def make_handler(state: State):
                     data = load_views()
                     data["views"].pop(req.get("name"), None)
                     save_views(data)
+                    self._json({"ok": True})
+                elif self.path == "/api/torque":
+                    state.call(state.set_torque(bool(req.get("on"))))
                     self._json({"ok": True})
                 elif self.path == "/api/camera":
                     if req.get("queue") in state.cams:

@@ -49,6 +49,10 @@
   .custom { display: flex; gap: 8px; margin-top: 10px; }
   .custom input { flex: 1; min-width: 0; }
   .warn { color: var(--warn); }
+  .pose { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .pose button { padding: 10px 14px; }
+  .torque { font-size: 13px; color: var(--muted); }
+  .torque.on { color: var(--ok); } .torque.off { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -66,7 +70,12 @@
       <div class="flash" id="flash"></div>
       <div class="badge" id="badge">live</div>
     </div>
-    <p class="hint">Move the leader arm until the picture looks right, then press <b>Save</b> (or Enter). The arm should be still; we wait for it to settle.</p>
+    <div class="pose">
+      <button id="limp" class="danger">Go limp (hold the arm first!)</button>
+      <button id="hold">Hold here</button>
+      <span id="torque" class="torque"></span>
+    </div>
+    <p class="hint"><b>Go limp</b>, move the follower by hand, <b>Hold here</b> to lock it, check the picture, then <b>Save</b> (or Enter). Set the follower to "(Self-controlled)" in Station first so the leader doesn't fight you.</p>
   </section>
 
   <section>
@@ -173,7 +182,9 @@ async function refresh() {
   fillSelect($("bus"), Object.keys(state.buses), state.bus, (s) => `${s} (${state.buses[s]})`);
   fillSelect($("camera"), state.cameras, state.camera, (q) => "camera " + q.split("/").pop().slice(0, 6));
   const limp = state.buses[state.bus] === "limp";
-  $("joints").innerHTML = (limp ? `<span class="warn">this arm is limp — is it the follower, and is mirroring on?</span> ` : "") + state.joints;
+  $("joints").textContent = state.joints;
+  $("torque").className = "torque " + (limp ? "off" : "on");
+  $("torque").textContent = limp ? "limp: move it by hand, then Hold here" : "holding: hands off, check the picture";
   render();
 }
 
@@ -211,6 +222,15 @@ $("save").onclick = async () => {
     const next = all.findIndex((v, i) => i > step && !state.views[v.name]);
     setStep(next >= 0 ? next : step);
   }
+};
+$("limp").onclick = async () => {
+  if (!confirm("The follower will go limp and sag. Is someone holding it?")) return;
+  try { await post("/api/torque", { on: false }); } catch (e) { alert(e.message); }
+  refresh();
+};
+$("hold").onclick = async () => {
+  try { await post("/api/torque", { on: true }); } catch (e) { alert(e.message); }
+  refresh();
 };
 $("skip").onclick = () => setStep(step + 1);
 $("back").onclick = () => setStep(step - 1);

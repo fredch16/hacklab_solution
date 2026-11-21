@@ -2,19 +2,115 @@
   "views": {
     "home": {
       "joints": {
-        "1": 2118,
-        "2": 1140,
-        "3": 1914,
-        "4": 3160,
-        "5": 3144,
-        "6": 2004,
-        "7": 1065,
+        "1": 2095,
+        "2": 1061,
+        "3": 1906,
+        "4": 3196,
+        "5": 1899,
+        "6": 1912,
+        "7": 2303,
         "8": 1279
       },
       "description": "safe rest pose, arm folded",
       "bus": "5B79016329",
-      "captured_at": "2026-11-21T13:22:09",
+      "captured_at": "2026-11-21T13:25:56",
       "snapshot": "views/home.jpg"
+    },
+    "left": {
+      "joints": {
+        "1": 2547,
+        "2": 3032,
+        "3": 1444,
+        "4": 1652,
+        "5": 2949,
+        "6": 3069,
+        "7": 2268,
+        "8": 1279
+      },
+      "description": "about 45 degrees from the left",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:28:56",
+      "snapshot": "views/left.jpg"
+    },
+    "right": {
+      "joints": {
+        "1": 1675,
+        "2": 3032,
+        "3": 1381,
+        "4": 1655,
+        "5": 909,
+        "6": 3071,
+        "7": 2251,
+        "8": 1279
+      },
+      "description": "about 45 degrees from the right",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:29:30",
+      "snapshot": "views/right.jpg"
+    },
+    "top": {
+      "joints": {
+        "1": 2120,
+        "2": 2555,
+        "3": 1522,
+        "4": 1661,
+        "5": 1899,
+        "6": 2991,
+        "7": 2250,
+        "8": 1279
+      },
+      "description": "top-down over the workspace",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:30:16",
+      "snapshot": "views/top.jpg"
+    },
+    "wide": {
+      "joints": {
+        "1": 2117,
+        "2": 1780,
+        "3": 1521,
+        "4": 2124,
+        "5": 1900,
+        "6": 2993,
+        "7": 2251,
+        "8": 1279
+      },
+      "description": "whole desk in frame",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:30:41",
+      "snapshot": "views/wide.jpg"
+    },
+    "close": {
+      "joints": {
+        "1": 2104,
+        "2": 2548,
+        "3": 1522,
+        "4": 2133,
+        "5": 1941,
+        "6": 2553,
+        "7": 2261,
+        "8": 1279
+      },
+      "description": "close-up of the workspace centre",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:30:52",
+      "snapshot": "views/close.jpg"
+    },
+    "side_low": {
+      "joints": {
+        "1": 2518,
+        "2": 3023,
+        "3": 1668,
+        "4": 1545,
+        "5": 2923,
+        "6": 2957,
+        "7": 2173,
+        "8": 1279
+      },
+      "description": "low side angle",
+      "bus": "5B79016329",
+      "captured_at": "2026-11-21T13:31:28",
+      "snapshot": "views/side_low.jpg"
     }
   }
 }

@@ -6,8 +6,8 @@ Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). A
 
 | Part | State | Code | Docs |
 |---|---|---|---|
-| Arm web server = control service | built by the team, reviewed, tested on the simulated arm, **not yet on the real arm** | `capture_server.py` (`/control`, `/api/...`), `motion.py`, `fk.py` | [MOTION.md](MOTION.md), [MOTION_PLAN.md](MOTION_PLAN.md) |
-| MCP server camera-arm | built, tested against the web server on the simulated arm | `mcp_server.py`, plus `GET /api/still.jpg` in `capture_server.py` | [MCP.md](MCP.md) |
+| Arm web server = control service | built by the team, reviewed; **works on the real arm**: 10 supervised moves on 21 Nov (transit, `top`, `wide`, `right`), see [MOTION_PLAN.md](MOTION_PLAN.md#first-real-session-sat-21-nov-1608-1614) | `capture_server.py` (`/control`, `/api/...`), `motion.py`, `fk.py` | [MOTION.md](MOTION.md), [MOTION_PLAN.md](MOTION_PLAN.md) |
+| MCP server camera-arm | built, tested against the web server on the simulated arm; not yet with the real arm | `mcp_server.py`, plus `GET /api/still.jpg` in `capture_server.py` | [MCP.md](MCP.md) |
 | Camera gateway (iPhone video + audio) | not started | – | this page |
 | Voice service | not started | – | this page |
 | Dashboard (UI + backend) | not started; `/control` is the operator page, not the chat dashboard | – | this page |
@@ -325,7 +325,8 @@ Done:
 - MCP server with views, moves, status, stop, image and scene tools, against the web server's `/api` (`mcp_server.py`, `tests/test_mcp_sim.py`).
 
 Open:
-- First supervised run on the real arm (protocol in [MOTION_PLAN.md](MOTION_PLAN.md)), then mark the views as checked.
+- Rest of the real-arm protocol (team): Stop test, block test, `left`, `close`, `side_low`, `home`, normal speed, then mark views as checked ([MOTION_PLAN.md](MOTION_PLAN.md)).
+- First MCP session on the real arm: `list_views`, `go_to_view` to a checked view, `stop`, `get_camera_image` with Station's USB camera.
 - Re-capture `home`, `left`, `right`, `side_low` off the joint limits, with a level horizon.
 - Dashboard: chat, live view, view buttons, big stop button, status.
 - Camera gateway for the iPhone (video + audio), with tests on a fake phone.

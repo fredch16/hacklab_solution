@@ -659,10 +659,11 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
     `allow_unknown_start` is the supervised "recover to transit" path; it forces SPEED_FIRST.
     `hold` is None when nothing was commanded, else "confirmed" / "unconfirmed" after an abort.
     """
+    refused = {"ok": False, "view": name, "duration": 0.0, "route": [], "hold": None}   # same keys as a result
     if name not in load_views():
-        return {"ok": False, "view": name, "error": f"unknown view; known: {sorted(load_views())}"}
+        return {**refused, "error": f"unknown view; known: {sorted(load_views())}"}
     if _move_lock.locked():
-        return {"ok": False, "view": name, "error": "already moving"}
+        return {**refused, "error": "already moving"}
     lock_file = None
     if not getattr(arm, "is_sim", False):
         # One program moves the arm at a time: a Stop in the web page cannot stop a move that
@@ -672,7 +673,7 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             lock_file.close()
-            return {"ok": False, "view": name, "error": "another program is moving the arm"}
+            return {**refused, "error": "another program is moving the arm"}
     try:
         return await _go_to_view(arm, name, max_speed, allow_unknown_start)
     finally:

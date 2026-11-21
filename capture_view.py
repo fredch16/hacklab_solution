@@ -175,7 +175,9 @@ if __name__ == "__main__":
     p.add_argument("name", nargs="?", help="save the current pose under this name and exit")
     p.add_argument("--free", action="store_true", help="free mode: type your own view names")
     p.add_argument("--server", default="localhost")
-    p.add_argument("--bus", default="auto", help="follower bus serial (auto: the arm with torque on)")
+    saved_bus = next((v["bus"] for v in load_views()["views"].values() if v.get("bus")), None)
+    p.add_argument("--bus", default=saved_bus or "auto",
+                   help="follower bus serial (default: the arm the saved views belong to)")
     p.add_argument("--no-snapshots", action="store_true")
     p.add_argument("-f", "--force", action="store_true", help="overwrite an existing view without asking")
     run(main(p.parse_args()))

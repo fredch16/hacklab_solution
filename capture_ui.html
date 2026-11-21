@@ -237,11 +237,11 @@ $("save").onclick = async () => {
 };
 $("limp").onclick = async () => {
   if (!confirm("The follower will go limp and sag. Is someone holding it?")) return;
-  try { await post("/api/torque", { on: false }); } catch (e) { alert(e.message); }
+  try { await post("/api/torque", { on: false, generation: state && state.generation }); } catch (e) { alert(e.message); }
   refresh();
 };
 $("hold").onclick = async () => {
-  try { await post("/api/torque", { on: true }); } catch (e) { alert(e.message); }
+  try { await post("/api/torque", { on: true, generation: state && state.generation }); } catch (e) { alert(e.message); }
   refresh();
 };
 $("skip").onclick = () => setStep(step + 1);

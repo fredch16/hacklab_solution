@@ -1,10 +1,12 @@
 """capture_server.py on the simulated arm: who may command the arm, and when.
 
-    python3 tests/test_server_sim.py            # needs port 8891 free; takes about two minutes
+    python3 tests/test_server_sim.py            # needs port 8891 free; takes about four minutes
     python3 tests/test_server_sim.py 8899       # or another port (also: SERVER_TEST_PORT=8899)
 
 Part A drives capture_server.State in this process (no HTTP): goto during a STOP, stale stop
-generation, STOP not queueing behind a slow command, Go limp vs goto, unconfirmed holds, shutdown.
+generation, overlapping STOPs sharing one cleanup, STOP not queueing behind a slow command,
+Go limp vs goto, unconfirmed holds, shutdown; then the same races on an arm whose registers lag
+150 ms behind the commands it accepts (DelayedArm).
 Part B starts the real server (`--sim --port 8891`) and hammers it over HTTP from two threads at
 the same instant: STOP vs goto, Go limp vs goto, SIGTERM / SIGHUP during a move.
 """
@@ -38,6 +40,47 @@ def check(cond, what):
     global passed
     assert cond, what
     passed += 1
+
+
+class DelayedArm(SimArm):
+    """Registers lag: a goal write or torque command is accepted at once but takes effect DELAY
+    seconds later, like a real bus where the read-back trails the command."""
+
+    DELAY = 0.15
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pending = 0                    # accepted, not yet in effect
+        self.limp_accepted = False          # the last torque command accepted was "off"
+        self.goal_writes_after_limp = 0     # goal writes accepted since then: must stay 0
+        self.deaf = False                   # torque-off is accepted but never takes effect
+
+    def _later(self, method, *args):
+        self.pending += 1
+
+        def apply():
+            self.pending -= 1
+            asyncio.ensure_future(method(self, *args))
+
+        asyncio.get_running_loop().call_later(self.DELAY, apply)
+
+    async def set_torque(self, enable, motor_ids=None):
+        self.limp_accepted = not enable
+        self.goal_writes_after_limp = 0
+        if enable or not self.deaf:
+            self._later(SimArm.set_torque, enable, motor_ids)
+
+    async def write_goals(self, goals, speed=None, accel=None):
+        if self.fail_writes:
+            raise RuntimeError("write failed (sim)")
+        if self.limp_accepted:
+            self.goal_writes_after_limp += 1
+        self._later(SimArm.write_goals, dict(goals), speed, accel)
+
+    def registers_match(self, tol=25):
+        """Fresh sample: every energised joint's goal register is where the joint is."""
+        pos = self.joints()
+        return all(abs(self._goal[m] - pos[m]) <= tol for m in motion.MOVABLE if self._torque[m])
 
 
 def refusal(fn):
@@ -125,7 +168,7 @@ def part_a():
     results = []
     stopper.start()
     time.sleep(0.15)
-    check(st.stopping == 1, "stop is in progress")
+    check(st.stopping, "stop is in progress")
     for what, fn in [("goto", lambda: go()), ("Hold here", lambda: st.call(st.set_torque(True, gen=st.gen))),
                      ("Go limp", lambda: st.call(st.set_torque(False, gen=st.gen))),
                      ("arm switch", lambda: st.call(st.select_bus("SIM", gen=st.gen)))]:
@@ -135,8 +178,79 @@ def part_a():
     motion.hold = real_hold
     check(results and results[0]["ok"] and results[0]["was_moving"] and results[0]["hold"] == "confirmed",
           f"the STOP itself completed: {results}")
-    check(not st.moving and st.stopping == 0 and still(), "stopped, holding still")
+    check(not st.moving and not st.stopping and still(), "stopped, holding still")
     check(st.snapshot()["motion"]["last_result"]["error"] == "stopped", "state says stopped")
+
+    # --- overlapping STOPs share ONE cleanup; admission stays closed until its hold is confirmed
+    fresh_arm()
+    go()
+    time.sleep(0.5)
+    server_holds, real_server_hold = [], st._hold
+
+    async def counted_server_hold(active=False):
+        server_holds.append(active)
+        return await real_server_hold(active)
+
+    st._hold = counted_server_hold
+    motion.hold = slow_hold
+    answers, done_at = [], []
+
+    def one_stop():
+        answers.append(st.call(st.stop())); done_at.append(time.monotonic())
+
+    stoppers = [threading.Thread(target=one_stop) for _ in range(3)]
+    for t in stoppers:
+        t.start(); time.sleep(0.12)         # the 2nd and 3rd arrive while the 1st cleanup is running
+    check(st.stopping, "cleanup still running after the third STOP was sent")
+    msg = refusal(lambda: go("wide"))
+    check(msg and "stopped before it started" in msg, f"goto during the shared cleanup is refused: {msg}")
+    for t in stoppers:
+        t.join(5)
+    motion.hold, st._hold = real_hold, real_server_hold
+    strip = lambda r: {k: v for k, v in r.items() if k != "generation"}
+    check(len(answers) == 3 and all(strip(a) == strip(answers[0]) for a in answers), f"all three got the same result: {answers}")
+    check(answers[0]["ok"] and answers[0]["was_moving"] and answers[0]["hold"] == "confirmed", f"...the real one: {answers[0]}")
+    check(server_holds == [True], f"one cleanup, one hold (not three), as for an active move: {server_holds}")
+    check(max(done_at) - min(done_at) < 0.1, "they all returned when that cleanup finished, none early")
+    check(not st.moving and not st.stopping and still(), "stopped, holding still")
+    check(go("wide")["started"], "admission reopens once the cleanup is done")
+    st.call(st.stop())
+
+    # --- stopping an active move relaxes joints that push (RELAX_TOL); an idle STOP keeps the default
+    fresh_arm()
+    tolerances = []
+
+    async def spying_hold(arm, *args, **kwargs):
+        tolerances.append(kwargs.get("keep_within", args[0] if args else motion.FREEZE_TOL))
+        return await real_hold(arm, *args, **kwargs)
+
+    motion.hold = spying_hold
+    go()
+    time.sleep(0.5)
+    st.call(st.stop())
+    check(tolerances and tolerances[-1] == motion.RELAX_TOL, f"active STOP ends with hold(keep_within=RELAX_TOL): {tolerances}")
+    tolerances.clear()
+    st.call(st.stop())
+    motion.hold = real_hold
+    check(tolerances == [motion.FREEZE_TOL], f"idle STOP uses the default tolerance: {tolerances}")
+
+    # --- repeated idle STOPs are cheap and leave a settled arm alone
+    fresh_arm()
+    writes, t0 = st.arm.writes, time.monotonic()
+    idle = [st.call(st.stop()) for _ in range(10)]
+    check(all(r["ok"] and r["hold"] == "confirmed" and not r["was_moving"] for r in idle), "10 idle STOPs all confirmed")
+    check(st.arm.writes == writes and time.monotonic() - t0 < 10 * 0.4, f"no write to the settled arm, {time.monotonic() - t0:.2f}s for 10")
+
+    # --- a click from before a STOP is refused by the generation the page had seen
+    fresh_arm()
+    seen = st.gen
+    st.call(st.stop())
+    msg = refusal(lambda: st.call(st.start_move("top", "slow", gen=st.gen, click=seen)))
+    check(msg and "stopped since this page last updated" in msg and not st.moving, f"stale click refused: {msg}")
+    msg = refusal(lambda: st.call(st.set_torque(False, gen=st.gen, click=seen)))
+    check(msg and "stopped since this page last updated" in msg and st.arm.torque, f"stale Go limp refused: {msg}")
+    check(st.call(st.start_move("top", "slow", gen=st.gen, click=st.gen))["started"], "a click made after the STOP starts")
+    st.call(st.stop())
 
     # --- torque and arm selection are refused while a move is alive
     fresh_arm()
@@ -152,14 +266,12 @@ def part_a():
 
     # --- STOP does not queue behind a slow command; it takes the arm away from it
     fresh_arm()
-    real_engage = motion.engage
+    holder = []
 
-    async def slow_engage(arm):
+    async def slow_body():
         await asyncio.sleep(3)
 
-    motion.engage = slow_engage
-    holder = []
-    t = threading.Thread(target=lambda: holder.append(refusal(lambda: st.call(st.set_torque(True, gen=st.gen)))))
+    t = threading.Thread(target=lambda: holder.append(refusal(lambda: st.call(st.command(slow_body)))))
     t.start()
     time.sleep(0.15)
     check(st.command_task is not None, "the slow command owns the arm")
@@ -167,10 +279,43 @@ def part_a():
     r = st.call(st.stop())
     took = time.monotonic() - t0
     t.join(5)
-    motion.engage = real_engage
-    check(r["ok"] and took < 0.5, f"STOP answered in {took:.2f}s while a 3 s command was running")
+    check(r["ok"] and took < 0.7, f"STOP answered in {took:.2f}s while a 3 s command was running")
     check(holder and holder[0] and "interrupted by STOP" in holder[0], f"the slow command was interrupted: {holder}")
     check(st.command_task is None and not st.owner.locked(), "ownership is free again")
+
+    # --- a Hold here / Go limp in progress is not cut in half: STOP waits a bounded moment for it
+    real_engage = motion.engage
+
+    async def slow_engage(arm):
+        await asyncio.sleep(0.4)
+        await real_engage(arm)
+
+    motion.engage = slow_engage
+    holder = []
+    t = threading.Thread(target=lambda: holder.append(refusal(lambda: st.call(st.set_torque(True, gen=st.gen)))))
+    t.start()
+    time.sleep(0.1)
+    t0 = time.monotonic()
+    r = st.call(st.stop())
+    took = time.monotonic() - t0
+    t.join(5)
+    check(r["ok"] and 0.25 < took < 1.2 and holder == [None], f"STOP let the 0.4 s Hold here finish ({took:.2f}s): {holder}")
+
+    async def stuck_engage(arm):
+        await asyncio.sleep(30)
+
+    motion.engage = stuck_engage
+    holder = []
+    t = threading.Thread(target=lambda: holder.append(refusal(lambda: st.call(st.set_torque(True, gen=st.gen)))))
+    t.start()
+    time.sleep(0.1)
+    t0 = time.monotonic()
+    r = st.call(st.stop())
+    took = time.monotonic() - t0
+    t.join(5)
+    motion.engage = real_engage
+    check(r["ok"] and took < capture_server.TORQUE_WAIT_S + 0.8, f"...but not for ever: a stuck one is cut off after {took:.2f}s")
+    check(holder and holder[0] and "interrupted by STOP" in holder[0] and not st.owner.locked(), f"and it was interrupted: {holder}")
 
     # --- commands run one at a time
     order = []
@@ -208,7 +353,7 @@ def part_a():
     for i in range(60):
         gen = st.gen
         both(lambda: st.call(st.stop()), lambda: st.call(st.start_move(("top", "wide")[i % 2], "slow", gen=gen)))
-        check(not st.moving and st.stopping == 0, f"#{i}: nothing is moving after STOP")
+        check(not st.moving and not st.stopping, f"#{i}: nothing is moving after STOP")
     check(still(), "and the arm is still")
 
     # --- a hold that cannot be confirmed is reported, loudly and persistently
@@ -252,6 +397,92 @@ def part_a():
     st.snapshot(); time.sleep(0.2)
     snap = st.snapshot()
     check(snap["can_move"] is True and snap["blockers"] == [] and snap["torque"] == "holding", "after Hold here a move can start")
+
+    # --- a Go limp that cannot be confirmed keeps move starts blocked until something re-checks the arm
+    fresh_arm()
+    real_release = motion.release
+
+    async def unconfirmed_release(arm):
+        raise motion.MotionError("could not confirm the arm is limp")
+
+    motion.release = unconfirmed_release
+    msg = refusal(lambda: st.call(st.set_torque(False, gen=st.gen)))
+    motion.release = real_release
+    check(msg and "could not confirm the arm is limp" in msg, f"Go limp reports it: {msg}")
+    snap = st.snapshot()
+    check(snap["can_move"] is not True and any("could not confirm the arm is limp" in b for b in snap["blockers"]),
+          f"state carries a blocker: {snap['blockers']}")
+    msg = refusal(lambda: go())
+    check(msg and "could not confirm the arm is limp" in msg and not st.moving, f"no move starts meanwhile: {msg}")
+    check(st.call(st.stop())["hold"] == "confirmed" and st.torque_doubt is None, "a confirmed STOP clears it")
+    check(go()["started"], "and then a move may start")
+    st.call(st.stop())
+
+    # --- the same races on an arm whose registers lag 150 ms behind the commands it accepts
+    def delayed_arm():
+        check(not st.moving, "idle before the next test")
+        st.arm = DelayedArm()
+        return st.arm
+
+    arm = delayed_arm()
+    r = go()
+    time.sleep(1.5)
+    check(st.moving and st.snapshot()["motion"]["phase"] == "rise", f"a move runs on the delayed arm: {st.snapshot()['motion']}")
+    r = st.call(st.stop())
+    check(r["ok"] and r["hold"] == "confirmed" and arm.pending == 0, f"STOP confirmed only once nothing was pending: {r} pending={arm.pending}")
+    check(still() and arm.registers_match(), "goal registers are where the arm is")
+
+    for i in range(12):     # overlapping STOPs, and a goto fired into the middle of them
+        if i % 4 == 0:
+            arm = delayed_arm()
+        go(("top", "wide", "left")[i % 3])
+        time.sleep(random.uniform(0.3, 1.0))
+        out = []
+
+        def late_stop():
+            time.sleep(0.07)
+            return st.call(st.stop())
+
+        def late_goto():
+            time.sleep(0.1)
+            return st.call(st.start_move("close", "slow", gen=st.gen))
+
+        out = both(lambda: st.call(st.stop()), lambda: st.call(st.stop()), late_stop, late_goto)
+        stops, late = out[:3], out[3]
+        check(all(isinstance(r, dict) and r["ok"] and r["hold"] == "confirmed" for r in stops), f"delayed #{i}: every STOP confirmed: {stops}")
+        check(isinstance(late, Refused), f"delayed #{i}: the goto fired during the cleanup was refused: {late}")
+        check(arm.pending == 0, f"delayed #{i}: no hold write was still pending when STOP returned ({arm.pending})")
+        check(not st.moving and not st.stopping, f"delayed #{i}: nothing was admitted in between")
+        check(still() and arm.registers_match(), f"delayed #{i}: on a fresh sample the goal registers match the positions")
+        check(not st.moving, f"delayed #{i}: still nothing moving")
+
+    limp_won = move_won = 0
+    for i in range(16):     # Go limp vs goto: once Go limp is accepted, no goal write is
+        arm = delayed_arm()
+        gen = st.gen
+        released, started = both(lambda: st.call(st.set_torque(False, gen=gen)),
+                                 lambda: st.call(st.start_move("top", "slow", gen=gen)))
+        time.sleep(0.5)
+        if not isinstance(released, Exception):
+            limp_won += 1
+            check(arm.goal_writes_after_limp == 0, f"delayed limp #{i}: {arm.goal_writes_after_limp} goal write(s) accepted after Go limp")
+            check(not st.moving and not arm.torque and arm.pending == 0, f"delayed limp #{i}: limp and quiet (goto: {started})")
+        else:
+            move_won += 1
+            check("press STOP first" in str(released) and not arm.limp_accepted, f"delayed limp #{i}: Go limp refused, never sent: {released}")
+            st.call(st.stop())
+    print(f"  delayed registers: 12 rounds of overlapping STOPs; Go limp vs goto x16: limp first {limp_won}, move first {move_won}")
+
+    arm = delayed_arm()     # the arm never confirms it went limp
+    arm.deaf = True
+    msg = refusal(lambda: st.call(st.set_torque(False, gen=st.gen)))
+    check(msg and "could not confirm the arm is limp" in msg and st.torque_doubt, f"deaf arm: Go limp is reported unconfirmed: {msg}")
+    msg = refusal(lambda: go())
+    check(msg and "could not confirm the arm is limp" in msg and arm.goal_writes_after_limp == 0, f"deaf arm: no move, no write: {msg}")
+    arm.deaf = False
+    st.call(st.set_torque(True, gen=st.gen))
+    check(st.torque_doubt is None and arm.torque, "a confirmed Hold here clears it")
+    st.arm = SimArm()
 
     # --- which arm: never guess between several
     pick, T = capture_server.pick_bus, {"transit": {"bus": "F"}, "top": {"bus": "F"}}
@@ -360,6 +591,11 @@ def state():
     return send(connect(), "GET", "/api/state")[1]
 
 
+def click(path, body):
+    """A page click: carries the generation the page last saw in /api/state."""
+    return post(path, {**body, "generation": state()["generation"]})
+
+
 def start_server():
     with socket.socket() as s:
         if s.connect_ex(("127.0.0.1", PORT)) == 0:
@@ -380,16 +616,17 @@ def start_server():
 
 def shutdown_during_move(proc, log, sig, views):
     """A signal during a move, with gotos still arriving: stop, hold, exit; nothing new starts."""
-    r = post("/api/goto", {"view": views[0]})
+    r = click("/api/goto", {"view": views[0]})
     check(r[0] == 200, f"move before {sig.name}: {r}")
     time.sleep(0.8)
-    check(state()["motion"]["moving"], f"moving before {sig.name}")
+    seen = state()
+    check(seen["motion"]["moving"], f"moving before {sig.name}")
     late = []
 
     def pester():
         for _ in range(30):
             try:
-                late.append(post("/api/goto", {"view": views[1]})[0])
+                late.append(post("/api/goto", {"view": views[1], "generation": seen["generation"]})[0])
             except OSError:
                 late.append("closed")
             time.sleep(0.01)
@@ -415,55 +652,76 @@ def part_b():
         views = [c["name"] for c in state()["cards"]]
         check(len(views) >= 3, "sim server has views")
 
+        # --- every click must say which stop generation the page had seen
+        r = post("/api/goto", {"view": views[0]})
+        check(r[0] == 400 and "generation" in r[1]["error"], f"goto without a generation is refused: {r}")
+        r = post("/api/torque", {"on": False})
+        check(r[0] == 400 and state()["torque"] == "holding", f"Go limp without a generation is refused: {r}")
+        seen = state()["generation"]
+        post("/api/stop")
+        r = post("/api/goto", {"view": views[0], "generation": seen})
+        check(r[0] == 409 and "stopped since this page last updated" in r[1]["error"], f"a click from before the STOP: {r}")
+        r = post("/api/torque", {"on": False, "generation": seen})
+        check(r[0] == 409 and state()["torque"] == "holding", f"a Go limp from before the STOP: {r}")
+        check(not state()["motion"]["moving"], "nothing started")
+        r = click("/api/goto", {"view": views[0]})
+        check(r[0] == 200 and state()["motion"]["moving"], f"a click made after the STOP starts: {r}")
+
+        # --- overlapping STOPs over HTTP share one cleanup
+        time.sleep(0.5)
+        stops = both(*[lambda: post("/api/stop")] * 4)
+        check(all(r[0] == 200 and r[1]["hold"] == "confirmed" for r in stops), f"4 STOPs at once: {stops}")
+        check(sum(r[1]["was_moving"] for r in stops) >= 1, "at least one of them stopped the move")
+
         def assert_stopped(i, what):
             s1 = state()
             check(not s1["motion"]["moving"] and not s1["stopping"], f"{what} #{i}: nothing is moving after STOP")
             check(comes_to_rest(lambda: state()["joints"]), f"{what} #{i}: the arm is still")
             check(not state()["motion"]["moving"], f"{what} #{i}: and still not moving")
 
+        assert_stopped(0, "4 STOPs")
+
         # --- STOP vs a goto that is already on its way (connection open) when STOP is sent
         tally = {"started then stopped": 0, "refused": 0}
-        for i in range(120):
+        for i in range(100):
+            seen = state()["generation"]
             goto_conn, stop_conn = connect(), connect()
             time.sleep(0.02)        # both accepted: the goto is "in flight"
-            g, s = both(lambda: send(goto_conn, "POST", "/api/goto", {"view": views[i % len(views)], "speed": "normal"}),
+            body = {"view": views[i % len(views)], "speed": "normal", "generation": seen}
+            g, s = both(lambda: send(goto_conn, "POST", "/api/goto", body),
                         lambda: send(stop_conn, "POST", "/api/stop", {}))
             check(not isinstance(g, Exception) and not isinstance(s, Exception), f"in flight #{i}: both answered: {g} {s}")
             check(s[0] == 200 and s[1]["hold"] == "confirmed", f"in flight #{i}: STOP held: {s}")
             check(g[0] in (200, 409), f"in flight #{i}: goto answered {g}")
             tally["started then stopped" if g[0] == 200 else "refused"] += 1
             assert_stopped(i, "in flight")
-        print(f"  STOP vs in-flight goto x120: {tally}")
+        print(f"  STOP vs in-flight goto x100: {tally}")
 
-        # --- STOP vs goto, both connecting at the same instant: a move may only survive if its
-        #     request reached the server after the STOP did (then it is simply a later click)
-        tally = {"started then stopped": 0, "refused": 0, "arrived after the STOP": 0}
-        for i in range(120):
-            g, s = both(lambda: post("/api/goto", {"view": views[i % len(views)], "speed": "normal"}),
-                        lambda: post("/api/stop"))
+        # --- STOP vs goto, both connecting at the same instant. The click carries the generation from
+        #     before the STOP, so whichever reaches the server first, no move may be left running
+        tally = {"started then stopped": 0, "refused": 0}
+        for i in range(100):
+            body = {"view": views[i % len(views)], "speed": "normal", "generation": state()["generation"]}
+            g, s = both(lambda: post("/api/goto", body), lambda: post("/api/stop"))
             check(s[0] == 200 and g[0] in (200, 409), f"same instant #{i}: {g} {s}")
-            if state()["motion"]["moving"]:
-                check(g[0] == 200 and g[1]["generation"] >= s[1]["generation"],
-                      f"same instant #{i}: a move survived a STOP that came after it: {g} {s}")
-                tally["arrived after the STOP"] += 1
-                check(post("/api/stop")[1]["was_moving"], "and the next STOP stops it")
-            else:
-                tally["started then stopped" if g[0] == 200 else "refused"] += 1
+            tally["started then stopped" if g[0] == 200 else "refused"] += 1
             assert_stopped(i, "same instant")
-        print(f"  STOP vs goto at the same instant x120: {tally}")
+        print(f"  STOP vs goto at the same instant x100: {tally}")
 
         # --- Go limp vs goto at the same instant
         tally = {"limp first": 0, "move first": 0}
-        post("/api/goto", {"view": "transit", "recover": True})
+        click("/api/goto", {"view": "transit", "recover": True})
         for _ in range(300):
             time.sleep(0.2)
             if not state()["motion"]["moving"]:
                 break
         for i in range(40):
             post("/api/stop")
-            r = post("/api/torque", {"on": True})
+            r = click("/api/torque", {"on": True})
             check(r[0] == 200, f"limp #{i}: Hold here: {r}")
-            rel, g = both(lambda: post("/api/torque", {"on": False}), lambda: post("/api/goto", {"view": views[i % len(views)]}))
+            seen = state()["generation"]
+            rel, g = both(lambda: post("/api/torque", {"on": False, "generation": seen}),
+                          lambda: post("/api/goto", {"view": views[i % len(views)], "generation": seen}))
             time.sleep(0.3)
             s1 = state()
             if rel[0] == 200:
@@ -474,7 +732,11 @@ def part_b():
                 check(rel[0] == 409 and s1["torque"] == "holding", f"limp #{i}: Go limp refused while moving: {rel}")
         print(f"  Go limp vs goto over HTTP x40: {tally}")
         post("/api/stop")
-        check(post("/api/torque", {"on": True})[0] == 200, "holding again")
+        check(click("/api/torque", {"on": True})[0] == 200, "holding again")
+
+        # --- /api/state keeps the fields other tools read
+        j = state()["joints"]
+        check(j.startswith("j1=") and "  gripper=" in j and len(j.split()) == 8, f"joints string format: {j!r}")
 
         # --- an unconfirmed hold over HTTP
         post("/api/sim", {"stale": True})

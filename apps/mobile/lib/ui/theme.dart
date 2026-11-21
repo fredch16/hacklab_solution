@@ -13,6 +13,7 @@ class Tok {
   static const blue = Color(0xFF79B9F2);
   static const warning = Color(0xFFF4BD6A);
   static const danger = Color(0xFFF27B7B);
+  static const recordRed = Color(0xFFFF6873);
   static const success = Color(0xFF73DCB0);
 }
 

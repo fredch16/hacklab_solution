@@ -162,9 +162,9 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 "voice": {"state":"unavailable|loading_model|listening|wake_detected|recognizing|muted|error",
           "error":null|"MODEL_MISSING|PERMISSION_MIC|VOICE_INTERRUPTED|INVALID_WAKE_PHRASE",
           "wake_phrase":"hey robot"|null, "language":"en", "model":{"kws":"<name>","asr":"<name>","vad":"silero"}|null,
-          "transcripts":[{"id","text","started_utc","ended_utc","end_reason":"silence|max_duration|cancelled"}]}
+          "transcripts":[{"id","text","started_utc","ended_utc","end_reason":"silence|max_duration|no_speech|cancelled"}]}
 ```
-`transcripts` = this session only, newest first, max 50. No phrase set → state `unavailable` with reason shown ("Set a wake phrase in the dashboard").
+`transcripts` = this session only, newest first, max 50; `id` equals the events' `utterance_id`. No phrase set → state `unavailable` with reason shown ("Set a wake phrase in the dashboard").
 
 ### Events phone → browser
 - `voice.wake_detected` `{"utterance_id","phrase","timestamp_utc"}`

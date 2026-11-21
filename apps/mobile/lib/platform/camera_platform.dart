@@ -26,17 +26,31 @@ abstract class CameraPlatform {
   Future<void> focus(double x, double y);
   Future<String> offer(String sdp);
   Future<void> stopStream(String reason);
+
+  /// Master recording (fixed 1080p60). Result: null on success, else an error code.
+  Future<String?> recordStart();
+  Future<String?> recordStop(String reason);
+
+  /// Current native recording snapshot + finalized recordings (newest first).
+  Future<
+    ({Map<String, Object?>? recording, List<Map<String, Object?>> recordings})
+  >
+  recordState();
 }
 
 class ChannelCameraPlatform implements CameraPlatform {
   static const _method = MethodChannel('dev.localvision/camera');
   static const _events = EventChannel('dev.localvision/camera_events');
 
-  @override
-  Stream<Map<String, Object?>> get events => _events
+  // One native listener only: the EventChannel keeps a single sink.
+  late final Stream<Map<String, Object?>> _shared = _events
       .receiveBroadcastStream()
       .map((e) => Map<String, Object?>.from(e as Map))
-      .handleError((Object _) {});
+      .handleError((Object _) {})
+      .asBroadcastStream();
+
+  @override
+  Stream<Map<String, Object?>> get events => _shared;
 
   Future<T?> _call<T>(String m, [Object? args]) async {
     try {
@@ -84,4 +98,41 @@ class ChannelCameraPlatform implements CameraPlatform {
   @override
   Future<void> stopStream(String reason) =>
       _call<void>('webrtcStop', {'reason': reason});
+
+  Future<String?> _record(String m, [Object? args]) async {
+    try {
+      final r = await _method.invokeMethod<Map<Object?, Object?>>(m, args);
+      return r?['ok'] == true
+          ? null
+          : (r?['error'] as String? ?? 'RECORDING_FAILED');
+    } on MissingPluginException {
+      return 'PROFILE_UNSUPPORTED';
+    } on PlatformException {
+      return 'RECORDING_FAILED';
+    }
+  }
+
+  @override
+  Future<String?> recordStart() => _record('recordStart');
+
+  @override
+  Future<String?> recordStop(String reason) =>
+      _record('recordStop', {'reason': reason});
+
+  @override
+  Future<
+    ({Map<String, Object?>? recording, List<Map<String, Object?>> recordings})
+  >
+  recordState() async {
+    final r = await _call<Map<Object?, Object?>>('recordState');
+    final rec = r?['recording'];
+    final list = r?['recordings'];
+    return (
+      recording: rec == null ? null : Map<String, Object?>.from(rec as Map),
+      recordings: [
+        if (list is List)
+          for (final e in list) Map<String, Object?>.from(e as Map),
+      ],
+    );
+  }
 }

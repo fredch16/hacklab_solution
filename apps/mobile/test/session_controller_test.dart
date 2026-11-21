@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_vision/app/session_controller.dart';
 import 'package:local_vision/features/camera/capture_controller.dart';
+import 'package:local_vision/features/recording/recording_controller.dart';
 import 'package:local_vision/features/connectivity/certificate.dart';
 import 'package:local_vision/features/connectivity/local_server.dart';
 import 'package:local_vision/features/connectivity/pairing.dart';
@@ -50,6 +51,7 @@ void main() {
       pairing: pairing,
       deviceSource: device = _NoDevice(),
       capture: CaptureController(cam = FakeCameraPlatform()),
+      recording: RecordingController(cam),
       permissionPort: perms = _Perms(),
       addresses: () async => ['127.0.0.1'],
       wakelock: (b) async => wake.add(b),
@@ -193,7 +195,7 @@ void main() {
     await tester.pumpWidget(LocalVisionApp(controller: c));
     expect(find.text('Camera off · start a session first'), findsOneWidget);
     expect(find.text('WebRTC · Idle (no viewer)'), findsOneWidget);
-    expect(find.text('Local master · Not started'), findsOneWidget);
+    expect(find.text('Local master · Idle'), findsOneWidget);
     expect(find.text('Unavailable'), findsWidgets);
     expect(find.text('Start session'), findsOneWidget);
   });

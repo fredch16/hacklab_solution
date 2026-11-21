@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_vision/features/connectivity/pairing.dart';
 import 'package:local_vision/features/connectivity/private_address.dart';
 import 'package:local_vision/features/connectivity/snapshot.dart';
+import 'package:local_vision/features/recording/recording_controller.dart';
 import 'package:local_vision/platform/device_status.dart';
 
 void main() {
@@ -63,6 +64,8 @@ void main() {
       viewer: const ViewerInfo(paired: false, connected: false),
       camera: const {'state': 'not_started', 'error': null, 'lens': 'back'},
       stream: const {'state': 'idle', 'error': null},
+      recording: normalizeRecording(null),
+      recordings: const [],
     );
     final j = jsonDecode(jsonEncode(p)) as Map<String, dynamic>;
     expect(j.keys.toSet(), {
@@ -74,6 +77,7 @@ void main() {
       'camera',
       'stream',
       'recording',
+      'recordings',
       'voice',
       'battery',
       'thermal',

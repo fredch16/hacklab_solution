@@ -63,4 +63,7 @@ input#code{min-height:52px;font:600 26px ui-monospace,Menlo,Consolas,monospace;l
 .recs li{display:grid;gap:2px;overflow-wrap:anywhere}
 .dlg{background:var(--ink900);color:var(--t1);border:1px solid var(--ink700);border-radius:16px;padding:20px;max-width:min(420px,90vw)}
 .dlg::backdrop{background:rgba(8,13,20,.75)}
-@media(max-width:640px){
+@media(max-width:640px){input.txt{flex:1 1 160px;min-width:0;min-height:44px;background:var(--ink950);color:var(--t1);border:1px solid var(--ink700);border-radius:11px;font:inherit;padding:0 12px}
+.wake-form{margin-top:12px}.wake-form .controls{margin-top:4px}
+.banner.ok{border-color:var(--teal);color:var(--teal)}
+.partial{margin:8px 0 0;font-style:italic;color:var(--t2)}

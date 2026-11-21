@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'app/session_controller.dart';
 import 'features/camera/capture_controller.dart';
 import 'features/connectivity/certificate.dart';
+import 'features/recording/recording_controller.dart';
 import 'features/connectivity/local_server.dart';
 import 'features/connectivity/pairing.dart';
 import 'platform/camera_platform.dart';
@@ -16,11 +17,14 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final dir = await getApplicationSupportDirectory();
   final pairing = PairingService();
-  final capture = CaptureController(ChannelCameraPlatform());
+  final cameraPlatform = ChannelCameraPlatform();
+  final capture = CaptureController(cameraPlatform);
+  final recording = RecordingController(cameraPlatform);
   final certs = CertificateService(dir);
   final controller = SessionController(
     pairing: pairing,
     capture: capture,
+    recording: recording,
     deviceSource: ChannelDeviceStatusSource(),
     permissionPort: HandlerPermissionPort(),
     serverFactory: (payload, onMessage) => LocalServer(

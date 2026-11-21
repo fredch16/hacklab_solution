@@ -1,4 +1,5 @@
 import { qrCanvas } from "./qr.js";
+import { applyVoiceEvent, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakePhrase, voiceStatus } from "./voice.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import { applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent, initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, commandErrorMessage, formatAudio, formatBytes as fmtBytes, formatElapsed, formatProfile, liveElapsed, recordingStateLabel, warningMessage, UNAVAILABLE, } from "./state.js";
 let view = "boot";
@@ -60,9 +61,11 @@ function setView(v) {
         vs.message = "";
         clearInterval(dashTimer);
         dash = null;
-        for (const t of pending.values())
-            clearTimeout(t);
+        for (const e of pending.values())
+            clearTimeout(e.timer);
         pending.clear();
+        live = initialLive();
+        voiceMsg = "";
     }
     if (v === "pairing") {
         if (!pairPoll && pairMode === "qr")
@@ -174,32 +177,37 @@ async function unpair() {
 }
 let phoneStats = null;
 let phoneStatsAt = 0;
-// ---- commands ----
 const pending = new Map();
-let recMsg = "";
+let recMsg = "", voiceMsg = "";
+let live = initialLive();
 const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
-function sendCommand(type, payload) {
+const msg = (k, m) => { if (k === "rec")
+    recMsg = m;
+else
+    voiceMsg = m; };
+const isPending = (k) => [...pending.values()].some((p) => p.kind === k);
+function sendCommand(type, payload, kind = "rec") {
     const id = rid();
-    recMsg = "";
+    msg(kind, "");
     if (!sendWs({ version: 1, type, request_id: id, payload })) {
-        recMsg = "Not connected to the phone.";
+        msg(kind, "Not connected to the phone.");
         updateDash();
         return false;
     }
-    pending.set(id, window.setTimeout(() => { pending.delete(id); recMsg = "No response from the phone."; updateDash(); }, 10000));
+    pending.set(id, { kind, timer: window.setTimeout(() => { pending.delete(id); msg(kind, "No response from the phone."); updateDash(); }, 10000) });
     updateDash();
     return true;
 }
 function onCommandResult(env) {
     const p = env.payload ?? {};
     const id = env.request_id ?? p.request_id;
-    const t = id ? pending.get(id) : undefined;
-    if (t === undefined)
+    const e = id ? pending.get(id) : undefined;
+    if (!e)
         return;
-    clearTimeout(t);
+    clearTimeout(e.timer);
     pending.delete(id);
     if (!p.ok)
-        recMsg = commandErrorMessage(p.error, p.message);
+        msg(e.kind, commandErrorMessage(p.error, p.message));
     updateDash();
 }
 const sendWs = (o) => { if (ws && ws.readyState === WebSocket.OPEN) {
@@ -237,6 +245,11 @@ function connect() {
                 updateDash();
                 return;
             }
+            if (env.type.startsWith("voice.")) {
+                live = applyVoiceEvent(live, env.type, env.payload);
+                updateDash();
+                return;
+            }
             if (env.type === "command.result") {
                 onCommandResult(env);
                 return;
@@ -248,7 +261,10 @@ function connect() {
             const next = applyEnvelope(state, env, Date.now());
             conn = "connected";
             attempt = 0;
+            if (next.sessionId !== state.sessionId)
+                live = initialLive();
             state = next;
+            live = mergeSnapshotVoice(live, next.snapshot?.voice);
             if (view === "dashboard")
                 render();
         }
@@ -405,6 +421,7 @@ function perm(name, v) {
     return [name, h("span", `pill ${e[2]}`, icon(e[0]), e[1])];
 }
 let dash = null;
+let phraseDirty = false, phraseNote = null, lastPhrase = undefined, announced = "";
 /** Replace children only if the markup changed, so buttons are not rebuilt under the pointer every second. */
 function patch(el, nodes) {
     const t = document.createElement("div");
@@ -423,7 +440,40 @@ function buildDash() {
     const cam = h("section", "card camera", h("h2", "mod", "Camera"), status, vp, controls, tags, metrics, phone);
     const recs = h("div", "contents");
     const recBox = h("div", "contents"), otherBox = h("div", "contents");
-    const rail = h("aside", "rail", recBox, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
+    const vStatus = h("div"), vMute = h("div"), vMsg = h("div"), vLive = h("div"), vList = h("ul", "recs"), vAnnounce = h("div", "sr-only");
+    vAnnounce.setAttribute("aria-live", "polite");
+    const wakeInput = h("input", "txt");
+    wakeInput.id = "wake-input";
+    wakeInput.type = "text";
+    wakeInput.maxLength = 40;
+    wakeInput.autocomplete = "off";
+    wakeInput.spellcheck = false;
+    wakeInput.setAttribute("aria-describedby", "wake-help wake-msg");
+    const wl = h("label", "lbl", "Wake phrase");
+    wl.htmlFor = "wake-input";
+    const saveBtn = h("button", "btn", "Save");
+    saveBtn.type = "submit";
+    saveBtn.dataset.focus = "wake-save";
+    const help = h("p", "muted", "English only. 2\u201340 letters, spaces or apostrophes. Two words or 6+ letters work best.");
+    help.id = "wake-help";
+    vMsg.id = "wake-msg";
+    const form = h("form", "wake-form", wl, h("div", "controls", wakeInput, saveBtn), help, vMsg);
+    wakeInput.oninput = () => { phraseDirty = true; updateDash(); };
+    form.onsubmit = (e) => {
+        e.preventDefault();
+        const c = validateWakePhrase(wakeInput.value);
+        if (!c.ok) {
+            voiceMsg = "";
+            phraseNote = c.error;
+            updateDash();
+            return;
+        }
+        phraseNote = c.warning;
+        sendCommand("voice.settings.set", { wake_phrase: c.normalized }, "voice");
+        phraseDirty = false;
+    };
+    const voiceCard = h("section", "card", h("h2", "mod", "Voice"), vStatus, vMute, form, vLive, h("p", "sub", "Transcripts this session"), vList, vAnnounce);
+    const rail = h("aside", "rail", recBox, voiceCard, otherBox), grid = h("main", "grid", h("div", "main-col", cam, recs), rail);
     const title = h("h2", null, "Stop recording?");
     title.id = "dlg-t";
     const keep = h("button", "btn primary", "Keep recording");
@@ -438,7 +488,7 @@ function buildDash() {
     clearInterval(dashTimer);
     dashTimer = window.setInterval(() => { if (state.snapshot?.recording.state === "recording")
         updateDash(); }, 1000);
-    return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, recBox, otherBox, recs, dlg, grid };
+    return { page: h("div", "page", hdr, stale, grid, dlg), hdr, stale, status, overlay, controls, tags, metrics, phone, recBox, vStatus, vMute, vMsg, vLive, vList, vAnnounce, wakeInput, saveBtn, otherBox, recs, dlg, grid };
 }
 const BUSY_REC = ["starting", "recording", "stopping", "finalizing"];
 function recordingCard(s, offline) {
@@ -456,7 +506,7 @@ function recordingCard(s, offline) {
         kids.push(banner("bad", "\u2715", commandErrorMessage(r.error)));
     if (recMsg)
         kids.push(banner("bad", "\u2715", recMsg));
-    const busy = pending.size > 0;
+    const busy = isPending("rec");
     const rb = h("button", "btn primary", "Record");
     rb.dataset.focus = "record";
     rb.disabled = offline || busy || BUSY_REC.includes(st);
@@ -476,6 +526,43 @@ function recordingCard(s, offline) {
     return card("Recording", ...kids);
 }
 function banner(kind, ic, text) { const b = h("p", `banner ${kind}`, icon(ic), " " + text); b.setAttribute("role", kind === "bad" ? "alert" : "status"); return b; }
+function updateVoice(d, snap, offline) {
+    const v = snap.voice, st = voiceStatus(v);
+    patch(d.vStatus, [h("p", null, h("span", `pill ${st.sev}`, icon(st.icon), st.text), ...(v.wake_phrase ? [h("span", "muted", ` \u00B7 phrase \u201C${v.wake_phrase}\u201D`)] : [])), ...(st.detail ? [h("p", "muted", st.detail)] : [])]);
+    const muted = v.state === "muted";
+    const mb = h("button", "btn", `${muted ? "Unmute" : "Mute"} voice assistant \u2014 recording audio not affected`);
+    mb.dataset.focus = "mute";
+    mb.disabled = offline || isPending("voice") || (v.state === "unavailable" || v.state === "error");
+    mb.onclick = () => void sendCommand(muted ? "voice.unmute" : "voice.mute", {}, "voice");
+    patch(d.vMute, [mb]);
+    if (v.wake_phrase !== lastPhrase) {
+        lastPhrase = v.wake_phrase;
+        if (!phraseDirty && v.wake_phrase != null)
+            d.wakeInput.value = v.wake_phrase;
+    }
+    const chk = validateWakePhrase(d.wakeInput.value);
+    d.saveBtn.disabled = offline || isPending("voice");
+    patch(d.vMsg, [
+        ...(voiceMsg ? [banner("bad", "\u2715", voiceMsg)] : []),
+        ...(phraseDirty && !chk.ok && d.wakeInput.value ? [banner("warn", "!", chk.error ?? "")] : []),
+        ...(phraseDirty && chk.warning ? [banner("warn", "!", chk.warning)] : []),
+        ...(!phraseDirty && phraseNote ? [banner("warn", "!", phraseNote)] : []),
+    ]);
+    const nodes = [];
+    if (live.wake)
+        nodes.push(banner("ok", "\u2605", `Wake detected${live.wake.phrase ? ` \u2014 \u201C${live.wake.phrase}\u201D` : ""}`));
+    if (live.partial)
+        nodes.push(h("p", "partial", live.partial.text || "\u2026"));
+    patch(d.vLive, nodes);
+    const list = live.transcripts;
+    patch(d.vList, list.length ? list.map((t) => h("li", null, h("strong", null, t.text || "(no speech)"), h("span", "muted tnum", `${formatLocal(t.started_utc)} \u00B7 ${endReasonLabel(t.end_reason)}`))) : [h("li", "muted", "No transcripts yet.")]);
+    const top = list[0];
+    if (top && top.id !== announced) {
+        if (announced !== "")
+            d.vAnnounce.textContent = top.text || "No speech heard";
+        announced = top.id;
+    }
+}
 function recordingsCard(s) {
     const list = s.recordings ?? [];
     const ul = h("ul", "recs");
@@ -537,6 +624,7 @@ function updateDash() {
     patch(d.recBox, [recordingCard(snap, live)]);
     patch(d.recs, [recordingsCard(snap)]);
     patch(d.otherBox, railCards(snap));
+    updateVoice(d, snap, conn !== "connected");
 }
 function railCards(s) {
     const v = s.viewer, n = s.network;
@@ -552,7 +640,6 @@ function railCards(s) {
             ["Screen kept on", s.keep_screen_on == null ? UNAVAILABLE : s.keep_screen_on ? "Yes" : "No"],
             perm("Camera permission", s.permissions.camera), perm("Microphone permission", s.permissions.microphone),
         ])),
-        card("Voice", kv([["State", stateLabel(s.voice.state)]])),
         card("Device health", kv([
             ["Battery", batt], ["Thermal", stateLabel(s.thermal.status)],
             ["Storage free", `${formatBytes(s.storage.free_bytes)} of ${formatBytes(s.storage.total_bytes)}`],

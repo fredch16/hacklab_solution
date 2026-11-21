@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../platform/device_status.dart';
 import '../app/session_controller.dart';
+import 'record_card.dart';
 import 'session_button.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -14,7 +15,7 @@ class CapturePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller,
+    listenable: Listenable.merge([controller, controller.recording]),
     builder: (context, _) {
       final c = controller;
       final d = c.device;
@@ -39,7 +40,7 @@ class CapturePage extends StatelessWidget {
                           : Tok.textSecondary,
                     ),
                     const StatusChip(
-                      'Local master · Not started',
+                      'Local master · Idle',
                       icon: Icons.save_outlined,
                     ),
                   ],
@@ -66,6 +67,7 @@ class CapturePage extends StatelessWidget {
               ],
             ),
           ),
+          RecordCard(controller: c),
           AppCard(
             title: 'Device health',
             child: Column(

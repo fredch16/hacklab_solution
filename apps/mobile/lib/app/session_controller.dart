@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../features/camera/capture_controller.dart';
+import '../features/recording/recording_controller.dart';
 import '../features/connectivity/local_server.dart';
 import '../features/connectivity/pairing.dart';
 import '../features/connectivity/signaling.dart';
@@ -34,6 +35,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   SessionController({
     required this.pairing,
     required this.capture,
+    required this.recording,
     required LocalServerFactory serverFactory,
     required this.deviceSource,
     required this.permissionPort,
@@ -48,12 +50,14 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
        _now = clock ?? DateTime.now {
     relay = SignalingRelay(
       port: capture,
+      recording: recording,
       send: (type, payload, {requestId}) =>
           server.sendMessage(type, payload, requestId: requestId),
     );
     capture.sender = (type, payload, {requestId}) =>
         server.sendMessage(type, payload, requestId: requestId);
     capture.addListener(_publish);
+    recording.addListener(_publish);
     server = serverFactory(snapshotPayload, (raw) => relay.handle(raw));
     _serverSub = server.events.listen((_) {
       // Viewer gone (revoked, replaced, tab closed): nobody to send video to.
@@ -70,6 +74,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
 
   final PairingService pairing;
   final CaptureController capture;
+  final RecordingController recording;
   late final SignalingRelay relay;
   final DeviceStatusSource deviceSource;
   final PermissionPort permissionPort;
@@ -122,11 +127,14 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     viewer: server.viewerInfo,
     camera: capture.cameraJson(),
     stream: capture.streamJson(),
+    recording: recording.recording,
+    recordings: recording.recordings,
   );
 
   Future<void> init() async {
     WidgetsBinding.instance.addObserver(this);
     appVersion = await _appVersionLoader();
+    await recording.refresh();
     await _refresh();
     if (phase == AppPhase.idle) phase = AppPhase.ready;
     notifyListeners();
@@ -160,11 +168,14 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Session start only asks for permission; the camera starts when the
-  /// browser clicks Start video.
+  /// Session start only asks for permissions (camera and microphone, so remote
+  /// Start video / Record need no phone tap); the camera starts on demand.
   Future<void> _requestCameraPermission() async {
     if (permissions['camera'] != 'granted') {
       await requestPermission(Permission.camera);
+    }
+    if (permissions['microphone'] != 'granted') {
+      await requestPermission(Permission.microphone);
     }
     if (permissions['camera'] == 'granted') {
       capture.permissionGranted();
@@ -186,6 +197,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> endSession() async {
     if (!sessionRunning) return;
     _poll?.cancel();
+    await recording.end();
     await capture.end();
     await server.stop();
     try {
@@ -254,6 +266,7 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
     _serverSub.cancel();
     _batterySub.cancel();
     capture.removeListener(_publish);
+    recording.removeListener(_publish);
     server.dispose();
     super.dispose();
   }

@@ -1,3 +1,4 @@
+import type { VoiceTranscript } from "./voice.js";
 // Pure logic: no DOM, no network. Implements packages/protocol/README.md (v1).
 
 export interface RecordingProfile { lens_id?: string | null; width?: number | null; height?: number | null; fps?: number | null; codec?: string | null; hdr?: boolean | null }
@@ -12,11 +13,11 @@ export interface Snapshot {
   keep_screen_on: boolean | null;
   device: { model: string | null; manufacturer: string | null; os: string | null; sdk_int: number | null; app_version: string | null };
   permissions: { camera: string | null; microphone: string | null };
+  voice: { state: string; error?: string | null; wake_phrase?: string | null; language?: string | null; model?: unknown; transcripts?: VoiceTranscript[] | null };
   camera: { state: string; error?: string | null; lens?: string | null };
   stream?: { state: string; error: string | null };
   recording: RecordingInfo;
   recordings?: RecordingItem[] | null;
-  voice: { state: string };
   battery: { level_percent: number | null; charging: boolean | null; plugged?: boolean | null };
   thermal: { status: string | null };
   storage: { free_bytes: number | null; total_bytes: number | null };
@@ -293,6 +294,9 @@ export function commandErrorMessage(code: string | null | undefined, message?: s
     DEVICE_IN_USE: "The camera is in use by another app.",
     CAPABILITY_UNSUPPORTED: "The phone does not support that camera mode.",
     CAMERA_FAILED: "The camera failed on the phone.",
+    INVALID_WAKE_PHRASE: "The phone rejected that wake phrase. Use 2\u201340 letters, spaces or apostrophes.",
+    MODEL_MISSING: "The voice model is missing on the phone.",
+    VOICE_INTERRUPTED: "Voice was interrupted on the phone.",
   };
   const base = (code && m[code]) || `Command failed${code ? ` (${code})` : ""}.`;
   return message && !(code && m[code]) ? `${base} ${message}` : base;

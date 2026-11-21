@@ -82,4 +82,35 @@ class FakeCameraPlatform implements CameraPlatform {
     emit({'event': 'stream', 'state': 'idle', 'error': null});
     _release('stream');
   }
+
+  String? recordStartError;
+  final recordCalls = <String>[];
+
+  @override
+  Future<String?> recordStart() async {
+    recordCalls.add('start');
+    if (recordStartError != null) return recordStartError;
+    emit({
+      'event': 'recording',
+      'recording': {'state': 'recording', 'id': 'rec-1', 'bytes': 0},
+    });
+    return null;
+  }
+
+  @override
+  Future<String?> recordStop(String reason) async {
+    recordCalls.add('stop:$reason');
+    emit({
+      'event': 'recording',
+      'recording': {'state': 'available', 'id': 'rec-1', 'bytes': 100},
+    });
+    return null;
+  }
+
+  @override
+  Future<
+    ({Map<String, Object?>? recording, List<Map<String, Object?>> recordings})
+  >
+  recordState() async =>
+      (recording: null, recordings: <Map<String, Object?>>[]);
 }

@@ -46,6 +46,17 @@ Joint values are raw encoder steps (0–4095, 4096 per turn) keyed by motor id. 
 
 Targets are clamped 30 steps inside each joint's calibrated range. The gripper is never written.
 
+## Speeds and blending
+
+| Speed | Peak steps/s | How |
+|---|---|---|
+| first-run | 100 | forced whenever a view involved is not marked checked |
+| slow / normal | 200 / 400 | streamed waypoints on a leash, strictly rise, then turn, then descend |
+| fast | 800 | streamed; the descent is capped at normal; **blended** |
+| turbo | 2000 | rise and turn on the servos' own speed/acceleration profile (goal written once; progress watchdog instead of the leash); the descent streamed at fast; **blended** |
+
+Blended (fast and turbo, checked views, desk assumed clear): the turn starts as soon as the geometry model puts the forearm, wrist, gripper and camera at least `CLEAR_HEIGHT_M` (25 cm) above the desk, and the descent starts when the rise is done but waits at that height until the turn has arrived. Below the line everything is still strictly in sequence. `BLEND = False` in `motion.py` switches it off.
+
 ## Trying it
 
 ```bash

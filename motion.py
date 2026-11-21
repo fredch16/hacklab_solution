@@ -53,6 +53,12 @@ TURBO_ACCEL = 40       # register 0x29 for the joint that travels furthest (4000
 TURBO_CURRENT_LIMIT = 380   # raw; accelerating hard draws more than CURRENT_LIMIT (stall is ~415)
 TURBO_DRIFT_LIMIT = 100     # held joints get shaken more when the others move fast
 HOLD_ACCEL = 100       # a Stop brakes joints that were being driven as hard as this allows
+# Blending: at fast and turbo (checked views, desk assumed clear) the turn overlaps the rise and
+# the descent, but only while the geometry model (fk.py) puts the forearm, wrist, gripper and
+# camera at least this high above the desk. Below that line the moves stay strictly in sequence.
+BLEND = True
+CLEAR_HEIGHT_M = 0.25
+CLEAR_POINTS = ("j5_forearm_roll", "j6_wrist_pitch", "j7_wrist_roll", "j8_gripper", "jaw_tip", "camera")
 TEMP_LIMIT = 70        # deg C, sustained: stop before a servo cooks
 MIN_SEGMENT_S = 0.8
 RATE_HZ = 30
@@ -521,21 +527,26 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
 
 
 async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
-                       env: dict, stats: dict, ctx: dict, planned: dict, turbo: bool = False) -> float:
+                       env: dict, stats: dict, ctx: dict, planned: dict, turbo: bool = False,
+                       others: tuple = (), gate=None) -> float:
     """Move the joints in `goal` to their targets; every other joint must stay put.
     `planned` gives, for joints an earlier segment moved, where they are supposed to be.
 
     Normally the path is streamed in small waypoints on a leash. With `turbo` the final goal
     is written once and each servo runs its own speed/acceleration profile: much faster, but
     the goal is far ahead of the arm, so what protects it is the progress watchdog, the other
-    guards and a hard-braking Stop, not the leash."""
+    guards and a hard-braking Stop, not the leash.
+
+    `others`: joints another segment is driving at the same time (blended moves); this segment
+    does not expect them to hold still. `gate(waypoint)`: a streamed segment only advances to a
+    waypoint the gate allows (the descent waits above the clear height until the turn is done)."""
     tel = arm.telemetry(max_age_s=STALE_S)
     ids = sorted(goal)
     watch = _Watch()
     # A held joint must stay near its planned place (e.g. the hub during a turn), not merely
     # near wherever it happened to be when this segment started.
-    held_pos = {m: planned.get(m, tel[m]["pos"]) for m in MOVABLE if m not in goal}
-    held_goal = {m: tel[m]["goal"] for m in MOVABLE if m not in goal}
+    held_pos = {m: planned.get(m, tel[m]["pos"]) for m in MOVABLE if m not in goal and m not in others}
+    held_goal = {m: tel[m]["goal"] for m in MOVABLE if m not in goal and m not in others}
 
     def resting_at_goal(t):   # at the goal, and its own goal register is right there too
         return all(abs(goal[m] - t[m]["pos"]) <= SKIP_TOL and abs(t[m]["goal"] - goal[m]) <= HELD_GOAL_TOL
@@ -621,7 +632,9 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         nxt = waypoint(s_next)
         lag_m = max(ids, key=lambda m: abs(nxt[m] - tel[m]["pos"]))
         lead = abs(nxt[lag_m] - tel[lag_m]["pos"])
-        if lead <= leash:
+        if lead <= leash and gate is not None and s_next > s and not gate(nxt):
+            stalled_since = None                             # waiting at the gate, not blocked
+        elif lead <= leash:
             s, cmd, stalled_since = s_next, nxt, None
             stats["max_lag"][lag_m] = max(stats["max_lag"].get(lag_m, 0), lead)
         else:
@@ -670,6 +683,82 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
                                f"its goal in '{name}'; it may be blocked or overloaded")
         if prev is None or fresh:
             prev = tel
+
+
+def _height(pose: dict[int, int], ranges) -> float:
+    """Lowest of the forearm, wrist, gripper and camera above the desk, in metres, by the geometry
+    model (the lower of its two joint-angle mappings)."""
+    import fk
+    return min(fk.fk(pose, ranges, mapping=mapping)[point][2]
+               for mapping in ("viewer", "true_scale") for point in CLEAR_POINTS)
+
+
+def _segment_speed(seg: str, max_speed: float) -> tuple[float, bool]:
+    """(speed, turbo) for one segment. Turbo: rise and turn on the servos' own profile, the
+    descent streamed at fast. Otherwise the descent is capped at normal: coming down onto a
+    view is where an overshoot would matter."""
+    if seg != "descend":
+        return max_speed, max_speed >= SPEED_TURBO
+    return (SPEED_FAST if max_speed >= SPEED_TURBO else min(max_speed, SPEED_NORMAL)), False
+
+
+async def _run_blended(arm, route, max_speed: float, env: dict, stats: dict, ctx: dict) -> float:
+    """Run rise / turn / descend with the turn overlapping the other two above CLEAR_HEIGHT_M.
+
+      rise starts at once; the turn starts as soon as the measured pose is above the clear
+      height (or the rise is done); the descent starts when the rise is done but may only go
+      below the clear height once the turn has arrived.
+    Each segment keeps its own guards and arrival check. If one fails, all are stopped."""
+    segs = dict(route)
+    ranges = arm.ranges()
+    grip = arm.telemetry(max_age_s=STALE_S)[GRIPPER]["pos"]
+    tasks: dict[str, asyncio.Future] = {}
+    t0 = time.monotonic()
+
+    def height(overrides: dict) -> float:     # the measured pose, with these joints replaced
+        tel = arm.telemetry(max_age_s=STALE_S)
+        return _height({**{m: tel[m]["pos"] for m in MOVABLE}, **overrides, GRIPPER: grip}, ranges)
+
+    def start(name: str, **kw):
+        speed, turbo = _segment_speed(name, max_speed)
+        others = tuple(m for n, g in segs.items() if n != name for m in g if m not in segs[name])
+        tasks[name] = asyncio.ensure_future(_run_segment(
+            arm, name, segs[name], speed, env, stats, ctx, {}, turbo=turbo, others=others, **kw))
+
+    async def until(done):
+        while True:
+            running = [n for n, t in tasks.items() if not t.done()]
+            ctx["moving"] = _last["driving"] = tuple(sorted({m for n in running for m in segs[n]}))
+            status.update(phase="+".join(running) or status["phase"], phase_index=len(tasks))
+            for t in tasks.values():
+                if t.done() and not t.cancelled() and t.exception():
+                    raise t.exception()
+            if done():
+                return
+            await asyncio.sleep(1 / RATE_HZ)
+
+    def finished(name: str) -> bool:
+        return name not in segs or (name in tasks and tasks[name].done())
+
+    try:
+        if "rise" in segs:
+            start("rise")
+        if "turn" in segs:
+            await until(lambda: finished("rise") or height({}) >= CLEAR_HEIGHT_M)
+            start("turn")
+        await until(lambda: finished("rise"))
+        if "descend" in segs:
+            start("descend", gate=lambda waypoint: finished("turn") or height(waypoint) >= CLEAR_HEIGHT_M)
+        await until(lambda: all(t.done() for t in tasks.values()))
+        for t in tasks.values():
+            t.result()
+    except BaseException:
+        for t in tasks.values():
+            t.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        raise
+    ctx["moving"] = _last["driving"] = ()
+    return time.monotonic() - t0
 
 
 async def _inspect(arm, target: str | None = None) -> dict:
@@ -825,28 +914,33 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
                 max_speed = min(max_speed, SPEED_FIRST)
             result["route"] = [seg for seg, _ in route]
             status.update(route=result["route"], phase_count=len(route))
-            expect = dict(present)      # where each joint should be as the route progresses
-            moved: set[int] = set()
-            for i, (seg, goal) in enumerate(route, 1):
-                status.update(phase=seg, phase_index=i, progress=0.0)
-                # Hand-off: joints this segment does not move must be where earlier segments left them.
-                now = arm.joints(max_age_s=STALE_S)
-                for m in moved - set(goal):
-                    if abs(now[m] - expect[m]) > ARRIVE_TOL:
-                        raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
-                                          "needs it to be; not continuing")
-                ctx["moving"] = _last["driving"] = tuple(goal)
-                # Turbo: rise and turn on the servos' own profile; the descent is streamed at fast.
-                # Otherwise the descent is capped at normal: coming down onto a view is where an
-                # overshoot would matter.
-                turbo = max_speed >= SPEED_TURBO and seg != "descend"
-                seg_speed = (max_speed if seg != "descend"
-                             else SPEED_FAST if max_speed >= SPEED_TURBO else min(max_speed, SPEED_NORMAL))
-                result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
-                                                         {m: expect[m] for m in moved}, turbo=turbo)
-                ctx["moving"] = _last["driving"] = ()
-                expect.update(goal)
-                moved |= set(goal)
+            blend = BLEND and max_speed >= SPEED_FAST and len(route) > 1
+            if blend:
+                try:
+                    import fk  # noqa: F401  (the clear-height check needs the geometry model)
+                except Exception:
+                    blend = False
+            if blend:
+                status.update(phase="+".join(result["route"][:1]), phase_index=1, progress=0.0)
+                result["duration"] += await _run_blended(arm, route, max_speed, env, stats, ctx)
+            else:
+                expect = dict(present)      # where each joint should be as the route progresses
+                moved: set[int] = set()
+                for i, (seg, goal) in enumerate(route, 1):
+                    status.update(phase=seg, phase_index=i, progress=0.0)
+                    # Hand-off: joints this segment does not move must be where earlier segments left them.
+                    now = arm.joints(max_age_s=STALE_S)
+                    for m in moved - set(goal):
+                        if abs(now[m] - expect[m]) > ARRIVE_TOL:
+                            raise MotionError(f"motor {m} is {abs(now[m] - expect[m])} steps from where '{seg}' "
+                                              "needs it to be; not continuing")
+                    ctx["moving"] = _last["driving"] = tuple(goal)
+                    seg_speed, turbo = _segment_speed(seg, max_speed)
+                    result["duration"] += await _run_segment(arm, seg, goal, seg_speed, env, stats, ctx,
+                                                             {m: expect[m] for m in moved}, turbo=turbo)
+                    ctx["moving"] = _last["driving"] = ()
+                    expect.update(goal)
+                    moved |= set(goal)
             result["ok"] = True
         except asyncio.CancelledError:
             # Stop may have been pressed because the arm touches something: stop pushing too.

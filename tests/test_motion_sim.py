@@ -313,6 +313,51 @@ async def main():
     await motion.hold(sag)
     check(abs(sag._goal[2] - sag._pos[2]) <= motion.FREEZE_TOL, "hold pulls back a goal that is far from the joint")
 
+    # --- blended moves: the turn overlaps rise and descent, but only above the clear height ----
+    for speed, label in ((motion.SPEED_FAST, "fast"), (motion.SPEED_TURBO, "turbo")):
+        for a, b in (("top", "right"), ("right", "left"), ("left", "close"), ("close", "home")):
+            blend = SimArm(start={**VIEWS[a], 8: 1279})
+            low_while_turning, overlapped = 9.9, False
+            async def watch_blend():
+                nonlocal low_while_turning, overlapped
+                while True:
+                    j = blend.joints()
+                    turning = any(abs(j[m] - VIEWS[a][m]) > 30 and abs(j[m] - VIEWS[b][m]) > 30 for m in TURN)
+                    pitching = any(abs(blend._goal[m] - j[m]) > 3 for m in PITCH)
+                    if turning:
+                        low_while_turning = min(low_while_turning, motion._height({**j}, SIM_RANGES))
+                        overlapped = overlapped or pitching
+                    await asyncio.sleep(0.01)
+            w = asyncio.create_task(watch_blend())
+            t0 = time.monotonic()
+            r = await go_to_view(blend, b, max_speed=speed)
+            w.cancel()
+            check(r["ok"] and at(blend, b), f"blended {label} {a}->{b} arrives: {r['error']}")
+            check(low_while_turning >= motion.CLEAR_HEIGHT_M - 0.03,
+                  f"{label} {a}->{b}: never turning below the clear height (lowest {low_while_turning*100:.0f} cm)")
+            if (a, b) == ("top", "right"):
+                check(overlapped, f"{label}: the turn really overlaps the rise or descent")
+                print(f"blended {label} {a}->{b}: {time.monotonic() - t0:.1f}s, lowest while turning {low_while_turning*100:.0f} cm")
+    jam = SimArm(); jam.stuck = {5}                           # the turn fails while the rise is still going
+    r = await go_to_view(jam, "right", max_speed=motion.SPEED_FAST)
+    check(not r["ok"] and "motor 5" in r["error"] and r["hold"] == "confirmed" and await still(jam),
+          f"blended: one segment failing stops them all: {r['error']}")
+    stop_blend = SimArm()
+    task = asyncio.create_task(go_to_view(stop_blend, "left", max_speed=motion.SPEED_FAST))
+    await asyncio.sleep(1.2); task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    lead = max(abs(stop_blend._goal[m] - stop_blend.joints()[m]) for m in MOVABLE)
+    check(motion.status["hold"] == "confirmed" and lead <= motion.RELAX_TOL and await still(stop_blend),
+          f"Stop during a blended move holds every joint (lead {lead})")
+    motion.BLEND = False
+    seq = SimArm(start={**VIEWS["top"], 8: 1279})
+    r = await go_to_view(seq, "right", max_speed=motion.SPEED_FAST)
+    check(r["ok"], "with BLEND off the move still runs, strictly in sequence")
+    motion.BLEND = True
+
     # --- turbo: rise and turn on the servos' own profile -------------------------------------
     quick = SimArm()
     t0 = time.monotonic()

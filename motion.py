@@ -55,12 +55,15 @@ SERVO_ACCEL = 15       # register 0x29, units of 100 steps/s^2
 # All thresholds below are provisional until tuned from motion_log.jsonl on the real arm.
 AT_TOL = 60            # steps: "the arm is at this view / on this spoke" when deciding where it is
 SKIP_TOL = 10          # a segment whose joints are all this close to its goal is skipped
-ARRIVE_TOL = 40        # after a segment (and before the next) joints must be this close to plan
+ARRIVE_TOL = 50        # after a segment (and before the next) joints must be this close to plan
+                       # (a gravity-loaded ST3215 settles a few dozen steps short of its goal)
 SETTLE_S = 2.0         # ...within this long, standing still, with the final goal read back
 SETTLE_POLL_S = 0.15
 STALL_S = 0.4          # the arm not catching up with the leash for this long = blocked
 DRIFT_LIMIT = 60       # a joint that should be holding still has moved this far = pushed/sagging
 HELD_GOAL_TOL = 80     # before a move, each joint's goal register must be this close to its position
+FREEZE_TOL = 60        # Stop: a joint whose goal is this close to it keeps that goal (see hold())
+RELAX_TOL = 25         # ...after a suspected blockage, only this close
 STALE_S = 0.3          # joint data older than this is not trusted
 FAULT_S = 0.25         # how long load / current / read errors / a foreign goal must persist
 WRITE_TIMEOUT_S = 0.5
@@ -87,6 +90,10 @@ status = {"moving": False, "view": None, "phase": None, "phase_index": 0, "phase
 
 class MotionError(RuntimeError):
     """A move was refused or aborted. The message is safe to show to the user."""
+
+
+class BlockedError(MotionError):
+    """The arm seems to be pushing against something: stop pushing, not just stop moving."""
 
 
 # ---------------------------------------------------------------- views
@@ -215,13 +222,12 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]]) -> dict:
     for name, pose in views.items():
         if name == TRANSIT or not _near(present, pose, TURN):
             continue
-        # Fraction of the way from the view (0) to the hub (1), from the joint that travels furthest.
-        lead = max(PITCH, key=lambda m: abs(hub[m] - pose[m]))
-        if abs(hub[lead] - pose[lead]) <= AT_TOL:
+        # Closest point on the straight line from the view (f=0) to the hub (f=1) in joint space.
+        span = sum((hub[m] - pose[m]) ** 2 for m in PITCH)
+        if span <= AT_TOL ** 2:
             continue
-        f = (present[lead] - pose[lead]) / (hub[lead] - pose[lead])
-        if not -0.05 <= f <= 1.05:
-            continue
+        f = sum((present[m] - pose[m]) * (hub[m] - pose[m]) for m in PITCH) / span
+        f = min(max(f, 0.0), 1.0)
         miss = max(abs(present[m] - (pose[m] + (hub[m] - pose[m]) * f)) for m in PITCH)
         if miss <= AT_TOL and (best is None or miss < best[0]):
             best = (miss, {"where": "spoke", "view": name})
@@ -299,25 +305,30 @@ async def _confirm(arm, goals: dict[int, int], torque: bool | None = None):
         await asyncio.sleep(0.05)
 
 
-async def hold(arm):
-    """Freeze the arm where it is right now and confirm it by reading the goals back.
+async def hold(arm, keep_within: int = FREEZE_TOL):
+    """Stop the arm where it is and confirm it by reading the goals back.
 
+    A joint whose goal register is within `keep_within` steps of its position keeps that goal:
+    it is already (nearly) there, and a loaded joint always rests a little short of its goal,
+    so rewriting goal := position would make it sag by that much again. Only joints whose goal
+    is further away (still travelling, or pushing against something) get goal := position.
     Limp joints and the gripper are left alone. Raises (MotionError / RuntimeError) when the
     hold cannot be written or confirmed: the caller must tell the user it is unconfirmed."""
     tel = arm.telemetry(max_age_s=STALE_S)
-    goals = {m: tel[m]["pos"] for m in MOVABLE if m in tel and tel[m]["torque"]}
+    held = [m for m in MOVABLE if m in tel and tel[m]["torque"]]
+    goals = {m: tel[m]["pos"] for m in held if abs(tel[m]["goal"] - tel[m]["pos"]) > keep_within}
     if goals:
         await _write(arm, goals)
-        await _confirm(arm, goals)
+    await _confirm(arm, {m: goals.get(m, tel[m]["goal"]) for m in held})
 
 
-async def _abort_hold(arm) -> str:
+async def _abort_hold(arm, keep_within: int) -> str:
     """Hold after an abort or Stop. Returns "confirmed" or "unconfirmed".
 
     With stale data or a dead link we cannot hold and must not guess a position: every goal we
     sent was within the leash of where the arm was, so not writing is the safe choice."""
     try:
-        await asyncio.shield(hold(arm))
+        await asyncio.shield(hold(arm, keep_within))
         return "confirmed"
     except asyncio.CancelledError:
         raise
@@ -391,11 +402,11 @@ class _Watch:
     def __init__(self):
         self.since: dict = {}
 
-    def check(self, key, bad: bool, now: float, message: str):
+    def check(self, key, bad: bool, now: float, message: str, error=None):
         if not bad:
             self.since.pop(key, None)
         elif now - self.since.setdefault(key, now) > FAULT_S:
-            raise MotionError(message)
+            raise (error or MotionError)(message)
 
 
 OTHER_WRITER = "something else is commanding motor {}; is the follower still linked to a leader in Station?"
@@ -417,15 +428,15 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
         stats["max_load"][m] = max(stats["max_load"].get(m, 0), t["load"])
         stats["max_temp"] = max(stats.get("max_temp", 0), t.get("temp", 0))
         watch.check(("current", m), t["current"] > CURRENT_LIMIT, now,
-                    f"motor {m} is drawing too much current ({t['current']}); it may be blocked")
+                    f"motor {m} is drawing too much current ({t['current']}); it may be blocked", BlockedError)
         watch.check(("load", m), t["load"] > LOAD_LIMIT, now,
-                    f"motor {m} is pushing at full effort (load {t['load']}); it may be blocked")
+                    f"motor {m} is pushing at full effort (load {t['load']}); it may be blocked", BlockedError)
     for m, g in held_goal.items():      # a joint we are not moving must keep the goal it had
         if abs(tel[m]["goal"] - g) > GOAL_MATCH:
             raise MotionError(OTHER_WRITER.format(m))
     for m, ref in held_pos.items():
         if abs(tel[m]["pos"] - ref) > DRIFT_LIMIT:
-            raise MotionError(f"motor {m} was pushed off its position while holding still")
+            raise BlockedError(f"motor {m} was pushed off its position while holding still")
 
 
 async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
@@ -473,7 +484,7 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         else:
             stalled_since = stalled_since or now
             if now - stalled_since > STALL_S:
-                raise MotionError(f"motor {lag_m} is not following ({lead} steps behind); it may be blocked")
+                raise BlockedError(f"motor {lag_m} is not following ({lead} steps behind); it may be blocked")
         last = now
         status["progress"] = s
         ctx["wrote"] = True
@@ -507,8 +518,8 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
             return duration
         if now > deadline:
             worst = max(ids, key=lambda m: abs(tel[m]["pos"] - final[m]))
-            raise MotionError(f"motor {worst} stopped {abs(tel[worst]['pos'] - final[worst])} steps short of "
-                              f"its goal in '{name}'; it may be blocked or overloaded")
+            raise BlockedError(f"motor {worst} stopped {abs(tel[worst]['pos'] - final[worst])} steps short of "
+                               f"its goal in '{name}'; it may be blocked or overloaded")
         if prev is None or fresh:
             prev = tel
 
@@ -618,10 +629,10 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
                       progress=0.0, error=None, route=[], hold=None)
         ctx = {"wrote": False}      # until a waypoint is sent, a refusal must not write anything
 
-        async def abort(reason: str):
+        async def abort(reason: str, blocked: bool = False):
             result["error"] = reason
             if ctx["wrote"]:
-                result["hold"] = await _abort_hold(arm)
+                result["hold"] = await _abort_hold(arm, RELAX_TOL if blocked else FREEZE_TOL)
                 if result["hold"] == "unconfirmed":
                     result["error"] = f"{reason}; HOLD NOT CONFIRMED"
 
@@ -653,6 +664,8 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
         except asyncio.CancelledError:
             await abort("stopped")
             raise
+        except BlockedError as e:
+            await abort(str(e), blocked=True)
         except (MotionError, RuntimeError) as e:    # RuntimeError: stale data, lost bus
             await abort(str(e))
         except Exception as e:

@@ -154,8 +154,8 @@ async def main():
     check(r["ok"] and r["route"] == ["rise", "turn"], f"explicit recovery to transit: {r['error']}")
 
     # --- aborts: the arm must end up holding still -----------------------------------
-    async def still(a):
-        j1 = a.joints(); await asyncio.sleep(0.3); return j1 == a.joints()
+    async def still(a):     # after a hold the arm may finish the last few steps to its goal, then rests
+        await asyncio.sleep(0.4); j1 = a.joints(); await asyncio.sleep(0.3); return j1 == a.joints()
 
     stuck = SimArm(); stuck.stuck = {2}
     r = await go_to_view(stuck, "top", max_speed=400)
@@ -186,7 +186,9 @@ async def main():
     task = asyncio.create_task(go_to_view(deaf, "top", max_speed=400))
     await asyncio.sleep(0.4); deaf.fail_writes = True
     r = await task
-    check(not r["ok"] and r["hold"] == "unconfirmed", f"failed writes abort: {r['error']}")
+    check(not r["ok"] and "rejected" in r["error"], f"failed writes abort: {r['error']}")
+    check(r["hold"] == "confirmed" and await still(deaf),
+          "...and the hold is confirmed by read-back alone: every goal was already next to the arm")
 
     # --- the leash: a goal is never sent further ahead of the arm than lead_limit ------
     slowpoke = SimArm(speed=60)                      # an arm that cannot keep up at all
@@ -229,6 +231,8 @@ async def main():
     except asyncio.CancelledError:
         check(True, "")
     check(await still(arm), "holding after Stop")
+    lead = max(abs(arm._goal[m] - arm.joints()[m]) for m in MOVABLE)
+    check(lead <= 2 and motion.status["hold"] == "confirmed", "Stop: the arm rests on its goals, hold confirmed")
     check(motion.status["error"] == "stopped" and not motion.status["moving"], "status says stopped")
     where = locate(arm.joints(), VIEWS)
     check(where["where"] in ("spoke", "hub", "view"), f"after Stop the arm is still on the network: {where}")
@@ -246,6 +250,16 @@ async def main():
     r = await go_to_view(recal, "wide", max_speed=FAST)
     check(r["ok"], "views without a calibration mismatch still run")
     motion._read_views_file = real_read
+
+    # --- hold keeps the goal of a joint that is merely sagging under load -------------------
+    sag = SimArm(start={**VIEWS["top"], 8: 1279})
+    sag._goal[2] = sag._pos[2] + 35; sag.stuck = {2}       # shoulder rests 35 steps short of its goal
+    before = sag.writes
+    await motion.hold(sag)
+    check(sag.writes == before and sag._goal[2] == sag._pos[2] + 35, "hold leaves a sagging joint's goal alone")
+    sag._goal[2] = sag._pos[2] + 200                        # ...but a joint still pushing far gets pulled back
+    await motion.hold(sag)
+    check(abs(sag._goal[2] - sag._pos[2]) <= 1, "hold pulls back a goal that is far from the joint")
 
     # --- unchecked views are forced to slow speed ----------------------------------------
     motion.view_checked = lambda name: name != "wide"

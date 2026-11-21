@@ -196,19 +196,28 @@ class Arm:
         bus = self._bus()
         if bus is None:
             raise RuntimeError(f"bus {self.bus_serial} missing from latest frame")
-        for m in bus.get_motors() or []:
+        if self._task is not None and self._task.done():
+            raise RuntimeError("joint data is stale (the connection to Station ended)")
+        motors = bus.get_motors() or []
+        newest = max((m.get_monotonic_stamp_ns() for m in motors), default=0)
+        for m in motors:
             age = now - self._motor_seen.get((self.bus_serial, m.get_id()), (0, 0.0))[1]
-            if age > max_age_s:
-                raise RuntimeError(f"joint data is stale (motor {m.get_id()} last read {age:.1f}s ago)")
+            behind = (newest - m.get_monotonic_stamp_ns()) / 1e9
+            if age > max_age_s or behind > max_age_s or m.get_monotonic_stamp_ns() == 0:
+                raise RuntimeError(f"joint data is stale (motor {m.get_id()} last read "
+                                   f"{max(age, behind):.1f}s ago)")
         return bus
 
     def joints(self, max_age_s: float = 0.5) -> dict[int, int]:
         """Present position per motor id, from the latest frame."""
         bus = self._fresh_bus(max_age_s)
-        return {
-            m.get_id(): _normal_position(_u16(bytes(m.get_state()), RAM_PRESENT_POSITION))
-            for m in (bus.get_motors() or [])
-        }
+        out = {}
+        for m in bus.get_motors() or []:
+            st = bytes(m.get_state())
+            if len(st) < RAM_PRESENT_POSITION + 2:
+                raise RuntimeError(f"motor {m.get_id()}: incomplete register data ({len(st)} bytes)")
+            out[m.get_id()] = _normal_position(_u16(st, RAM_PRESENT_POSITION))
+        return out
 
     def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
         """Per motor: present/goal position, load (0-1000), current (raw), status bits, torque flag,
@@ -219,7 +228,9 @@ class Arm:
             st = bytes(m.get_state())
             if len(st) < STATE_MIN_LEN:
                 raise RuntimeError(f"motor {m.get_id()}: incomplete register data ({len(st)} bytes)")
-            err = m.get_error()
+            # get_error() returns an (always truthy) empty reader when there is no error.
+            buf = getattr(m, "_error_buf", None)
+            err = m.get_error() if buf is not None and len(buf) else None   # empty message = no error
             out[m.get_id()] = {
                 "pos": _normal_position(_u16(st, RAM_PRESENT_POSITION)),
                 "goal": _normal_position(_u16(st, RAM_GOAL_POSITION)),
@@ -229,7 +240,7 @@ class Arm:
                 "torque": st[RAM_TORQUE_ENABLE] != 0,
                 "temp": st[RAM_PRESENT_TEMP],
                 "voltage": st[RAM_PRESENT_VOLTAGE] / 10,
-                "read_error": (err.get_description() or "read error") if err else "",
+                "read_error": (err.get_description() or f"read error ({err.get_kind()!r})") if err is not None else "",
                 "stamp": m.get_monotonic_stamp_ns(),    # changes with every fresh read of this motor
             }
         return out
@@ -257,8 +268,8 @@ class Arm:
             for link in (state.get_mirroring() or []) if state else []:
                 targets = [t.get_id().get_unique_id() for t in (link.get_targets() or []) if t.get_id()]
                 if self.bus_serial in targets:
-                    src = link.get_source()
-                    return src.get_id().get_unique_id() if src and src.get_id() else "unknown"
+                    # Readers are always truthy and give "" for a missing id: never return a falsy source.
+                    return link.get_source().get_id().get_unique_id() or "unknown"
         except Exception as e:      # an entry we cannot decode must not read as "not mirrored"
             raise RuntimeError(f"could not decode Station's mirroring state: {e!r}")
         return None

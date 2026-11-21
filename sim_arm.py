@@ -7,14 +7,29 @@ Faults can be injected for tests: `stuck` (motors that don't move), `stale` (no 
 `fail_writes`, `mirror` (pretend Station is mirroring a leader onto this arm), `load` (pretend
 PWM load per motor), `hijack` (another writer keeps overwriting these goals) and `echo_delay`
 (written goals show up in telemetry late, as they do on the real bus).
+
+By default a joint glides to its goal at its speed ceiling with no lag, which is optimistic.
+`SimArm(realistic=True)` makes it answer like the real follower did on 21 Nov (see
+docs/real-session-2026-11-21-motion_log.jsonl): speed is proportional to the distance from the
+goal (`gain` per second, so a streamed goal is followed with a lag of speed / gain), limited by
+the speed register and by the acceleration register (units of 100 steps/s^2), and the loaded
+shoulder rests `sag` steps away from its goal. Timing only: no gravity, no load or current.
 """
 
 import asyncio
+import math
 import time
 
 # Follower 5B79016329 calibration, snapshot from docs/HARDWARE.md.
 SIM_RANGES = {1: (1105, 2991), 2: (1071, 3025), 3: (924, 3172), 4: (897, 3199),
               5: (141, 3955), 6: (1017, 3079), 7: (164, 3932), 8: (1263, 2833)}
+
+# Realistic response, fitted to the real follower's streamed moves: it lagged 26-60 steps at
+# 100 steps/s and ~77 at 200, i.e. speed = 2.6-3 x position error.
+REAL_GAIN = 2.8            # 1/s
+REAL_SAG = {2: 20}         # steps a joint rests past its goal (the loaded shoulder: 20-35 measured)
+REAL_ACCEL = 15            # acceleration register until a write sets one (motion.SERVO_ACCEL)
+_SUBSTEP_S = 0.002
 
 
 def _default_start() -> dict[int, int]:
@@ -34,10 +49,16 @@ class SimArm:
     bus_serial = "SIM"
     is_sim = True
 
-    def __init__(self, start: dict[int, int] | None = None, speed: float = 1500):
+    def __init__(self, start: dict[int, int] | None = None, speed: float = 1500, realistic: bool = False,
+                 gain: float = REAL_GAIN, sag: dict[int, float] | None = None):
         self._pos = {m: float(p) for m, p in (start or _default_start()).items()}
         self._goal = dict(self._pos)
         self._speed = {m: speed for m in self._pos}   # steps/s ceiling per motor
+        self.realistic = realistic                    # lag, acceleration limit and sag (see the module text)
+        self.gain = gain
+        self.sag = dict(REAL_SAG if sag is None else sag) if realistic else {}
+        self._accel = {m: REAL_ACCEL for m in self._pos}   # acceleration register per motor
+        self._vel = {m: 0.0 for m in self._pos}            # steps/s, realistic mode only
         self._t = time.monotonic()
         self._torque = {m: True for m in self._pos}
         self.writes = 0
@@ -64,11 +85,32 @@ class SimArm:
     def _advance(self):
         now = time.monotonic()
         dt, self._t = now - self._t, now
+        if self.realistic:
+            return self._advance_realistic(dt)
         for m, g in self._goal.items():
             if m in self.stuck or not self._torque[m]:
                 continue
             step = self._speed[m] * dt
             self._pos[m] += max(-step, min(step, g - self._pos[m]))
+
+    def _advance_realistic(self, dt: float):
+        """Speed follows gain x distance to (goal + sag), capped by the speed register and by what
+        can still be braked before the goal; it changes no faster than the acceleration register
+        allows. Integrated in small fixed steps so the result does not depend on who reads when."""
+        steps = max(1, math.ceil(dt / _SUBSTEP_S - 1e-9)) if dt > 0 else 0
+        h = dt / steps if steps else 0.0
+        for m, g in self._goal.items():
+            if m in self.stuck or not self._torque[m]:
+                self._vel[m] = 0.0
+                continue
+            target, a = g + self.sag.get(m, 0.0), self._accel[m] * 100.0
+            pos, vel, top = self._pos[m], self._vel[m], self._speed[m]
+            for _ in range(steps):
+                err = target - pos
+                want = math.copysign(min(top, self.gain * abs(err), math.sqrt(2.0 * a * abs(err))), err)
+                vel += max(-a * h, min(a * h, want - vel))
+                pos += vel * h
+            self._pos[m], self._vel[m] = pos, vel
 
     def joints(self, max_age_s: float = 0.5) -> dict[int, int]:
         if self.stale:
@@ -110,6 +152,8 @@ class SimArm:
             self._torque[m] = True          # like the real servo: a goal write energises the joint
             if speed is not None:
                 self._speed[m] = speed[m] if isinstance(speed, dict) else speed
+            if accel is not None:
+                self._accel[m] = accel[m] if isinstance(accel, dict) else accel
         for m, g in self.hijack.items():
             self._goal[m] = float(g)
         self._echo.append((time.monotonic(), dict(self._goal)))

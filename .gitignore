@@ -7,3 +7,4 @@ station_data/
 events.jsonl
 frame.jpg
 motion_log.jsonl
+.motion.lock

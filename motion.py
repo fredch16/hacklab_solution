@@ -22,6 +22,7 @@ Design and rationale: docs/MOTION_PLAN.md. In short:
 """
 
 import asyncio
+import fcntl
 import json
 import time
 from collections import deque
@@ -31,6 +32,7 @@ from station_arm import logger
 
 VIEWS_PATH = Path(__file__).parent / "views.json"
 LOG_PATH = Path(__file__).parent / "motion_log.jsonl"
+LOCK_PATH = Path(__file__).parent / ".motion.lock"
 TRANSIT = "transit"
 
 # Joint groups (ElRobot motor ids).
@@ -312,24 +314,27 @@ async def hold(arm, keep_within: int = FREEZE_TOL):
     it is already (nearly) there, and a loaded joint always rests a little short of its goal,
     so rewriting goal := position would make it sag by that much again. Only joints whose goal
     is further away (still travelling, or pushing against something) get goal := position.
-    Limp joints and the gripper are left alone. Raises (MotionError / RuntimeError) when the
-    hold cannot be written or confirmed: the caller must tell the user it is unconfirmed."""
+    Limp joints and the gripper are left alone. Returns "confirmed", or "limp" when no joint
+    is energised. Raises (MotionError / RuntimeError) when the hold cannot be written or
+    confirmed: the caller must tell the user it is unconfirmed."""
     tel = arm.telemetry(max_age_s=STALE_S)
     held = [m for m in MOVABLE if m in tel and tel[m]["torque"]]
+    if not held:
+        return "limp"           # nothing is energised, so there is nothing to hold
     goals = {m: tel[m]["pos"] for m in held if abs(tel[m]["goal"] - tel[m]["pos"]) > keep_within}
     if goals:
         await _write(arm, goals)
     await _confirm(arm, {m: goals.get(m, tel[m]["goal"]) for m in held})
+    return "confirmed"
 
 
 async def _abort_hold(arm, keep_within: int) -> str:
-    """Hold after an abort or Stop. Returns "confirmed" or "unconfirmed".
+    """Hold after an abort or Stop. Returns "confirmed", "limp" or "unconfirmed".
 
     With stale data or a dead link we cannot hold and must not guess a position: every goal we
     sent was within the leash of where the arm was, so not writing is the safe choice."""
     try:
-        await asyncio.shield(hold(arm, keep_within))
-        return "confirmed"
+        return await asyncio.shield(hold(arm, keep_within))
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -381,10 +386,14 @@ async def engage(arm):
             problems.append(f"the saved views belong to arm {sorted(buses)[0]}, but this is arm {arm.bus_serial}")
     if problems:
         raise MotionError(problems[0])
-    goals = {m: tel[m]["pos"] for m in MOVABLE}
-    await _write(arm, goals, speed=SPEED_FIRST, accel=SERVO_ACCEL)
+    # A joint that is already holding close to its goal keeps that goal: rewriting it to the
+    # (slightly sagged) present position would make it sag again on every press.
+    goals = {m: tel[m]["pos"] for m in MOVABLE
+             if not tel[m]["torque"] or abs(tel[m]["goal"] - tel[m]["pos"]) > FREEZE_TOL}
+    if goals:
+        await _write(arm, goals, speed=SPEED_FIRST, accel=SERVO_ACCEL)
     await _torque(arm, True, MOVABLE)
-    await _confirm(arm, goals, torque=True)
+    await _confirm(arm, {m: goals.get(m, tel[m]["goal"]) for m in MOVABLE}, torque=True)
 
 
 async def release(arm):
@@ -621,6 +630,24 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
         return {"ok": False, "view": name, "error": f"unknown view; known: {sorted(load_views())}"}
     if _move_lock.locked():
         return {"ok": False, "view": name, "error": "already moving"}
+    lock_file = None
+    if not getattr(arm, "is_sim", False):
+        # One program moves the arm at a time: a Stop in the web page cannot stop a move that
+        # go.py or the director started from another process.
+        lock_file = open(LOCK_PATH, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_file.close()
+            return {"ok": False, "view": name, "error": "another program is moving the arm"}
+    try:
+        return await _go_to_view(arm, name, max_speed, allow_unknown_start)
+    finally:
+        if lock_file:
+            lock_file.close()
+
+
+async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: bool) -> dict:
     async with _move_lock:
         t0 = time.time()
         stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
@@ -662,7 +689,8 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
                 moved |= set(goal)
             result["ok"] = True
         except asyncio.CancelledError:
-            await abort("stopped")
+            # Stop may have been pressed because the arm touches something: stop pushing too.
+            await abort("stopped", blocked=True)
             raise
         except BlockedError as e:
             await abort(str(e), blocked=True)

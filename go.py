@@ -44,6 +44,15 @@ async def main(args):
                 print("cannot move yet:", b)
             if d["ok"]:
                 print("ready to move")
+            try:
+                tel = arm.telemetry()
+                print("motor   pos  goal-pos  load  current  temp  volt  torque")
+                for m, t in sorted(tel.items()):
+                    print(f"  {m}    {t['pos']:>4}  {t['goal'] - t['pos']:>+7}  {t['load']:>4}  {t['current']:>6}  "
+                          f"{t['temp']:>3}C  {t['voltage']:>4}  {'on' if t['torque'] else 'off'}"
+                          + (f"  {t['read_error']}" if t["read_error"] else ""))
+            except RuntimeError as e:
+                print("no telemetry:", e)
             for name, notes in motion.check_views(arm.ranges()).items():
                 print(f"note: {name} is saved at a joint limit and will be clamped: {'; '.join(notes)}")
             return

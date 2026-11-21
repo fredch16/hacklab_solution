@@ -126,8 +126,8 @@ async def main():
     d = await motion.describe(limp, "top")
     check(not d["ok"] and d["where"] == {"where": "view", "view": "home"} and any("limp" in b for b in d["blockers"]),
           "describe() still says where a limp arm is")
-    await motion.hold(limp)
-    check(limp.writes == before, "hold() does not energise a limp arm")
+    check(await motion.hold(limp) == "limp" and limp.writes == before,
+          "hold() does not energise a limp arm, and says there was nothing to hold")
     await motion.engage(limp)
     check(limp.telemetry()[1]["torque"] and not limp.telemetry()[8]["torque"], "engage holds joints 1-7, not the gripper")
     limp.torque_written_ids.clear()
@@ -140,6 +140,10 @@ async def main():
         check("mirroring" in str(e), "engage refuses while Station mirrors a leader onto the arm")
     limp.mirror = None
     await motion.engage(limp)
+    limp._goal[2] = limp._pos[2] + 30; limp.stuck = {2}; before = limp.writes     # resting short of its goal
+    await motion.engage(limp)
+    check(limp.writes == before, "pressing Hold here again does not rewrite goals (no second sag)")
+    limp._goal[2] = limp._pos[2]; limp.stuck = set()
     r = await go_to_view(limp, "top", max_speed=FAST)
     check(r["ok"], f"after engage the move runs: {r['error']}")
 
@@ -232,7 +236,19 @@ async def main():
         check(True, "")
     check(await still(arm), "holding after Stop")
     lead = max(abs(arm._goal[m] - arm.joints()[m]) for m in MOVABLE)
-    check(lead <= 2 and motion.status["hold"] == "confirmed", "Stop: the arm rests on its goals, hold confirmed")
+    check(lead <= motion.RELAX_TOL and motion.status["hold"] == "confirmed",
+          f"Stop: goals pulled back to the arm, hold confirmed (lead {lead})")
+
+    pressed = SimArm(); pressed.stuck = {2}                 # Stop while a joint is being blocked
+    task = asyncio.create_task(go_to_view(pressed, "top", max_speed=100))
+    await asyncio.sleep(0.6)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    lead = abs(pressed._goal[2] - pressed.joints()[2])
+    check(lead <= motion.RELAX_TOL, f"Stop on a blocked joint stops it pushing (lead {lead})")
     check(motion.status["error"] == "stopped" and not motion.status["moving"], "status says stopped")
     where = locate(arm.joints(), VIEWS)
     check(where["where"] in ("spoke", "hub", "view"), f"after Stop the arm is still on the network: {where}")

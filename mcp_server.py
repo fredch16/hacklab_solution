@@ -17,12 +17,13 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import mcp_types as types
 from mcp.server.mcpserver import MCPServer
@@ -35,6 +36,7 @@ ROOT = Path(__file__).parent
 SCENE_PATH = ROOT / "scene.json"
 VERSION = "0.1.0"
 MAX_OBJECTS = 30
+MAX_STILLS = 20   # image numbers remembered for update_scene / preview_frame
 
 GUIDE = """# camera-arm: operating guide for Claude
 
@@ -63,7 +65,10 @@ views (list_views), and the control service moves the arm there safely.
   matters for filming (pcb, soldering_iron, hands, parts tray, multimeter ...).
   bbox is the box around the object in that image, normalized 0..1: cx, cy = centre (0,0 = top left),
   w, h = width and height as fractions of the image. visible = how much of the object is not covered (0..1).
-  Use the view name the image was taken at (view from get_camera_image).
+  Give the image number ('still' from get_camera_image) with each sighting; the view is then filled in.
+- best_view(object_id) moves to the saved view that showed the object best so far.
+- preview_frame(object_id) only computes where the camera would go to frame the object from where it
+  is now. It moves nothing (stage 2 preview). Tell the user the result in plain words.
 - get_scene() returns what has been recorded, with how old each sighting is. Old sightings may be
   wrong: the person moves things.
 
@@ -132,7 +137,10 @@ class BBox(BaseModel):
 
 
 class Sighting(BaseModel):
-    view: str = Field(description="view the image was taken at ('view' from get_camera_image)")
+    view: Optional[str] = Field(None, description="view the image was taken at ('view' from get_camera_image); "
+                                                  "may be left out when 'still' is given")
+    still: Optional[int] = Field(None, description="number of the image the box is from ('still' from "
+                                                   "get_camera_image); needed for preview_frame")
     camera: str = Field("arm", max_length=20)
     bbox: BBox
     visible: float = Field(1.0, ge=0, le=1, description="fraction of the object not covered, e.g. by hands")
@@ -172,12 +180,23 @@ class SceneStore:
         out = []
         for obj in scene["objects"].values():
             o = dict(obj)
-            o["seen"] = [{**s, "age_s": round(now - s.get("at", now))} for s in obj.get("seen", [])]
+            o["seen"] = [{**{k: v for k, v in s.items() if k != "pose"}, "age_s": round(now - s.get("at", now)),
+                          **({"has_pose": True} if "pose" in s else {})} for s in obj.get("seen", [])]
             out.append(o)
         return {"objects": out, "count": len(out)}
 
-    async def update(self, objects: list[SceneObject], known_views: set[str], replace: bool) -> dict:
-        bad = sorted({s.view for o in objects for s in o.seen if s.view not in known_views})
+    async def update(self, objects: list[SceneObject], known_views: set[str], replace: bool,
+                     stills: dict[int, dict] | None = None) -> dict:
+        stills = stills or {}
+        for o in objects:
+            for s in o.seen:
+                if s.still is not None:
+                    if s.still not in stills:
+                        raise ToolError(f"unknown image number {s.still}; use 'still' from a recent get_camera_image")
+                    s.view = s.view or stills[s.still]["view"]
+                if not s.view and s.still is None:
+                    raise ToolError("each sighting needs 'view' or 'still'")
+        bad = sorted({s.view for o in objects for s in o.seen if s.view and s.view not in known_views})
         if bad:
             raise ToolError(f"unknown view(s) {bad}; known: {sorted(known_views)}")
         async with self.lock:
@@ -189,8 +208,13 @@ class SceneStore:
                 if o.description or "description" not in cur:
                     cur["description"] = o.description
                 seen = [s for s in cur.get("seen", [])
-                        if not any(s["view"] == n.view and s.get("camera") == n.camera for n in o.seen)]
-                seen += [{**n.model_dump(), "at": now} for n in o.seen]
+                        if not any(s.get("view") == n.view and s.get("camera") == n.camera
+                                   and (n.view or s.get("still") == n.still) for n in o.seen)]
+                for n in o.seen:
+                    entry = {**n.model_dump(exclude_none=True), "at": now}
+                    if n.still is not None:   # the arm pose and image size the box belongs to
+                        entry.update(pose=stills[n.still]["joints"], image_size=stills[n.still]["image_size"])
+                    seen.append(entry)
                 cur["seen"] = seen[-10:]
                 scene["objects"][o.id] = cur
             if len(scene["objects"]) > MAX_OBJECTS:
@@ -209,6 +233,25 @@ class SceneStore:
 
 
 # -- MCP server --------------------------------------------------------------------
+
+def rank_views(obj: dict, known: set[str], now: float | None = None) -> list[dict]:
+    """Score each saved view by the object's sighting from it: large, centred, visible and recent is better."""
+    now = now or time.time()
+    best: dict[str, dict] = {}
+    for s in obj.get("seen", []):
+        v = s.get("view")
+        if not v or v not in known:
+            continue
+        b = s["bbox"]
+        size = min(1.0, (b["w"] * b["h"]) / 0.25)                       # a quarter of the image counts as full
+        off = min(1.0, math.hypot(b["cx"] - 0.5, b["cy"] - 0.5) / 0.5)
+        age = now - s.get("at", now)
+        score = s.get("visible", 1.0) * (0.3 + 0.7 * size) * (1 - 0.5 * off) * (0.6 if age > 600 else 1.0)
+        if v not in best or score > best[v]["score"]:
+            best[v] = {"view": v, "score": round(score, 3), "visible": s.get("visible", 1.0),
+                       "size": round(b["w"] * b["h"], 3), "age_s": round(age)}
+    return sorted(best.values(), key=lambda r: -r["score"])
+
 
 def _tool_error(e: ControlError) -> ToolError:
     return ToolError(json.dumps({"status": e.status, "error": e.code, "detail": e.detail}))
@@ -248,6 +291,8 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
     known = set(names)
 
     mcp = MCPServer("camera-arm", instructions=INSTRUCTIONS, version=VERSION)
+    stills: dict[int, dict] = {}   # image number -> {joints, image_size, view} of the last MAX_STILLS images
+    still_no = 0
 
     async def state() -> dict:
         try:
@@ -318,7 +363,18 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
             jpeg, headers = await control.call("GET", "/api/still.jpg", raw=True)
         except ControlError as e:
             raise _tool_error(e)
-        meta = {"view": headers.get("X-View") or None,
+        nonlocal still_no
+        still_no += 1
+        try:
+            joints = json.loads(headers.get("X-Joints") or "{}")
+        except json.JSONDecodeError:
+            joints = {}
+        stills[still_no] = {"joints": joints, "image_size": headers.get("X-Image-Size") or "",
+                            "view": headers.get("X-View") or None}
+        for old in [k for k in stills if k <= still_no - MAX_STILLS]:
+            del stills[old]
+        meta = {"still": still_no, "view": headers.get("X-View") or None,
+                "image_size": headers.get("X-Image-Size") or None,
                 "taken_at": float(headers.get("X-Taken-At", time.time()))}
         return [types.ImageContent(type="image", data=base64.b64encode(jpeg).decode(), mime_type="image/jpeg"),
                 types.TextContent(type="text", text=json.dumps(meta))]
@@ -332,11 +388,51 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
                           "the earlier one from the same view and camera. replace=true clears the scene first. "
                           "bbox: cx, cy = centre, w, h = size, all as fractions of the image (0..1, 0,0 = top left).")
     async def update_scene(objects: list[SceneObject], replace: bool = False) -> dict[str, Any]:
-        return await scene.update(objects, known, replace)
+        return await scene.update(objects, known, replace, stills)
 
     @mcp.tool(description="Remove one object from the scene, e.g. when it has been taken away.")
     async def remove_scene_object(id: str) -> dict[str, Any]:
         return await scene.remove(id)
+
+    @mcp.tool(description="Pick the saved view that shows an object best, from the recorded sightings (large, "
+                          "centred, visible, recent), and move there unless move=false. Returns the ranking.")
+    async def best_view(object_id: str, move: bool = True) -> dict[str, Any]:
+        obj = scene.load()["objects"].get(object_id)
+        if obj is None:
+            raise ToolError(f"no object {object_id!r} in the scene; look with get_camera_image and record it first")
+        ranking = rank_views(obj, known)
+        if not ranking:
+            raise ToolError(f"{object_id!r} has no sighting from a saved view yet")
+        best = ranking[0]["view"]
+        out: dict[str, Any] = {"object": object_id, "best_view": best, "ranking": ranking}
+        if move:
+            out["move"] = await go_to_view(best)
+        return out
+
+    @mcp.tool(description="PREVIEW ONLY, nothing moves: where the camera would have to go to frame an object from "
+                          "the image its newest sighting is from. framing 'fill' = as large as is safe, 'center' = "
+                          "centred at the present distance. Says whether the target passes the checks (reach, joint "
+                          "limits, height above the table) or why not. The sighting must carry 'still' from an image "
+                          "taken where the arm is now.")
+    async def preview_frame(object_id: str, framing: Literal["fill", "center"] = "fill",
+                            margin: float = 0.1) -> dict[str, Any]:
+        obj = scene.load()["objects"].get(object_id)
+        if obj is None:
+            raise ToolError(f"no object {object_id!r} in the scene")
+        posed = [s for s in obj.get("seen", []) if s.get("pose")]
+        if not posed:
+            raise ToolError(f"no sighting of {object_id!r} with an image number; take an image, then record the "
+                            "box with update_scene and 'still'")
+        s = max(posed, key=lambda x: x.get("at", 0))
+        try:
+            r = await control.call("POST", "/api/frame", {
+                "bbox": s["bbox"], "framing": framing, "margin": margin, "still_joints": s["pose"],
+                "image_size": s.get("image_size") or "", "dry_run": True})
+        except ControlError as e:
+            raise _tool_error(e)
+        keep = ("ok", "framing", "table_point_m", "object_size_m", "camera_distance_now_m", "camera_distance_m",
+                "joint_travel", "min_height_m", "notes", "from_view", "dry_run")
+        return {"object": object_id, **{k: r[k] for k in keep if k in r}}
 
     @mcp.resource("camera-arm://guide", name="camera-arm operating guide", mime_type="text/markdown",
                   description="How to move the camera, read images and record the scene.")

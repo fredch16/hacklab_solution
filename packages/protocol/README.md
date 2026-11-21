@@ -80,3 +80,36 @@ Battery/thermal/storage/device values are re-read by the phone every **5 s** whi
 ## Browser close codes → UI
 
 `4001` replaced → "Another browser was paired. Pair again from the phone."; `4002` expired; `4003` revoked → "Access revoked on the phone."; `4004` session ended. Any other close / network error → reconnect with backoff (1, 2, 4, 8, max 15 s), showing "Reconnecting…" and marking every value **stale**; on reconnect, take the fresh snapshot.
+
+## Slice 1 — camera + WebRTC (locked)
+
+**Owner decisions:** camera preview starts automatically with **Start session** (camera permission requested then; denial leaves session running with camera `error`/`PERMISSION_CAMERA`). PC video starts only when the user clicks **Start video** in the browser; after any disconnect the browser shows "Video stopped" and waits for another click (no auto-restart).
+
+### Snapshot `camera` (replaces Slice 0 shape)
+```json
+"camera": {"state": "previewing", "error": null, "lens": "back"}
+```
+`state`: `not_started|initializing|previewing|transmitting|paused|interrupted|error` (`paused` = scanner page open; `transmitting` = WebRTC peer connected and sending). `error`: null or `PERMISSION_CAMERA|DEVICE_IN_USE|CAPABILITY_UNSUPPORTED|CAMERA_FAILED`.
+Snapshot also gains `"stream": {"state": "idle|connecting|connected|failed", "error": null|"ICE_FAILED"|"NEGOTIATION_FAILED"|"CAMERA_UNAVAILABLE"}`.
+
+### Messages on `/api/v1/events` (browser → phone)
+- `{"version":1,"type":"webrtc.offer","request_id":"<random>","payload":{"sdp":"<full SDP after ICE gathering complete>"}}` — browser offer, one `recvonly` video transceiver, H.264 preferred via `setCodecPreferences`, `iceServers: []`. A new offer replaces any existing peer.
+- `{"version":1,"type":"webrtc.stop","request_id":"…","payload":{}}`
+
+### Phone → browser
+- `webrtc.answer` `{"request_id","sdp"}` (complete gathering, host candidates only).
+- `webrtc.error` `{"request_id","code","message"}` codes: `CAMERA_UNAVAILABLE|NEGOTIATION_FAILED|BAD_REQUEST`.
+- `webrtc.stopped` `{"reason": "browser_stop|camera_stopped|session_ended|replaced|ice_failed|error"}`.
+- `camera.stats` every 1 s while camera state is `previewing|transmitting`:
+```json
+{"capture": {"width": 640, "height": 360, "fps_measured": 29.9},
+ "stream": {"codec": "H264", "encoder": "c2.google.avc.encoder", "width": 640, "height": 360,
+            "fps": 29.7, "bitrate_bps": 912000, "quality_limitation": "none", "rtt_ms": 4.0,
+            "local_candidate": "host", "remote_candidate": "prflx"}}
+```
+`capture` = frames delivered by ImageAnalysis (measured); `stream` = null unless a peer is connected; any field unavailable → null. Never requested/target values.
+
+Envelopes all carry the shared `sequence`. Max 1 offer per second accepted (else `webrtc.error BAD_REQUEST`). SDP max 64 KiB.
+
+### Targets (not guarantees)
+640×360, 30 FPS, max bitrate 1.2 Mbps set via sender `RtpParameters`, `degradationPreference = MAINTAIN_RESOLUTION`? → use `BALANCED`.

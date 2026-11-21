@@ -869,7 +869,8 @@ def part_b():
         r = post("/api/settings", {"SPEED_TURBO": 1500, "BLEND": False})
         check(r[0] == 200 and r[1]["settings"]["SPEED_TURBO"]["value"] == 1500 and r[1]["settings"]["BLEND"]["value"] is False, f"POST /api/settings: {r[0]}")
         s1 = state()
-        check(s1["settings"] == {"BLEND": False, "CLEAR_HEIGHT_M": 0.25, "SPEED_TURBO": 1500} and s1["speed_options"]["turbo"] == 1500
+        check(s1["settings"] == {"DIRECT": motion.DIRECT, "ARC": motion.ARC, "BLEND": False, "CLEAR_HEIGHT_M": 0.25,
+                                  "SPEED_TURBO": 1500} and s1["speed_options"]["turbo"] == 1500
               and s1["settings_changed"], f"state shows the settings: {s1['settings']}")
         check(click("/api/goto", {"view": views[0]})[0] == 200, "a move starts")
         r = post("/api/settings", {"defaults": True})

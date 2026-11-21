@@ -3,4 +3,4 @@ so the web UI matches our desk: "Swap sides" for the two arm cards and "Rotate v
 
 Apply to a copy of station-viewer, then `npm ci && npx tsc -b && npx vite build &&
 npx vite preview --host 127.0.0.1 --port 5173`. It proxies `/api` to the running Station on :8889.
-New file `src/st3215/view-rotation.ts` is included in the swap diff.
+Also copy `view-rotation.ts` (new file) to `src/st3215/`.

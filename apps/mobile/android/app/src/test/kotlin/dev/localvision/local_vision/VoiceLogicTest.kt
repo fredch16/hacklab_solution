@@ -119,17 +119,34 @@ class VoiceLogicTest {
 
     @Test fun wakeComesFromTheSpotterAndCommandsRearm() {
         val flow = VoiceFlow("hey robot")
-        assertTrue(flow.onText("hey robot").isEmpty())
         repeat(3) { attempt ->
             val now = attempt * 3000L
             assertEquals(listOf(VoiceFlow.Action.Wake("hey robot")), flow.onWake(now))
             assertTrue(flow.onWake(now + 100).isEmpty())
-            assertEquals(listOf(VoiceFlow.Action.Partial("start recording")), flow.onText("start recording"))
             assertTrue(flow.onVad(now + 400, true).isEmpty())
             assertEquals(listOf(VoiceFlow.Action.End("silence")), flow.onVad(now + 1400, false))
             assertTrue(flow.onWake(now + 1500).isEmpty())
             assertEquals(listOf(VoiceFlow.Action.Rearm), flow.onClock(now + 2400))
         }
+    }
+
+    @Test fun commandEndpointIgnoresQuieterSpeechAfterTheWake() {
+        val gate = CommandSpeechGate()
+        gate.start(FloatArray(1024) { 0.10f })
+        assertTrue(gate.accept(FloatArray(512) { 0.07f }, speech = true))
+        assertTrue(!gate.accept(FloatArray(512) { 0.02f }, speech = true))
+        assertTrue(!gate.accept(FloatArray(512) { 0.30f }, speech = false))
+        assertTrue(gate.accept(FloatArray(512) { 0.04f }, speech = true))
+    }
+
+    @Test fun stripsOnlyTheConfiguredWakePrefix() {
+        assertEquals("Start recording.", CommandTranscriber.commandText("Hey, Alexa. Start recording.", "hey Alexa"))
+        assertEquals("start recording", CommandTranscriber.commandText("Hay Alexa start recording", "hey Alexa"))
+        assertEquals("stout recording", CommandTranscriber.commandText("Hey Alexa, stout recording", "hey Alexa"))
+        assertEquals("", CommandTranscriber.commandText("Hey Eli.", "hey Eli"))
+        assertEquals("please stop recording", CommandTranscriber.commandText("Hey El Robot, please stop recording", "hey El Robot"))
+        assertEquals("Hey Google, start recording", CommandTranscriber.commandText("Hey Google, start recording", "hey Alexa"))
+        assertEquals("Alexandria is here", CommandTranscriber.commandText("Alexandria is here", "hey Alex"))
     }
 
     @Test fun wakeReplayKeepsTheLatestAudioAcrossChunks() {

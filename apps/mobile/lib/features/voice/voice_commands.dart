@@ -1,27 +1,34 @@
-/// Static demo voice commands (ADR 0004 owner update): only these phrases act.
+/// Static demo voice commands (ADR 0004 owner update).
 String normalizeSpeech(String text) => text
     .toLowerCase()
     .replaceAll(RegExp(r"[^a-z0-9' ]"), ' ')
     .replaceAll(RegExp(r'\s+'), ' ')
     .trim();
 
-/// 'recording.stop', 'recording.start' or null. Stop is checked first.
+final _politePrefix = RegExp(
+  r'^(?:(?:okay|ok|please|can you|could you|would you) )+',
+);
+final _politeSuffix = RegExp(
+  r'(?: (?:please|right now|now|thank you|okay|i think))+$',
+);
+
+String normalizeVoiceRequest(String text) =>
+    normalizeSpeech(text)
+        .replaceFirst(_politePrefix, '')
+        .replaceFirst(_politeSuffix, '');
+
+/// Match a whole spoken request after optional polite phrasing.
 String? matchVoiceCommand(String text) {
-  final t = ' ${normalizeSpeech(text)} ';
-  const stops = [
-    ' stop recording ',
-    ' stop the recording ',
-    ' end recording ',
-    ' end the recording ',
-  ];
-  const starts = [
-    ' start recording ',
-    ' start the recording ',
-    ' begin recording ',
-    ' begin the recording ',
-  ];
-  if (stops.any(t.contains)) return 'recording.stop';
-  if (starts.any(t.contains) || t.contains(' record '))
-    return 'recording.start';
-  return null;
+  return switch (normalizeVoiceRequest(text)) {
+    'record' ||
+    'start recording' ||
+    'start the recording' ||
+    'begin recording' ||
+    'begin the recording' => 'recording.start',
+    'stop recording' ||
+    'stop the recording' ||
+    'end recording' ||
+    'end the recording' => 'recording.stop',
+    _ => null,
+  };
 }

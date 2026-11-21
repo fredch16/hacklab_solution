@@ -1,12 +1,11 @@
 package dev.localvision.local_vision
 
 /** Command and cooldown timing on the processed-audio clock. */
-class VoiceFlow(private val phrase: String) {
+class VoiceFlow(val phrase: String) {
     enum class Mode { LISTENING, COMMAND, COOLDOWN }
 
     sealed class Action {
         data class Wake(val phrase: String) : Action()
-        data class Partial(val text: String) : Action()
         data class End(val reason: String) : Action()
         object Rearm : Action()
     }
@@ -22,9 +21,6 @@ class VoiceFlow(private val phrase: String) {
         tracker.start(audioMs)
         return listOf(Action.Wake(phrase))
     }
-
-    fun onText(text: String): List<Action> =
-        if (mode == Mode.COMMAND) listOf(Action.Partial(text)) else emptyList()
 
     fun onVad(audioMs: Long, speech: Boolean): List<Action> {
         if (mode != Mode.COMMAND) return emptyList()

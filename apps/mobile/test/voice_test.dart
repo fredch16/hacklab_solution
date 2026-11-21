@@ -58,6 +58,14 @@ void main() {
         'prerecord',
         'stop',
         'start the video',
+        'stout recording',
+        'it was a stout record',
+        "don't stop recording",
+        'do not start recording',
+        'I said start recording yesterday',
+        'start recording and stop recording',
+        'what did you record',
+        'they stopped recording',
       ]) {
         expect(matchVoiceCommand(t), isNull, reason: t);
       }
@@ -101,7 +109,7 @@ void main() {
     Map<String, Object?> finalEvent(String id, String text) => {
       'event': 'voice_event',
       'type': 'voice.transcript.final',
-      'payload': {
+      'payload': <String, Object?>{
         'utterance_id': id,
         'text': text,
         'started_utc': 'a',
@@ -172,6 +180,32 @@ void main() {
           'none',
         );
         expect(cam.recordCalls, ['stop:user', 'start']);
+      },
+    );
+
+    test(
+      'a failed acoustic check blocks a command and stays on the phone',
+      () async {
+        final event = finalEvent('utt-conflict', 'stop recording');
+        (event['payload'] as Map<String, Object?>)['verified_command'] = null;
+        cam.emit(event);
+        await pumpEventQueue();
+        expect(cam.recordCalls, isEmpty);
+        expect(
+          out.lastWhere((m) => m.$1 == 'voice.command').$2['command'],
+          'none',
+        );
+        expect(
+          out.firstWhere((m) => m.$1 == 'voice.transcript.final').$2,
+          isNot(contains('verified_command')),
+        );
+
+        final agreed = finalEvent('utt-agree', 'start recording');
+        (agreed['payload'] as Map<String, Object?>)['verified_command'] =
+            'recording.start';
+        cam.emit(agreed);
+        await pumpEventQueue();
+        expect(cam.recordCalls, ['start']);
       },
     );
 

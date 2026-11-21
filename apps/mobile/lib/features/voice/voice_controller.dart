@@ -127,18 +127,28 @@ class VoiceController extends ChangeNotifier implements VoicePort {
         if (type == 'voice.transcript.partial')
           partial = payload['text'] as String?;
         if (type == 'voice.transcript.final') partial = null;
-        if (type == 'voice.wake_detected') partial = '';
-        sender?.call(type, payload);
-        // Off the event dispatch: the command emits further platform events.
-        if (type == 'voice.transcript.final')
+        if (type == 'voice.transcript.final') {
+          final browserPayload = Map<String, Object?>.of(payload)
+            ..remove('verified_command');
+          sender?.call(type, browserPayload);
+          // The command emits further platform events.
           scheduleMicrotask(() => _onFinal(payload));
+        } else {
+          sender?.call(type, payload);
+        }
         notifyListeners();
     }
   }
 
   Future<void> _onFinal(Map<String, Object?> p) async {
     final id = p['utterance_id'] as String;
-    final cmd = matchVoiceCommand((p['text'] as String?) ?? '');
+    final text = (p['text'] as String?) ?? '';
+    final detected = matchVoiceCommand(text);
+    final verified = p['verified_command'];
+    final agreed =
+        verified == detected ||
+        (verified == 'record' && normalizeVoiceRequest(text) == 'record');
+    final cmd = !p.containsKey('verified_command') || agreed ? detected : null;
     _commands[id] = cmd;
     var ok = true;
     String? err;

@@ -35,7 +35,6 @@ internal class WakeDetector(private val assets: AssetManager) {
     private var spec = ""
 
     val modelName get() = if (phoneme) PHONE_MODEL else BPE_MODEL
-    val replaySamples get() = if (phoneme) 5120 else 8960 // 320 / 560 ms at 16 kHz
 
     fun configure(phrase: String): Boolean {
         val phonePhrases = pronunciation.phrases(phrase)
@@ -55,8 +54,8 @@ internal class WakeDetector(private val assets: AssetManager) {
                 keywordsFile = "$bpeDirectory/keywords.txt",
                 maxActivePaths = if (usePhones) 12 else 4,
                 numTrailingBlanks = if (usePhones) 0 else 1,
-                keywordsScore = 1.5f,
-                keywordsThreshold = if (usePhones) 0.20f else 0.25f,
+                keywordsScore = if (usePhones) 2.0f else 1.5f,
+                keywordsThreshold = if (usePhones) 0.17f else 0.25f,
             ))
             phoneme = usePhones
         }
@@ -79,6 +78,53 @@ internal class WakeDetector(private val assets: AssetManager) {
             if (k.getResult(s).keyword == TAG) return true
         }
         return false
+    }
+
+    private val commandKeywords by lazy {
+        val phrases = listOf(
+            "start recording" to "START", "start the recording" to "START",
+            "begin recording" to "START", "begin the recording" to "START",
+            "stop recording" to "STOP", "stop the recording" to "STOP",
+            "end recording" to "STOP", "end the recording" to "STOP",
+            "stout recording" to "BLOCK",
+        )
+        phrases.joinToString("/") { (phrase, label) ->
+            val phones = phrase.uppercase(java.util.Locale.ROOT).split(' ').joinToString(" ") {
+                pronunciation.candidates(it).first()
+            }
+            "$phones #0.25 @$label"
+        }
+    }
+
+    private val recordKeyword by lazy {
+        pronunciation.candidates("RECORD").joinToString("/") { "$it #0.25 @RECORD" }
+    }
+
+    /** Independent acoustic check for a recording action, on the worker after wake detection. */
+    fun verifyCommand(samples: FloatArray): String? {
+        val k = active ?: return null
+        if (!phoneme) return null
+        return when (firstKeyword(k, commandKeywords, samples)) {
+            "START" -> "recording.start"
+            "STOP" -> "recording.stop"
+            "BLOCK" -> null
+            else -> if (firstKeyword(k, recordKeyword, samples) == "RECORD") "record" else null
+        }
+    }
+
+    private fun firstKeyword(k: KeywordSpotter, keywords: String, samples: FloatArray): String? {
+        val commandStream = k.createStream(keywords)
+        try {
+            commandStream.acceptWaveform(samples, 16000)
+            while (k.isReady(commandStream)) {
+                k.decode(commandStream)
+                val keyword = k.getResult(commandStream).keyword
+                if (keyword.isNotEmpty()) return keyword
+            }
+            return null
+        } finally {
+            commandStream.release()
+        }
     }
 
     fun stop() {

@@ -10,10 +10,12 @@ package dev.localvision.local_vision
  */
 class UtteranceTracker(
     private val silenceMs: Long = 1000,
-    private val maxMs: Long = 15_000,
+    private val maxMs: Long = MAX_MS.toLong(),
     private val noSpeechMs: Long = 5_000,
     private val ignoreMs: Long = 300,
 ) {
+    companion object { const val MAX_MS = 15_000 }
+
     private var wakeMs = 0L
     private var speechStarted = false
     private var lastSpeechMs = 0L

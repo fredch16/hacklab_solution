@@ -1,6 +1,6 @@
-# Architecture: camera arm with an iPhone camera
+# Architecture: camera arm with an iPhone camera and voice
 
-Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). An iPhone on the follower's gripper is the camera. A Safari page on the phone streams video over WebRTC to a camera gateway on the laptop. People control the arm from a dashboard with a chat; Claude picks positions through our own MCP server. Station only drives the servos.
+Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). An iPhone on the follower's gripper is the camera and the microphone. A Safari page on the phone sends video and audio over one WebRTC connection to a camera gateway on the laptop; a voice service turns speech into text for Claude, and a spoken stop word goes straight to the arm. People control the arm from a dashboard with a chat; Claude picks positions through our own MCP server. Station only drives the servos.
 
 ## Build status
 
@@ -8,7 +8,8 @@ Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). A
 |---|---|---|---|
 | Arm web server = control service | built by the team, reviewed, tested on the simulated arm, **not yet on the real arm** | `capture_server.py` (`/control`, `/api/...`), `motion.py`, `fk.py` | [MOTION.md](MOTION.md), [MOTION_PLAN.md](MOTION_PLAN.md) |
 | MCP server camera-arm | built, tested against the web server on the simulated arm | `mcp_server.py`, plus `GET /api/still.jpg` in `capture_server.py` | [MCP.md](MCP.md) |
-| Camera gateway (iPhone) | not started | – | this page |
+| Camera gateway (iPhone video + audio) | not started | – | this page |
+| Voice service | not started | – | this page |
 | Dashboard (UI + backend) | not started; `/control` is the operator page, not the chat dashboard | – | this page |
 | elrobot-ik (stage 2) | not started | – | this page |
 
@@ -20,6 +21,7 @@ Until the gateway exists, stills come from Station's USB camera, or, with `--sim
 - **Safety lives in the arm web server.** `capture_server.py` is the one program that moves the arm (route through the transit pose, guards, STOP generations). Dashboard, MCP and later voice are its clients and pass through the same checks.
 - **Our own MCP server.** It holds the context (views, scene, guidance) and only forwards moves. NormaCore's `elrobot-ik` example (dev branch) serves internally as a solver from stage 2 on.
 - **Stop without Claude.** The stop button goes from the dashboard straight to control and cancels any move in flight.
+- **Voice uses the iPhone microphone.** Audio travels with the video to the gateway; speech to text runs on the laptop, only text goes to Claude. A stop word is matched locally and sent to `/api/stop` without Claude.
 - **Claude gets stills, people get the live stream.** A full-resolution still from a resting arm is sharper than a video frame, and the arm pose that belongs to it is known.
 
 ## Layers
@@ -27,7 +29,7 @@ Until the gateway exists, stills come from Station's USB camera, or, with `--sim
 ```mermaid
 flowchart TB
   subgraph browser["Browser (any device on the LAN)"]
-    UI["Dashboard<br/>chat · live view · view buttons · STOP · status"]
+    UI["Dashboard<br/>chat (typed + spoken) · live view · view buttons · STOP · status"]
   end
   subgraph cloud["Cloud"]
     CL["Claude API<br/>picks tools · analyses stills on request"]
@@ -35,13 +37,14 @@ flowchart TB
   subgraph laptop["Laptop at the arm"]
     BE["Dashboard backend :8300<br/>chat · API key · MCP client<br/>proxies the live view, single LAN entry point"]
     MCP["MCP server camera-arm :8200/mcp<br/>tools · scene · guidance"]
-    GW["Camera gateway :8400<br/>HTTPS page for the phone · WebRTC signaling<br/>WebRTC receiver (aiortc) · latest frame<br/>full-resolution stills on request"]
+    GW["Camera gateway :8400<br/>HTTPS page for the phone · WebRTC signaling<br/>WebRTC receiver (aiortc) · video + audio<br/>full-resolution stills · POST /say"]
+    VC["Voice service :8500<br/>VAD · wake word · speech to text (local)<br/>stop word → /api/stop · text → /api/voice"]
     CTL["Arm web server :8890 (capture_server.py)<br/>/control page · /api/goto · /api/stop · /api/state<br/>routes via transit · guards · STOP generations"]
     ST["NormaCore Station :8888<br/>servos only: ST3215 · calibration · current limit"]
     IK["elrobot-ik :8020 (stage 2)<br/>IK + collision, solve only"]
   end
   subgraph phone["iPhone (same Wi-Fi)"]
-    PH["Safari page<br/>camera · WebRTC · wake lock"]
+    PH["Safari page<br/>camera + microphone · WebRTC · wake lock<br/>speaks replies"]
   end
   subgraph hw["Hardware"]
     ARM["ElRobot follower<br/>8 × ST3215 · phone mount"]
@@ -57,13 +60,17 @@ flowchart TB
   CTL -- "only writer" --> ST
   CTL -. "solve only" .-> IK
   ST <-- "USB servo bus" --> ARM
-  PH <-- "WebRTC video · WSS signaling · DataChannel stills" --> GW
+  PH <-- "WebRTC video + audio · WSS signaling · DataChannel stills, say" --> GW
   PH -.-|mounted| ARM
+  GW -- "audio 16 kHz" --> VC
+  VC -- "text: POST /api/voice" --> BE
+  VC -- "stop word: POST /api/stop" --> CTL
 
   linkStyle 3 stroke:#b3261e,stroke-width:2px
+  linkStyle 14 stroke:#b3261e,stroke-width:2px
 ```
 
-The red link is the direct path for stop, view buttons and events. It does not go through Claude or the MCP server.
+The red links are the stop paths that do not go through Claude or the MCP server: the dashboard's STOP and view buttons, and a spoken stop word.
 
 ## Where each part runs
 
@@ -73,6 +80,7 @@ Everything runs on the laptop the follower is plugged into. Only the dashboard b
 |---|---|---|---|
 | Dashboard (UI) | – | any browser | new |
 | Dashboard backend | 8300 | LAN, with token | `director.py` (Claude loop) |
+| Voice service | 8500 | localhost | new |
 | MCP server camera-arm | 8200 | localhost | new |
 | Camera gateway | 8400 | LAN (phone page only), rest localhost | new |
 | elrobot-ik (stage 2) | 8020 | localhost | NormaCore dev, example |
@@ -93,6 +101,8 @@ Everything runs on the laptop the follower is plugged into. Only the dashboard b
 | Chat history, API key | Dashboard backend | memory, environment variable | backend only |
 | Event log (overlay, demo) | director / backend; move log in `motion_log.jsonl` | files | dashboard, analysis |
 | Guidance for Claude | MCP | resource `camera-arm://guide` | Claude |
+| Audio from the iPhone | Camera gateway → voice service | memory only, never stored | voice service |
+| Transcripts | Voice service | `events.jsonl` (`heard`) | dashboard backend, overlay |
 
 ## Moving without blocking
 
@@ -135,6 +145,39 @@ sequenceDiagram
   G-->>C: still.jpg
   C->>C: stamp with joint state
 ```
+
+## Voice path
+
+```mermaid
+sequenceDiagram
+  participant P as iPhone mic
+  participant G as Camera gateway
+  participant V as Voice service
+  participant W as Arm web server
+  participant B as Dashboard backend
+  participant C as Claude
+  P-)G: WebRTC audio (Opus)
+  G-)V: 16 kHz PCM
+  V->>V: voice activity, wake word, speech to text
+  alt stop word ("stop", "halt", "stopp")
+    V->>W: POST /api/stop (no Claude)
+  else phrase after the wake word
+    V->>B: POST /api/voice {text}
+    B->>C: chat message, MCP tools
+    C-->>B: reply
+    B->>G: POST /say {text}
+    G-)P: DataChannel say, phone speaks
+  end
+```
+
+| Rule | Why |
+|---|---|
+| A stop word is matched locally and sent to `/api/stop` at once, also without wake word | Stop must not wait for Claude or the cloud, and must work while Claude or the backend hang |
+| Everything else needs the wake word ("camera, show me the board from above") | The person talks while working; only addressed phrases should move the arm |
+| While the arm moves, only stop words are acted on | Servo noise and reactions to the move would produce stray commands |
+| The microphone is ignored while the phone speaks | Otherwise the phone hears its own reply |
+| Speech to text runs on the laptop; only text goes to Claude | No audio leaves the room; lower latency |
+| Each step goes to `events.jsonl` as `heard`, `decided`, `moved`, `reply` | Same format as `director.py`, for the overlay and the demo video |
 
 ## What the MCP server knows
 
@@ -214,6 +257,17 @@ The team's server is the control service. The calls the MCP server and a dashboa
 | `GET /live.mjpeg` | live view for the dashboard backend (localhost only) |
 | `GET /still.jpg` | full-resolution still from the phone; `503 no_phone`, `504 timeout` |
 | `GET /events` | SSE: phone connected / lost, page hidden, resolution changed |
+| `POST /say {text}` | the phone speaks the text (DataChannel → `speechSynthesis`); the voice pipeline ignores the microphone meanwhile |
+| audio → voice service | 16 kHz mono PCM over a local socket |
+
+### Voice service
+
+| Call | Purpose |
+|---|---|
+| `GET /status` | `{listening, muted, wake_word, last_heard, model}` |
+| `GET /events` | SSE: `heard` (with text), `stop`, `ignored` (no wake word, or arm moving) |
+| `POST /mute {on}` | push-to-talk or mute from the dashboard |
+| calls out | `POST /api/stop` on the web server for stop words, `POST /api/voice {text}` on the backend for everything else |
 
 DataChannel messages from the phone: `{"type":"status","orientation":"landscape","visible":true}` every second, and stills as binary chunks closed by `{"type":"still_done","id":7}`. If the status stops, the gateway reports the camera as lost; the arm keeps working without images.
 
@@ -222,6 +276,7 @@ DataChannel messages from the phone: `{"type":"status","orientation":"landscape"
 | Call | Effect |
 |---|---|
 | `POST /api/chat {text}` | message to Claude, reply streamed; Claude uses the MCP tools |
+| `POST /api/voice {text}` | the same for spoken text (from the voice service); the reply also goes to the phone via the gateway's `POST /say` |
 | `POST /api/context` | still via MCP `get_camera_image`, sent to Claude with "describe the scene"; Claude writes via `update_scene` |
 | `POST /api/stop` | straight to control, bypassing Claude |
 | `POST /api/views/{name}` | dashboard button, straight to control |
@@ -244,12 +299,19 @@ The backend is the MCP client: it fetches the tool list from the MCP server and 
 - Lens choice (wide or ultra-wide) and zoom through constraints: test what Safari supports.
 - Heat: a phone streaming for hours can throttle.
 
+**Voice**
+- Servo noise next to the phone's microphone: record phrases during a move and test recognition.
+- Distance: the phone moves with the arm, sometimes 50 cm or more from the speaker.
+- Speech to text on the laptop CPU: latency of a small multilingual model for German and English.
+- False wake words while people talk at the desk; push-to-talk in the dashboard as fallback.
+- Safari plays the spoken reply only after one tap on the phone page.
+
 **Network**
 - Hackathon Wi-Fi often isolates clients or blocks UDP. Plan B: laptop hotspot, or the laptop joins the phone's hotspot.
 - Safari hides local IPs behind `.local` names until camera access is granted; confirm the ICE candidates reach the gateway.
 
 **Software**
-- Dependencies: `mcp` is approved and in `pyproject.toml` (MCP server only). Everything that moves the arm stays standard library. Still to agree on: `aiortc` (gateway, pulls in `av`); `fastapi`/`uvicorn` for backend and gateway only if the standard library gets too painful.
+- Dependencies: `mcp` is approved and in `pyproject.toml` (MCP server only). Everything that moves the arm stays standard library. Still to agree on: `aiortc` (gateway, pulls in `av`); a speech-to-text library (e.g. `faster-whisper`), voice activity detection and possibly a wake-word model (voice service); `fastapi`/`uvicorn` for backend and gateway only if the standard library gets too painful.
 - Video recording for datasets, if needed, moves from Station into the gateway.
 
 **Cheaper alternative to test first**
@@ -266,7 +328,8 @@ Open:
 - First supervised run on the real arm (protocol in [MOTION_PLAN.md](MOTION_PLAN.md)), then mark the views as checked.
 - Re-capture `home`, `left`, `right`, `side_low` off the joint limits, with a level horizon.
 - Dashboard: chat, live view, view buttons, big stop button, status.
-- Camera gateway for the iPhone, with tests on a fake phone.
+- Camera gateway for the iPhone (video + audio), with tests on a fake phone.
+- Voice service: stop word path first, then wake word and speech to text.
 
 ## Open decisions
 

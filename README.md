@@ -46,6 +46,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python capture_server.py --sim --port 8891` | | The same UI on a simulated arm, no hardware |
 | `python go.py --where` / `top` / `--tour 5` / `--mark-checked top` | M2 | Command-line moves; `--sim` for the simulated arm; Ctrl-C holds |
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
+| `python3 arm_view.py` | M2 | **Watch the arm move as a stick figure** (side/top/front) at http://localhost:8896; follows the server on :8891 (sim) or `--source http://localhost:8890` (real arm). Read-only |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
 | `python3 tests/test_motion_sim.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py` | | Motion layer, web-server race and geometry model tests (no hardware; about 75 s, 2 min and 5 s) |
 

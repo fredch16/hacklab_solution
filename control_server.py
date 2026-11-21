@@ -57,6 +57,24 @@ class StationCamera:
         return await self.cam.get_frame(max_age_s=1.0, timeout_s=3.0)
 
 
+class SimCamera:
+    """With --sim: the saved snapshot of the view the simulated arm is at, so image workflows can be tried."""
+
+    def __init__(self, mgr: MotionManager):
+        self.mgr = mgr
+
+    async def still(self) -> bytes:
+        near = self.mgr.nearest_view()
+        if not near or not near["at"]:
+            raise RuntimeError("sim camera only has pictures at saved views; move to one first")
+        snap = self.mgr.views()[near["view"]].get("snapshot")
+        base = self.mgr.views_path.resolve().parent
+        path = (base / snap).resolve() if snap else None
+        if path is None or base not in path.parents or not path.is_file():
+            raise RuntimeError(f"no snapshot saved for view {near['view']!r}")
+        return path.read_bytes()
+
+
 class GatewayCamera:
     """Full-resolution still from the iPhone camera gateway (variant B)."""
 
@@ -276,11 +294,10 @@ async def main(args):
     camera = None
     if args.gateway:
         camera = GatewayCamera(args.gateway)
+    elif args.sim:
+        camera = SimCamera(mgr)
     elif args.camera:
-        if args.sim:
-            log.warning("--camera ignored with --sim")
-        else:
-            camera = await StationCamera.connect(arm.client, args.camera_queue)
+        camera = await StationCamera.connect(arm.client, args.camera_queue)
     srv = ControlServer(mgr, camera)
     server = await asyncio.start_server(srv.handle, args.host, args.port, limit=MAX_HEADER)
     near = mgr.nearest_view()

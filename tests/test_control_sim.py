@@ -235,6 +235,16 @@ async def http_tests():
             assert await call(status_of, ctl.request, base + p) == 404, p
         print("ok  GET / (UI), /ui/state with ranges and target, snapshots without path escapes")
 
+        # sim camera: snapshot of the view the arm is at, error elsewhere
+        from control_server import SimCamera
+        srv.camera = SimCamera(mgr)
+        assert mgr.nearest_view()["view"] == "left"
+        _, headers, body = await call(ctl.request, base + "/still.jpg")
+        assert body == b"\xff\xd8snap" and headers["X-Nearest-View"] == "left"
+        await call(ctl.main, ["--url", base, "go", "home", "--wait"])
+        assert await call(status_of, ctl.request, base + "/still.jpg") == 503   # home has no valid snapshot
+        print("ok  sim camera returns the snapshot of the view the arm is at")
+
         # go --wait through the CLI, then stop via the CLI
         rc = await call(ctl.main, ["--url", base, "go", "top", "--wait"])
         assert rc == 0, rc

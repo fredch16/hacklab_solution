@@ -1,6 +1,18 @@
 # Architecture: camera arm with an iPhone camera
 
-Proposal, 21 Nov 2026. An iPhone on the follower's gripper is the camera. A Safari page on the phone streams video over WebRTC to a camera gateway on the laptop. People control the arm from a dashboard with a chat; Claude picks positions through our own MCP server. Station only drives the servos.
+Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). An iPhone on the follower's gripper is the camera. A Safari page on the phone streams video over WebRTC to a camera gateway on the laptop. People control the arm from a dashboard with a chat; Claude picks positions through our own MCP server. Station only drives the servos.
+
+## Build status
+
+| Part | State | Code | Docs |
+|---|---|---|---|
+| Control service | built, tested on the simulated arm, **not yet on the real arm** | `control_server.py`, `motion_manager.py`, `ctl.py`, `control_ui.html` | [CONTROL.md](CONTROL.md) |
+| MCP server camera-arm | built, tested against the control service on the simulated arm | `mcp_server.py` | [MCP.md](MCP.md) |
+| Camera gateway (iPhone) | not started | – | this page |
+| Dashboard (UI + backend) | not started; `control_ui.html` is a local test page, not the dashboard | – | this page |
+| elrobot-ik (stage 2) | not started | – | this page |
+
+Until the gateway exists, control serves stills from Station's USB camera (`--camera`) or, with `--sim`, the saved snapshot of the view the simulated arm is at.
 
 ## Decisions at a glance
 
@@ -168,30 +180,33 @@ Object in the scene. The image position is normalized to 0–1 per view and came
 | `go_to_view(name)` | immediately: `motion_id`, state; `name` is a fixed enum | 1 |
 | `get_status(motion_id?)` | state, progress, nearest view, last error | 1 |
 | `stop()` | holds immediately | 1 |
-| `get_camera_image()` | latest still with joint state | 1 |
+| `get_camera_image()` | still as JPEG + `nearest_view`; error `moving` while the arm moves | 1 |
 | `get_scene()` | all objects with image position, age, visibility | 1 |
-| `update_scene(objects)` | stores Claude's image analysis, schema validated | 1 |
+| `update_scene(objects, replace?)` | stores Claude's image analysis, merged by object id and view; schema validated (bbox 0..1, known views, id pattern) | 1 |
+| `remove_scene_object(id)` | drops an object that is gone | 1 |
 | `frame_object(id, framing)` | immediately: `motion_id`, or `unreachable` / `collision` | 2 |
 | `best_view(id)` | view where the object is least occluded | 3 |
 | `camera-arm://guide` | rules, reference frames, meaning of states | 1 |
+| `camera-arm://scene` | the recorded scene as JSON | 1 |
 
-Claude gets no free joint or Cartesian moves.
+Claude gets no free joint or Cartesian moves. Built: everything marked stage 1 (`mcp_server.py`, Streamable HTTP on `127.0.0.1:8200/mcp`, official `mcp` SDK 2.3). Control errors reach Claude as tool errors with the same codes (`busy`, `unknown_view`, `not_ready`, `moving`, `no_camera`, `control_unreachable`).
 
 ### Control service (REST, localhost only)
 
 | Call | Response |
 |---|---|
-| `GET /health` | Station connected, age of motor data, control authority (mirroring active?), camera gateway connected |
-| `GET /status` | `{state, motion_id, view, nearest_view, progress, joints, error}` |
+| `GET /health` | Station connected, age of motor data, bus, camera source, number of views (mirroring is not checked yet) |
+| `GET /status` | `{state, motion, nearest_view, joints, last_error, bus}` |
 | `GET /views` | views without joint values |
-| `POST /motions {"view"}` | `202` with `motion_id` · `404 unknown_view` · `409 busy` · `409 not_ready` |
-| `POST /motions {"frame"}` | stage 2: target from object position, `422 unreachable / collision` |
+| `POST /motions {"view"}` | `202` with `motion_id` · `400 invalid_request` · `404 unknown_view` · `409 busy` · `409 not_ready` |
+| `POST /motions {"frame"}` | stage 2: target from object position, `422 unreachable / collision` (today `501`) |
 | `GET /motions/{id}` | `moving · reached · stalled · timeout · stopped · error`, duration, max error |
 | `POST /stop` | always `200`, goal = current position |
-| `GET /still.jpg` | still from the gateway, only while holding; joint state in a header |
-| `GET /events` | SSE, one JSON object per state change (`curl -N localhost:8100/events`) |
+| `GET /still.jpg` | still (gateway, Station USB camera or sim snapshot), only while holding; headers `X-Joints`, `X-Nearest-View` |
+| `GET /events` | SSE, one JSON object per state change and progress (`curl -N localhost:8100/events`) |
+| `GET /` | local control page: views, STOP, joint dials, events |
 
-A small CLI (`ctl.py go top`, `ctl.py stop`, `ctl.py status`, `ctl.py watch`) calls the same REST API. `go.py` becomes a client of the service so that only one process writes to Station.
+The CLI `ctl.py` (`go top --wait`, `stop`, `status`, `watch`, `tour`, `still`) calls the same REST API. `go.py` refuses to run while the service is up, so only one process writes to Station. Standard library only.
 
 ### Camera gateway
 
@@ -238,7 +253,7 @@ The backend is the MCP client: it fetches the tool list from the MCP server and 
 - Safari hides local IPs behind `.local` names until camera access is granted; confirm the ICE candidates reach the gateway.
 
 **Software**
-- New dependencies to agree on: `aiortc` (gateway, pulls in `av`), `fastapi`/`uvicorn` (control, backend, gateway), `mcp` (MCP server).
+- Dependencies: `mcp` is approved and in `pyproject.toml` (MCP server). The control service needs none. Still to agree on: `aiortc` (gateway, pulls in `av`); `fastapi`/`uvicorn` for backend and gateway only if the standard library gets too painful.
 - Video recording for datasets, if needed, moves from Station into the gateway.
 
 **Cheaper alternative to test first**
@@ -246,13 +261,19 @@ The backend is the MCP client: it fetches the tool list from the MCP server and 
 
 ## Still missing for stage 1
 
-- Non-blocking `motion.py`: move task with ID, states and events (today `go_to_view` waits until the end).
-- First run on the real arm (so far only on the simulator): half speed, one person at the power switch.
-- Safe paths between views: `via` poses through `home` or a high intermediate pose, joints one after another.
+Done:
+- Non-blocking moves with ID, states and events; busy, stop, timeout, stall detection (`motion_manager.py`).
+- Watchdog: motor data older than 0.5 s → the move ends without further writes.
+- `via` support in `views.json`.
+- MCP server with views, moves, status, stop, image and scene tools.
+- Hardware-free tests: `tests/test_control_sim.py`, `tests/test_mcp_sim.py`.
+
+Open:
+- First run on the real arm: half speed, one person at the power switch (steps in [CONTROL.md](CONTROL.md)).
+- Add `via` entries for view pairs that swing low (found during the first `ctl.py tour`).
 - Detect active leader mirroring and reject with `409 not_ready` (Station does not arbitrate control authority yet, see NormaCore ADR 0009).
-- Watchdog: motor data older than 0.5 s or Station gone → cancel the move, hold.
 - Dashboard: chat, live view, view buttons, big stop button, status.
-- Hardware-free tests for control, MCP and gateway on `sim_arm.py` and a fake phone.
+- Camera gateway for the iPhone, with tests on a fake phone.
 
 ## Open decisions
 

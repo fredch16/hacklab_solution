@@ -20,7 +20,7 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
 | M3 Claude picks the view | 🟡 `director.py` works end to end on the sim (with a stubbed Claude); needs `ANTHROPIC_API_KEY` for a real run |
 | M4 voice | ⬜ not started (build against `director.py --sim` and `events.jsonl`) |
 
-Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (motion planning handoff) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (proposal: iPhone camera over WebRTC, dashboard, MCP, control service) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
+Docs: **[docs/HARDWARE.md](docs/HARDWARE.md)** (arms, serials, cameras, Station config, calibration) · **[docs/MOTION.md](docs/MOTION.md)** (motion planning handoff) · **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (iPhone camera over WebRTC, dashboard, MCP, control service; build status) · [docs/CONTROL.md](docs/CONTROL.md) · [docs/MCP.md](docs/MCP.md) · [PLAN.md](PLAN.md) (team plan, milestones) · [patches/](patches/) (Station web UI tweaks).
 
 ## Hardware in one paragraph
 
@@ -47,6 +47,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python go.py top` / `--tour 5` / `--speed 250` | M2 | Move the follower to saved views; Ctrl-C holds where it is |
 | `python control_server.py --bus 5B79016329` / `--sim` | M2 | **Control service** on localhost:8100: the only writer to the arm, non-blocking moves, stop, SSE events. See [docs/CONTROL.md](docs/CONTROL.md) |
 | `python ctl.py go top --wait` / `stop` / `watch` / `status` | M2 | CLI for the control service |
+| `.venv/bin/python mcp_server.py` | M3 | **MCP server** camera-arm on localhost:8200/mcp: views, moves, status, stop, camera image, scene. See [docs/MCP.md](docs/MCP.md) |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves; `--sim` needs no hardware |
 
 ## Interfaces between the pieces

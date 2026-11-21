@@ -6,3 +6,4 @@ station_data/
 .env
 events.jsonl
 frame.jpg
+scene.json

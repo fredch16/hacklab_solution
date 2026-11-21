@@ -42,10 +42,12 @@ The MCP server reads the view names from the web server at start; restart it aft
 | `go_to_view(view)` | starts a move; `view` is an enum of the saved views (not `transit`) | at once: `{started, view, speed, first_run_speed, eta_hint, hint}`; `started: false` if already there |
 | `get_status()` | how the current or last move is going | `{moving, target_view, phase, route, progress, current_view, can_move, blockers, stopping, hold, error, last_result: {ok, view, error, duration, route}}` |
 | `stop()` | halts and holds, any time (`POST /api/stop`) | `{ok, hold: confirmed\|unconfirmed, was_moving, view, error}` |
-| `get_camera_image()` | current still, only while not moving (`GET /api/still.jpg`) | JPEG image + `{"view", "taken_at"}` |
+| `get_camera_image()` | current still, only while not moving (`GET /api/still.jpg`) | JPEG image + `{"still", "view", "image_size", "taken_at"}` |
 | `get_scene()` | recorded objects | `{objects: [{id, label, description, seen: [{view, camera, bbox, visible, at, age_s}]}], count}` |
 | `update_scene(objects, replace=false)` | records what Claude saw | the scene as above |
 | `remove_scene_object(id)` | drops an object | the scene as above |
+| `best_view(object_id, move=true)` | ranks the saved views by the object's sightings and moves to the best | `{object, best_view, ranking, move?}` |
+| `preview_frame(object_id, framing="fill", margin=0.1)` | **preview only**: where the camera would go to frame the object ([FRAMING.md](FRAMING.md)) | `{ok, table_point_m, camera_distance_now_m, camera_distance_m, joint_travel, min_height_m, notes}` or a refusal |
 
 Resources: `camera-arm://guide` (operating guide for Claude: moving, images, scene, choosing views), `camera-arm://scene` (the scene as JSON).
 

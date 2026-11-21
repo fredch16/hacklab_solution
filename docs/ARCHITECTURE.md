@@ -12,6 +12,7 @@ Proposal, 21 Nov 2026; status updated the same evening (see **Build status**). A
 | Voice service | not started | – | this page |
 | Dashboard (UI + backend) | not started; `/control` is the operator page, not the chat dashboard | – | this page |
 | elrobot-ik (stage 2) | not started | – | this page |
+| Framing preview (stage 2) | built, tested on the simulated arm; preview only, never moves; estimates not yet checked on the real arm | `framing.py`, `POST /api/frame` (dry_run), MCP `preview_frame`, `best_view` | [FRAMING.md](FRAMING.md) |
 
 Until the gateway exists, stills come from Station's USB camera, or, with `--sim`, from the saved snapshot of the view the simulated arm is at.
 
@@ -225,8 +226,9 @@ Object in the scene. The image position is normalized to 0–1 per view and came
 | `get_scene()` | all objects with image position, age, visibility | 1 |
 | `update_scene(objects, replace?)` | stores Claude's image analysis, merged by object id and view; schema validated (bbox 0..1, known views, id pattern) | 1 |
 | `remove_scene_object(id)` | drops an object that is gone | 1 |
-| `frame_object(id, framing)` | immediately: `started`, or `unreachable` / `collision` | 2 |
-| `best_view(id)` | view where the object is least occluded | 3 |
+| `best_view(object_id, move?)` | saved view that showed the object best (large, centred, visible, recent); moves there. **Built** | 2 |
+| `preview_frame(object_id, framing?)` | **preview only**: where the camera would go to frame the object, and whether the checks pass. **Built**, see [FRAMING.md](FRAMING.md) | 2 |
+| `frame_object(object_id, framing?)` | the same as a real move (stage C, not built) | 2 |
 | `camera-arm://guide` | rules, reference frames, meaning of states | 1 |
 | `camera-arm://scene` | the recorded scene as JSON | 1 |
 

@@ -48,6 +48,7 @@ The Station Python client, protobufs and the ElRobot URDF/manuals are vendored i
 | `python fk.py` | M2 | Geometry model: height of the arm in every view and along every route |
 | `python3 arm_view.py` | M2 | **Watch the arm move as a stick figure** (side/top/front) at http://localhost:8896; follows the server on :8891 (sim) or `--source http://localhost:8890` (real arm). Read-only |
 | `.venv/bin/python mcp_server.py` (`--arm-url http://127.0.0.1:8891` for `--sim`) | M3 | **MCP server** camera-arm on localhost:8200/mcp for Claude: views, moves (through the web server), status, stop, camera still, scene. See [docs/MCP.md](docs/MCP.md) |
+| `python3 framing.py top 0.6 0.55 0.3 0.25` | M5 | **Framing preview** (stage 2): where the camera would go to frame a box from a view; never moves. See [docs/FRAMING.md](docs/FRAMING.md) |
 | `uv run python director.py [--sim]` | M3 | Type a request, Claude picks a view, the arm moves |
 | `python3 tests/test_motion_sim.py`, `python3 tests/test_server_sim.py [port]`, `python3 tests/test_fk.py` | | Motion layer, web-server race and geometry model tests (no hardware; about 75 s, 2 min and 5 s) |
 

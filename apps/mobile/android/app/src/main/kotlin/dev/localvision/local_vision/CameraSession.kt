@@ -71,6 +71,7 @@ class CameraSession(
     private var video: VideoEncoderOutput? = null
     private var videoSpec: VideoSpec? = null
     @Volatile var targetFps = 30
+    @Volatile var debugSkip = "" // SPIKE: letters p=preview a=analysis
     /** Called when the camera cannot be bound with the video use case (error code). */
     var onVideoBindFailed: ((String) -> Unit)? = null
     private var previewBound = false
@@ -296,7 +297,9 @@ class CameraSession(
         lastFrameNs = System.nanoTime()
         Log.i(TAG, "bind")
 
-        val useCases = mutableListOf<androidx.camera.core.UseCase>(pv, an)
+        val useCases = mutableListOf<androidx.camera.core.UseCase>()
+        if (!debugSkip.contains('p')) useCases.add(pv)
+        if (!debugSkip.contains('a')) useCases.add(an)
         val vo = video
         val vs = videoSpec
         if (vo != null && vs != null) {

@@ -268,13 +268,23 @@ export function qualityOptions(lens) {
         return [];
     const out = [];
     for (const v of lens.video)
-        for (const fps of v.fps)
-            for (const codec of v.codecs) {
-                const badge = qualityBadge(v.verified, v.measured);
-                out.push({ key: qualityKey(v.width, v.height, fps, codec), width: v.width, height: v.height, fps, codec, hdr: !!v.hdr, verified: v.verified ?? "untested", measured: v.measured ?? null, badge, label: `${v.width}\u00D7${v.height} \u00B7 ${fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
-            }
+        for (const codec of v.codecs) {
+            const t = v.tests?.[codec] ?? null;
+            const verified = t?.result === "passed" || t?.result === "failed" ? t.result : "untested";
+            const badge = qualityBadge(verified, t);
+            out.push({ key: qualityKey(v.width, v.height, v.fps, codec), width: v.width, height: v.height, fps: v.fps, codec, hdr: !!v.hdr, verified, measured: t, badge, label: `${v.fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
+        }
     const rank = (c) => (c === "hevc" ? 0 : 1);
     return out.sort((a, b) => b.width * b.height - a.width * a.height || b.fps - a.fps || rank(a.codec) - rank(b.codec));
+}
+/** Group options by resolution (input order preserved) for <optgroup>. */
+export function groupByResolution(opts) {
+    const g = new Map();
+    for (const o of opts) {
+        const k = `${o.width}\u00D7${o.height}`;
+        g.set(k, [...(g.get(k) ?? []), o]);
+    }
+    return [...g].map(([label, options]) => ({ label, options }));
 }
 export const findLens = (caps, id) => caps?.lenses.find((l) => l.id === id);
 export function currentQuality(lens, s) {

@@ -94,6 +94,7 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
                 i.getIntExtra("w", 3840), i.getIntExtra("h", 2160),
                 i.getIntExtra("fps", 30), i.getIntExtra("seconds", 20),
                 i.getIntExtra("mbps", 50),
+                i.getStringExtra("skip") ?: "",
             )
         }
     }
@@ -105,7 +106,25 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
         )
     }
 
-    private fun runSpike(mime: String, w: Int, h: Int, fps: Int, seconds: Int, mbps: Int) {
+    private fun runSpike(mime: String, w: Int, h: Int, fps: Int, seconds: Int, mbps: Int, skip: String) {
+        camera.debugSkip = skip
+        run {
+            val cm = activityRef.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            Log.i("LVC", "SPIKE camera ids=${cm.cameraIdList.toList()}")
+            for (id in cm.cameraIdList) {
+                val ch = cm.getCameraCharacteristics(id)
+                val map = ch.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+                val priv = map.getOutputSizes(android.graphics.SurfaceTexture::class.java).take(6)
+                val yuv = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888).take(4)
+                val level = ch.get(android.hardware.camera2.CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+                Log.i("LVC", "SPIKE cam $id level=$level priv=$priv yuv=$yuv caps=${ch.get(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList()}")
+                val q = listOf(android.media.CamcorderProfile.QUALITY_HIGH, android.media.CamcorderProfile.QUALITY_2160P, android.media.CamcorderProfile.QUALITY_8KUHD)
+                for (qq in q) if (android.media.CamcorderProfile.hasProfile(id.toInt(), qq)) {
+                    val pr = android.media.CamcorderProfile.get(id.toInt(), qq)!!
+                    Log.i("LVC", "SPIKE cam $id profile q=$qq ${pr.videoFrameWidth}x${pr.videoFrameHeight}@${pr.videoFrameRate}")
+                }
+            }
+        }
         val file = File(activityRef.cacheDir, "spike.mp4").also { it.delete() }
         Log.i("LVC", "SPIKE start $mime ${w}x$h@$fps ${mbps}Mbps ${seconds}s")
         val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)

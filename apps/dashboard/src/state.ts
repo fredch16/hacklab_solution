@@ -10,7 +10,9 @@ export interface CameraSettings {
   stabilization?: string | null; hdr?: boolean | null; orientation_lock?: string | null; zoom?: number | null; exposure_comp?: number | null; torch?: boolean | null;
 }
 export interface RecordingItem { id: string; filename: string; created_utc: string | null; duration_ms: number | null; size_bytes: number | null; width: number | null; height: number | null; fps_measured: number | null; codec: string | null; finalized?: boolean }
-export interface VideoMode { width: number; height: number; fps: number[]; codecs: string[]; hdr?: boolean; verified?: string; measured?: { fps?: number | null; bitrate_bps?: number | null } | null }
+export interface CodecTest { result?: string | null; fps?: number | null; bitrate_bps?: number | null; tested_utc?: string | null }
+/** One entry per (width, height, fps); `tests` per codec, missing key = untested. */
+export interface VideoMode { width: number; height: number; fps: number; codecs: string[]; hdr?: boolean; tests?: Record<string, CodecTest> | null }
 export interface Lens {
   id: string; facing?: string; kind?: string; focal_mm?: number | null; zoom_range?: [number, number] | null; video: VideoMode[];
   stabilization?: string[]; exposure_comp?: [number, number] | null; exposure_step?: number | null; torch?: boolean; af_modes?: string[];
@@ -324,9 +326,9 @@ export function lensLabel(l: Lens): string {
   return l.focal_mm != null && l.kind !== "front" ? `${name} \u00B7 ${l.focal_mm} mm` : name;
 }
 
-export interface QualityOption { key: string; width: number; height: number; fps: number; codec: string; hdr: boolean; verified: string; measured: VideoMode["measured"]; label: string; badge: string }
+export interface QualityOption { key: string; width: number; height: number; fps: number; codec: string; hdr: boolean; verified: string; measured: CodecTest | null; label: string; badge: string }
 export const qualityKey = (w: number | null | undefined, h: number | null | undefined, fps: number | null | undefined, codec: string | null | undefined) => `${w}x${h}@${fps}:${codec}`;
-export function qualityBadge(verified: string | undefined, measured: VideoMode["measured"]): string {
+export function qualityBadge(verified: string | undefined, measured: CodecTest | null | undefined): string {
   if (verified === "passed") return `Tested \u2713${measured?.fps != null ? ` ${measured.fps.toFixed(1)} fps` : ""}`;
   if (verified === "failed") return "Failed";
   return "Untested";
@@ -335,12 +337,20 @@ export function qualityBadge(verified: string | undefined, measured: VideoMode["
 export function qualityOptions(lens: Lens | undefined): QualityOption[] {
   if (!lens) return [];
   const out: QualityOption[] = [];
-  for (const v of lens.video) for (const fps of v.fps) for (const codec of v.codecs) {
-    const badge = qualityBadge(v.verified, v.measured);
-    out.push({ key: qualityKey(v.width, v.height, fps, codec), width: v.width, height: v.height, fps, codec, hdr: !!v.hdr, verified: v.verified ?? "untested", measured: v.measured ?? null, badge, label: `${v.width}\u00D7${v.height} \u00B7 ${fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
+  for (const v of lens.video) for (const codec of v.codecs) {
+    const t = v.tests?.[codec] ?? null;
+    const verified = t?.result === "passed" || t?.result === "failed" ? t.result : "untested";
+    const badge = qualityBadge(verified, t);
+    out.push({ key: qualityKey(v.width, v.height, v.fps, codec), width: v.width, height: v.height, fps: v.fps, codec, hdr: !!v.hdr, verified, measured: t, badge, label: `${v.fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
   }
   const rank = (c: string) => (c === "hevc" ? 0 : 1);
   return out.sort((a, b) => b.width * b.height - a.width * a.height || b.fps - a.fps || rank(a.codec) - rank(b.codec));
+}
+/** Group options by resolution (input order preserved) for <optgroup>. */
+export function groupByResolution(opts: QualityOption[]): { label: string; options: QualityOption[] }[] {
+  const g = new Map<string, QualityOption[]>();
+  for (const o of opts) { const k = `${o.width}\u00D7${o.height}`; g.set(k, [...(g.get(k) ?? []), o]); }
+  return [...g].map(([label, options]) => ({ label, options }));
 }
 export const findLens = (caps: Capabilities | null, id: string | null | undefined) => caps?.lenses.find((l) => l.id === id);
 export function currentQuality(lens: Lens | undefined, s: CameraSettings | null | undefined): QualityOption | undefined {

@@ -147,3 +147,6 @@ One `video` entry per (width, height, fps). `tests` holds results per codec; a m
 
 Error codes add: `ACTION_NOT_ALLOWED_WHILE_RECORDING`, `PROFILE_UNSUPPORTED`, `LOW_STORAGE`, `RECORDING_FINALIZE_FAILED`, `PERMISSION_MIC`, `ALREADY_RECORDING`, `NOT_RECORDING`.
 Storage rule: refuse start if free < 2 GB; warn when < 10 min remaining at current bitrate; auto-stop + finalize when < 500 MB.
+
+### Slice 2 re-scope (owner, 2026-11-21) — supersedes above
+Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in `recording.profile`). `/api/v1/capabilities`, `camera.settings.set`, snapshot `camera_settings` and `capabilities_version` are **dropped**. Priority after Slice 2: wake word → command transcription with correct end-of-command detection.

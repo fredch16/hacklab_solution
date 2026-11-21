@@ -6,7 +6,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import androidx.camera.core.ImageProxy
+import android.media.Image
 import org.webrtc.CapturerObserver
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -28,7 +28,7 @@ import org.webrtc.VideoTrack
 /** Receives camera frames; must close every image it is given. */
 interface FrameSink {
     val wantsFrames: Boolean
-    fun onFrame(image: ImageProxy)
+    fun onFrame(image: Image, rotationDegrees: Int)
 }
 
 /**
@@ -120,7 +120,7 @@ class VisionStream(
         return f
     }
 
-    override fun onFrame(image: ImageProxy) {
+    override fun onFrame(image: Image, rotationDegrees: Int) {
         try {
             val cap = capturer ?: return
             val w = image.width
@@ -134,7 +134,7 @@ class VisionStream(
                 Plane(p[2].buffer, p[2].rowStride, p[2].pixelStride),
                 buf.dataY, buf.strideY, buf.dataU, buf.strideU, buf.dataV, buf.strideV,
             )
-            val frame = VideoFrame(buf, image.imageInfo.rotationDegrees, System.nanoTime())
+            val frame = VideoFrame(buf, rotationDegrees, System.nanoTime())
             cap.onFrameCaptured(frame)
             frame.release()
         } finally {

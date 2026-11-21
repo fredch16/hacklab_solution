@@ -2,7 +2,7 @@ import { qrCanvas } from "./qr.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
-  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, type PhoneStats, type Capabilities, type CameraSettings, type RecordingInfo, commandErrorMessage, currentQuality, diffSettings, exposureLabel, findLens, formatAudio, formatBytes as fmtBytes, formatElapsed, formatProfile, formatZoom, hdrSupported, lensLabel, liveElapsed, lockedKeys, qualityOptions, recordingStateLabel, settingsForLens, validateSettings, warningMessage, UNAVAILABLE, type Envelope, type Snapshot, type State,
+  initialState, isTerminalClose, pairErrorMessage, powerLabel, metricRows, phoneEncoderRows, cameraHint, type PhoneStats, type Capabilities, type CameraSettings, type RecordingInfo, commandErrorMessage, currentQuality, diffSettings, exposureLabel, findLens, formatAudio, formatBytes as fmtBytes, formatElapsed, formatProfile, formatZoom, hdrSupported, lensLabel, liveElapsed, lockedKeys, qualityOptions, groupByResolution, recordingStateLabel, settingsForLens, validateSettings, warningMessage, UNAVAILABLE, type Envelope, type Snapshot, type State,
 } from "./state.js";
 
 type View = "boot" | "pairing" | "dashboard" | "terminal";
@@ -409,12 +409,20 @@ function settingsCard(s: Snapshot): Node {
   if (recording) kids.push(h("p", "muted", "Lens, quality, stabilization and HDR can't change while recording."));
   kids.push(field("Lens", "set-lens", sel("set-lens", caps.lenses.map((l) => [l.id, lensLabel(l)]), cur.lens_id ?? "", recording, (v) => applyPatch(settingsForLens(caps, v, cur)))));
   const q = qualityOptions(lens), cq = currentQuality(lens, cur);
-  const qopts: [string, string][] = cq ? [] : [["", "Select quality\u2026"]];
-  q.forEach((o) => qopts.push([o.key, o.label]));
+  const qsel = h("select"); qsel.id = "set-quality"; qsel.disabled = recording;
+  if (!cq) { const o = h("option", null, "Select quality\u2026"); o.value = ""; o.setAttribute("selected", ""); qsel.append(o); }
+  for (const g of groupByResolution(q)) {
+    const og = h("optgroup"); og.label = g.label;
+    for (const x of g.options) { const o = h("option", null, x.label); o.value = x.key; if (x.key === cq?.key) o.setAttribute("selected", ""); og.append(o); }
+    qsel.append(og);
+  }
+  qsel.value = cq?.key ?? "";
   const badge = cq ? h("span", `pill ${cq.verified === "passed" ? "ok" : cq.verified === "failed" ? "bad" : "neutral"}`, icon(cq.verified === "passed" ? "\u2713" : cq.verified === "failed" ? "\u2715" : "?"), cq.badge) : null;
-  kids.push(field("Quality", "set-quality", sel("set-quality", qopts, cq?.key ?? "", recording, (v) => {
-    const o = q.find((x) => x.key === v); if (o) applyPatch({ width: o.width, height: o.height, fps: o.fps, codec: o.codec, ...(cur.hdr && !o.hdr ? { hdr: false } : {}) });
-  }), ...(badge ? [badge] : [])));
+  qsel.onchange = () => {
+    const o = q.find((x) => x.key === qsel.value);
+    if (o) applyPatch({ width: o.width, height: o.height, fps: o.fps, codec: o.codec, ...(cur.hdr && !o.hdr ? { hdr: false } : {}) });
+  };
+  kids.push(field("Quality", "set-quality", qsel, ...(badge ? [badge] : [])));
   const stab = lens?.stabilization ?? [];
   if (stab.length) kids.push(field("Stabilization", "set-stab", sel("set-stab", stab.map((v) => [v, v === "preview" ? "On + preview" : v === "on" ? "On" : v === "off" ? "Off" : v] as [string, string]), cur.stabilization ?? "", recording, (v) => applyPatch({ stabilization: v }))));
   if (hdrSupported(lens, cur)) kids.push(field("HDR", "set-hdr", check("set-hdr", !!cur.hdr, recording, (v) => applyPatch({ hdr: v }))));

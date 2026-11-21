@@ -277,6 +277,7 @@ def status_from(st: dict) -> dict:
         "blockers": st.get("blockers") or [],
         "stopping": st.get("stopping"),
         "hold": st.get("hold"),
+        "generation": st.get("generation"),   # goes up with every STOP, from anywhere
         "error": m.get("error"),
         "last_result": ({k: last.get(k) for k in ("ok", "view", "error", "duration", "route") if k in last}
                         if isinstance(last, dict) else None),
@@ -321,8 +322,10 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
     @mcp.tool(description="Move the camera to a saved view. Returns at once; the move runs rise -> turn -> "
                           "descend and takes seconds (checked views) up to a minute (unchecked views, first-run "
                           "speed). Call get_status later. Refused while another move runs or while the arm is in "
-                          "an unknown pose.")
-    async def go_to_view(view: ViewName) -> dict[str, Any]:
+                          "an unknown pose. since_generation is for programs that move on their own: pass "
+                          "'generation' from an earlier get_status and the move is refused if anyone pressed "
+                          "STOP since then.")
+    async def go_to_view(view: ViewName, since_generation: Optional[int] = None) -> dict[str, Any]:
         st = await state()
         brief = status_from(st)
         if brief["moving"]:
@@ -331,7 +334,8 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
         if brief["current_view"] == view:
             return {"started": False, "view": view, "detail": "the camera is already at this view"}
         try:
-            r = await control.call("POST", "/api/goto", {"view": view, "generation": st["generation"]})
+            r = await control.call("POST", "/api/goto", {
+                "view": view, "generation": st["generation"] if since_generation is None else since_generation})
         except ControlError as e:
             raise _tool_error(e)
         card = next((c for c in st.get("cards") or [] if c["name"] == view), {})
@@ -342,7 +346,8 @@ def build_server(control: Control, scene: SceneStore, views: list[dict]) -> MCPS
 
     @mcp.tool(description="Where the camera is and how the current or last move is going: moving, target_view, "
                           "phase (rise/turn/descend), progress 0..1, current_view, last_result {ok, view, error, "
-                          "duration}, and blockers (why no move can start right now).")
+                          "duration}, blockers (why no move can start right now) and generation (goes up with "
+                          "every STOP).")
     async def get_status() -> dict[str, Any]:
         return status_from(await state())
 

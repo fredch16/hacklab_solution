@@ -27,9 +27,12 @@ RAM_GOAL_POSITION = 0x2A
 RAM_GOAL_SPEED = 0x2E
 RAM_TORQUE_LIMIT = 0x30
 RAM_PRESENT_POSITION = 0x38
-RAM_PRESENT_LOAD = 0x3C      # 0-1000 = 0-100% of stall torque, bit 10 = direction
+RAM_PRESENT_LOAD = 0x3C      # PWM duty 0-1000, bit 10 = direction
+RAM_PRESENT_VOLTAGE = 0x3E   # units of 0.1 V
+RAM_PRESENT_TEMP = 0x3F      # deg C
 RAM_STATUS = 0x41            # error bits; bit 0 = voltage (often set on a 5 V leader, harmless)
 RAM_PRESENT_CURRENT = 0x45   # raw units of 6.5 mA
+STATE_MIN_LEN = RAM_PRESENT_CURRENT + 2   # a shorter register dump would read as zeros
 
 MAX_ANGLE_STEP = 4095
 SIGN_BIT_MASK = 0x8000
@@ -67,6 +70,9 @@ class Arm:
         self.bus_serial: str | None = None
         self.latest = None
         self.latest_stamp = 0.0
+        # (bus serial, motor id) -> (Station's stamp of the motor's last read, when we saw it change).
+        # Frames keep arriving while one arm or one servo is dead, so freshness is tracked per motor.
+        self._motor_seen: dict[tuple[str, int], tuple[int, float]] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._errors = client.follow("st3215/inference", self._queue)
         self._task: asyncio.Task | None = None
@@ -89,7 +95,16 @@ class Arm:
                 raise RuntimeError("inference stream closed")
             try:
                 self.latest = st3215.InferenceStateReader(entry.Data)
-                self.latest_stamp = time.monotonic()
+                self.latest_stamp = now = time.monotonic()
+                for bus in self.latest.get_buses() or []:
+                    info = bus.get_bus()
+                    if not info:
+                        continue
+                    serial = info.get_serial_number()
+                    for m in bus.get_motors() or []:
+                        key, stamp = (serial, m.get_id()), m.get_monotonic_stamp_ns()
+                        if self._motor_seen.get(key, (None, 0.0))[0] != stamp:
+                            self._motor_seen[key] = (stamp, now)
             except Exception:
                 logger.exception("failed to decode inference frame")
 
@@ -172,37 +187,48 @@ class Arm:
                 return cur
             prev = cur
 
-    def joints(self, max_age_s: float = 0.5) -> dict[int, int]:
-        """Present position per motor id, from the latest frame."""
-        age = time.monotonic() - self.latest_stamp
-        if age > max_age_s:
-            raise RuntimeError(f"joint data is stale ({age:.1f}s old)")
+    def _fresh_bus(self, max_age_s: float):
+        """This arm's bus from the latest frame, after checking every motor was read recently."""
+        now = time.monotonic()
+        if now - self.latest_stamp > max_age_s:
+            raise RuntimeError(f"joint data is stale ({now - self.latest_stamp:.1f}s old)")
         bus = self._bus()
         if bus is None:
             raise RuntimeError(f"bus {self.bus_serial} missing from latest frame")
+        for m in bus.get_motors() or []:
+            age = now - self._motor_seen.get((self.bus_serial, m.get_id()), (0, 0.0))[1]
+            if age > max_age_s:
+                raise RuntimeError(f"joint data is stale (motor {m.get_id()} last read {age:.1f}s ago)")
+        return bus
+
+    def joints(self, max_age_s: float = 0.5) -> dict[int, int]:
+        """Present position per motor id, from the latest frame."""
+        bus = self._fresh_bus(max_age_s)
         return {
             m.get_id(): _normal_position(_u16(bytes(m.get_state()), RAM_PRESENT_POSITION))
             for m in (bus.get_motors() or [])
         }
 
     def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
-        """Per motor: present/goal position, load (0-1000), current (raw), status bits, torque flag."""
-        age = time.monotonic() - self.latest_stamp
-        if age > max_age_s:
-            raise RuntimeError(f"joint data is stale ({age:.1f}s old)")
-        bus = self._bus()
-        if bus is None:
-            raise RuntimeError(f"bus {self.bus_serial} missing from latest frame")
+        """Per motor: present/goal position, load (0-1000), current (raw), status bits, torque flag,
+        temperature, supply voltage and the last read error (empty string when the read was fine)."""
+        bus = self._fresh_bus(max_age_s)
         out = {}
         for m in bus.get_motors() or []:
             st = bytes(m.get_state())
+            if len(st) < STATE_MIN_LEN:
+                raise RuntimeError(f"motor {m.get_id()}: incomplete register data ({len(st)} bytes)")
+            err = m.get_error()
             out[m.get_id()] = {
                 "pos": _normal_position(_u16(st, RAM_PRESENT_POSITION)),
                 "goal": _normal_position(_u16(st, RAM_GOAL_POSITION)),
                 "load": _u16(st, RAM_PRESENT_LOAD) & 0x3FF,
                 "current": _u16(st, RAM_PRESENT_CURRENT) & 0x7FFF,
-                "status": st[RAM_STATUS] if len(st) > RAM_STATUS else 0,
-                "torque": len(st) > RAM_TORQUE_ENABLE and st[RAM_TORQUE_ENABLE] != 0,
+                "status": st[RAM_STATUS],
+                "torque": st[RAM_TORQUE_ENABLE] != 0,
+                "temp": st[RAM_PRESENT_TEMP],
+                "voltage": st[RAM_PRESENT_VOLTAGE] / 10,
+                "read_error": (err.get_description() or "read error") if err else "",
             }
         return out
 

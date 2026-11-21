@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import motion
-from motion import (LIFT, MOVABLE, SHAPE, TRANSIT, TURN, clamp_pose, envelope, go_to_view,
+from motion import (MOVABLE, PITCH, TRANSIT, TURN, clamp_pose, envelope, go_to_view,
                     locate, plan_route)
 from sim_arm import SIM_RANGES, SimArm
 
@@ -64,36 +64,37 @@ async def main():
     check(locate(VIEWS[TRANSIT], VIEWS)["where"] == "hub", "transit pose is the hub")
     turned = {**VIEWS[TRANSIT], 1: VIEWS["left"][1], 5: VIEWS["left"][5]}
     check(locate(turned, VIEWS)["where"] == "hub", "hub with any yaw/roll is still the hub")
-    half_lift = {**VIEWS["top"], 2: (VIEWS["top"][2] + VIEWS[TRANSIT][2]) // 2}
-    check(locate(half_lift, VIEWS) == {"where": "spoke", "view": "top", "on": "lift"}, "half-lifted from top")
-    half_fold = {**VIEWS["top"], 2: VIEWS[TRANSIT][2],
-                 **{m: (VIEWS["top"][m] + VIEWS[TRANSIT][m]) // 2 for m in SHAPE}}
-    check(locate(half_fold, VIEWS) == {"where": "spoke", "view": "top", "on": "fold"}, "half-folded from top")
+    half_up = {**VIEWS["top"], **{m: (VIEWS["top"][m] + VIEWS[TRANSIT][m]) // 2 for m in PITCH}}
+    check(locate(half_up, VIEWS) == {"where": "spoke", "view": "top"}, "half-way up top's spoke")
+    home_up = {**VIEWS["home"], **{m: round(VIEWS["home"][m] + 0.3 * (VIEWS[TRANSIT][m] - VIEWS["home"][m])) for m in PITCH}}
+    check(locate(home_up, VIEWS) == {"where": "spoke", "view": "home"}, "30% up home's spoke")
+    shoulder_only = {**VIEWS["home"], 2: VIEWS[TRANSIT][2]}
+    check(locate(shoulder_only, VIEWS)["where"] == "unknown", "shoulder lifted on its own is NOT on the network")
     odd = {**VIEWS["top"], 3: VIEWS["top"][3] + 400, 1: VIEWS["top"][1] + 300}
     check(locate(odd, VIEWS)["where"] == "unknown", "an arbitrary pose is unknown")
 
     # --- planning ---------------------------------------------------------------
     route = plan_route(VIEWS["top"], "left", VIEWS)
-    check([s for s, _ in route] == ["lift", "fold", "turn", "shape", "lower"], "view -> view order")
-    check(groups_of(route) == [LIFT, SHAPE, TURN, SHAPE, LIFT], "one joint group per segment")
-    check(route[2][1] == {m: VIEWS["left"][m] for m in TURN}, "turn goes to the target's yaw/rolls")
-    check(route[0][1][2] == VIEWS[TRANSIT][2], "lift goes to the transit shoulder angle")
+    check([s for s, _ in route] == ["rise", "turn", "descend"], "view -> view order")
+    check(groups_of(route) == [PITCH, TURN, PITCH], "pitch joints always move together, turn on its own")
+    check(route[1][1] == {m: VIEWS["left"][m] for m in TURN}, "turn goes to the target's yaw/rolls")
+    check(route[0][1] == {m: VIEWS[TRANSIT][m] for m in PITCH}, "rise goes to the transit pitch configuration")
+    check(route[2][1] == {m: VIEWS["left"][m] for m in PITCH}, "descend goes to the target's pitch joints")
     check(all(8 not in goal for _, goal in route), "gripper is never in a route")
     check(plan_route(VIEWS["top"], "top", VIEWS) == [], "already there")
-    check([s for s, _ in plan_route(turned, "wide", VIEWS)] == ["turn", "shape", "lower"], "from the hub")
-    check([s for s, _ in plan_route(half_lift, "top", VIEWS)] == ["shape", "lower"], "back down the same spoke")
-    check([s for s, _ in plan_route(half_fold, "right", VIEWS)] == ["lift", "fold", "turn", "shape", "lower"],
+    check([s for s, _ in plan_route(turned, "wide", VIEWS)] == ["turn", "descend"], "from the hub")
+    check([s for s, _ in plan_route(half_up, "top", VIEWS)] == ["descend"], "back down the same spoke")
+    check([s for s, _ in plan_route(half_up, "right", VIEWS)] == ["rise", "turn", "descend"],
           "from a spoke to another view: finish going up first")
-    check([s for s, _ in plan_route(VIEWS["close"], TRANSIT, VIEWS)] == ["lift", "fold", "turn"], "to transit")
-    fold_first = plan_route(VIEWS["home"], "top", VIEWS, exit_order=lambda n: "fold_first" if n == "home" else "lift_first")
-    check([s for s, _ in fold_first] == ["fold", "lift", "turn", "shape", "lower"], "per-view exit order")
+    check([s for s, _ in plan_route(VIEWS["close"], TRANSIT, VIEWS)] == ["rise", "turn"], "to transit")
     # home -> top share yaw and roll but must still go through the hub (no shortcut)
-    check(len(plan_route(VIEWS["home"], "top", VIEWS)) >= 4, "no direct shortcut between pitch-only views")
+    check([s for s, _ in plan_route(VIEWS["home"], "top", VIEWS)] == ["rise", "turn", "descend"],
+          "no direct shortcut between views")
     try:
         plan_route(odd, "top", VIEWS); check(False, "unknown start must be refused")
     except motion.MotionError:
         check(True, "")
-    check([s for s, _ in plan_route(odd, TRANSIT, VIEWS, allow_unknown_start=True)] == ["lift", "fold", "turn"],
+    check([s for s, _ in plan_route(odd, TRANSIT, VIEWS, allow_unknown_start=True)] == ["rise", "turn"],
           "explicit recovery goes up first")
 
     # --- a tour on the simulated arm ---------------------------------------------
@@ -133,7 +134,7 @@ async def main():
     r = await go_to_view(lost, "top", max_speed=FAST)
     check(not r["ok"] and "known pose" in r["error"] and lost.writes == before, "unknown pose refused")
     r = await go_to_view(lost, TRANSIT, max_speed=FAST, allow_unknown_start=True)
-    check(r["ok"] and r["route"] == ["lift", "fold", "turn"], f"explicit recovery to transit: {r['error']}")
+    check(r["ok"] and r["route"] == ["rise", "turn"], f"explicit recovery to transit: {r['error']}")
 
     # --- aborts: the arm must end up holding still -----------------------------------
     async def still(a):
@@ -152,6 +153,15 @@ async def main():
     check(not r["ok"] and "stale" in r["error"], f"stale data: {r['error']}")
     lead = max(abs(blind._goal[m] - blind.joints()[m]) for m in MOVABLE)
     check(lead <= motion.LEAD_LIMIT, f"last goal stays near the arm when data goes stale (lead {lead})")
+
+    hot = SimArm(); hot.load = {2: 950}
+    r = await go_to_view(hot, "top", max_speed=400)
+    check(not r["ok"] and "motor 2" in r["error"] and "full effort" in r["error"], f"stalled-load guard: {r['error']}")
+    check(await still(hot), "holding after a load abort")
+
+    other = SimArm(); other.hijack = {1: 1500}          # e.g. Station mirroring writes the base yaw
+    r = await go_to_view(other, "top", max_speed=400)
+    check(not r["ok"] and "something else is commanding motor 1" in r["error"], f"foreign writer: {r['error']}")
 
     deaf = SimArm()
     task = asyncio.create_task(go_to_view(deaf, "top", max_speed=400))
@@ -178,13 +188,25 @@ async def main():
     r = await go_to_view(arm, "right", max_speed=FAST)
     check(r["ok"] and at(arm, "right"), f"new target after Stop: {r['error']}")
 
+    # --- views are tied to the calibration they were captured with -----------------------
+    real_read = motion._read_views_file
+    shifted = {str(m): [lo + 40, hi + 40] for m, (lo, hi) in SIM_RANGES.items()}
+    motion._read_views_file = lambda path=None: {n: ({**v, "ranges": shifted} if n == "top" else v)
+                                                 for n, v in real_read(path).items()}
+    recal = SimArm(); before = recal.writes
+    r = await go_to_view(recal, "top", max_speed=FAST)
+    check(not r["ok"] and "recalibrated" in r["error"] and recal.writes == before, f"recalibration refused: {r['error']}")
+    r = await go_to_view(recal, "wide", max_speed=FAST)
+    check(r["ok"], "views without a calibration mismatch still run")
+    motion._read_views_file = real_read
+
     # --- unchecked views are forced to slow speed ----------------------------------------
     motion.view_checked = lambda name: name != "wide"
     arm = SimArm(start={**VIEWS[TRANSIT], 8: 1279})
     t0 = time.monotonic()
     r = await go_to_view(arm, "wide", max_speed=FAST)
     slow_took = time.monotonic() - t0
-    dist = max(abs(VIEWS["wide"][m] - VIEWS[TRANSIT][m]) for m in SHAPE)
+    dist = max(abs(VIEWS["wide"][m] - VIEWS[TRANSIT][m]) for m in PITCH)
     check(r["ok"] and slow_took > 1.5 * dist / motion.SPEED_SLOW * 0.8,
           f"unchecked view ran at slow speed ({slow_took:.1f}s)")
 

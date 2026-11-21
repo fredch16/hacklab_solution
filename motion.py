@@ -1,39 +1,43 @@
-"""M2: move the follower arm to a saved view through a taught transit pose, in ordered phases.
+"""M2: move the follower arm to a saved view through a taught transit pose, in three ordered steps.
 
     await go_to_view(arm, "top")  ->  {"ok": bool, "view": str, "error": str | None, ...}
 
 Design and rationale: docs/MOTION_PLAN.md. In short:
 
-  * Every move runs on a fixed network: each view has a "spoke" to the hub (the transit pose's
-    pitch configuration). Leaving a view: lift (shoulder) -> fold (elbow/pitch/wrist pitch).
-    At the hub: turn (base yaw + both rolls). Entering a view: shape -> lower.
+  * Every move runs on a fixed network. Each view has a "spoke" to the hub (the transit pose's
+    pitch configuration):  rise (all four pitch joints together, view -> hub)
+                           turn (base yaw + both rolls, at the hub)
+                           descend (all four pitch joints together, hub -> view)
+    Moving the pitch joints together keeps the arm between two poses a person taught; moving
+    the shoulder on its own does not (from `home` it drives the gripper into the table).
   * A move only starts when the arm is somewhere on that network (at a view, on a spoke, at the
     hub). Anywhere else it refuses, unless the caller explicitly asks to recover to transit.
   * The arm must already be holding (torque on). We never switch torque on or off here.
-  * The gripper (highest motor id, the camera mount) is never written.
+  * The gripper (motor 8, the camera mount) is never written.
   * While moving: goals are streamed in small steps and only advance while the arm keeps up,
     so the commanded position is never far from the measured one. Any fault (not following,
-    stale data, servo error, overcurrent, a held joint pushed away, a failed write, Stop)
-    ends the move and holds the arm where it is.
+    stale data, servo error, overload, a held joint pushed away, another writer, a failed
+    write, Stop) ends the move and holds the arm where it is.
 """
 
 import asyncio
 import json
 import time
+from collections import deque
 from pathlib import Path
 
-from station_arm import gripper_id, logger
+from station_arm import logger
 
 VIEWS_PATH = Path(__file__).parent / "views.json"
 LOG_PATH = Path(__file__).parent / "motion_log.jsonl"
 TRANSIT = "transit"
 
-# Joint groups (ElRobot motor ids). Motor 8 is the gripper and is never moved.
-LIFT = (2,)          # shoulder pitch: the big lever
-SHAPE = (3, 4, 6)    # elbow pitch, pitch, wrist pitch
-TURN = (1, 5, 7)     # base yaw, forearm roll, wrist roll
-PITCH = LIFT + SHAPE
+# Joint groups (ElRobot motor ids).
+PITCH = (2, 3, 4, 6)   # shoulder, elbow, pitch, wrist pitch: always move together
+TURN = (1, 5, 7)       # base yaw, forearm roll, wrist roll: only move at the hub
 MOVABLE = tuple(sorted(PITCH + TURN))
+GRIPPER = 8            # camera mount: never written
+EXPECTED_MOTORS = MOVABLE + (GRIPPER,)
 
 SPEED_SLOW = 200       # peak steps/s of the joint that travels furthest (~18 deg/s)
 SPEED_NORMAL = 400     # (~35 deg/s)
@@ -41,6 +45,7 @@ MIN_SEGMENT_S = 0.8
 RATE_HZ = 30
 MARGIN = 30            # steps kept clear of each calibrated end stop
 MIN_RANGE = 400        # a calibrated arc narrower than this is treated as not calibrated
+RANGE_DRIFT = 15       # live calibration may differ this much from the one a view was captured with
 SERVO_ACCEL = 15       # register 0x29, units of 100 steps/s^2
 
 AT_TOL = 60            # steps: "the arm is at this pose / on this spoke"
@@ -48,14 +53,16 @@ SKIP_TOL = 15          # a segment whose joints are all this close to its goal i
 ARRIVE_TOL = 40        # after a segment every moved joint must be this close to its goal
 SETTLE_S = 2.0         # ...within this long, and standing still
 SETTLE_POLL_S = 0.15
-LEAD_LIMIT = 120       # commanded position may lead the measured one by at most this
-STALL_S = 0.6          # not catching up for this long = blocked
+LEAD_LIMIT = 120       # leash: the commanded position never leads the measured one by more
+STALL_S = 0.4          # not catching up for this long = blocked
 DRIFT_LIMIT = 150      # a joint that should be holding still has moved this far = pushed/sagging
 STALE_S = 0.3          # joint data older than this is not trusted
+FAULT_S = 0.25         # how long load / current / read errors / a foreign goal must persist
 WRITE_TIMEOUT_S = 0.5
-CURRENT_LIMIT = 250    # raw units of 6.5 mA (~1.6 A); provisional until measured on the arm
-CURRENT_S = 0.3
-STATUS_IGNORE = 0x01   # voltage bit; set on under-volted leaders, not a motion fault
+CURRENT_LIMIT = 250    # raw units of 6.5 mA (~1.6 A; stall is ~415 at 12 V). Provisional
+LOAD_LIMIT = 800       # PWM duty 0-1000: this high for FAULT_S means the joint is stalled
+GOAL_MATCH = 8         # steps: a goal register this close to something we wrote is ours
+STATUS_IGNORE = 0x01   # voltage bit; not a motion fault
 
 _move_lock = asyncio.Lock()
 
@@ -89,11 +96,6 @@ def view_names() -> list[str]:
 
 def view_descriptions() -> dict[str, str]:
     return {n: v.get("description", "") for n, v in _read_views_file().items() if n != TRANSIT}
-
-
-def view_exit_order(name: str) -> str:
-    """"lift_first" (default) or "fold_first": how the arm leaves this view towards the hub."""
-    return _read_views_file().get(name, {}).get("exit", "lift_first")
 
 
 def view_checked(name: str) -> bool:
@@ -144,28 +146,37 @@ def check_views(ranges: dict[int, tuple[int, int]], views: dict | None = None) -
     return report
 
 
+def check_calibration(name: str, ranges: dict[int, tuple[int, int]]):
+    """Views are raw encoder steps, so they are only valid for the calibration they were captured
+    with: Station re-centres every joint when a calibration is saved."""
+    saved = _read_views_file().get(name, {}).get("ranges")
+    if not saved:
+        return
+    for m in MOVABLE:
+        lo, hi = saved[str(m)]
+        now_lo, now_hi = ranges.get(m, (0, 0))
+        if abs(lo - now_lo) > RANGE_DRIFT or abs(hi - now_hi) > RANGE_DRIFT:
+            raise MotionError(
+                f"the arm was recalibrated since '{name}' was captured (motor {m}: {lo}..{hi} then, "
+                f"{now_lo}..{now_hi} now), so its saved pose no longer points where it did; re-capture it")
+
+
 # ---------------------------------------------------------------- where is the arm?
 
 def _near(present, pose, ids, tol=AT_TOL) -> bool:
     return all(abs(present[m] - pose[m]) <= tol for m in ids)
 
 
-def _between(x, a, b, tol=AT_TOL) -> bool:
-    return min(a, b) - tol <= x <= max(a, b) + tol
-
-
-def locate(present: dict[int, int], views: dict[str, dict[int, int]], exit_order=None) -> dict:
+def locate(present: dict[int, int], views: dict[str, dict[int, int]]) -> dict:
     """Classify the measured pose on the route network.
 
-    {"where": "view", "view": name}             at a saved view
-    {"where": "hub"}                            pitch joints at the transit configuration
-    {"where": "spoke", "view": name, "on": s}   between a view and the hub; s is "lift" (shape
-                                                still the view's, shoulder in between) or "fold"
-                                                (shoulder at transit, shape in between)
-    {"where": "unknown"}                        anything else
+    {"where": "view", "view": name}    at a saved view
+    {"where": "hub"}                   pitch joints at the transit configuration (any yaw/roll)
+    {"where": "spoke", "view": name}   between a view and the hub: yaw/rolls are the view's and
+                                       the pitch joints are all the same fraction of the way
+    {"where": "unknown"}               anything else
     `views` must already be clamped to the envelope and include the transit pose.
     """
-    exit_order = exit_order or view_exit_order
     hub = views[TRANSIT]
     for name, pose in views.items():
         if name != TRANSIT and _near(present, pose, MOVABLE):
@@ -177,23 +188,16 @@ def locate(present: dict[int, int], views: dict[str, dict[int, int]], exit_order
     for name, pose in views.items():
         if name == TRANSIT or not _near(present, pose, TURN):
             continue
-        # The two halves of this view's spoke, in the order it leaves towards the hub.
-        halves = ((("lift", SHAPE, pose, LIFT), ("fold", LIFT, hub, SHAPE))
-                  if exit_order(name) == "lift_first" else
-                  (("fold", LIFT, pose, SHAPE), ("lift", SHAPE, hub, LIFT)))
-        for on, still, still_pose, moving in halves:
-            if not _near(present, still_pose, still):
-                continue
-            if not all(_between(present[m], pose[m], hub[m]) for m in moving):
-                continue
-            # Joints moving together must be at about the same fraction of their travel.
-            fracs = [(present[m] - pose[m]) / (hub[m] - pose[m]) for m in moving
-                     if abs(hub[m] - pose[m]) > 2 * AT_TOL]
-            if fracs and max(fracs) - min(fracs) > 0.25:
-                continue
-            miss = sum(abs(present[m] - still_pose[m]) for m in still)
-            if best is None or miss < best[0]:
-                best = (miss, {"where": "spoke", "view": name, "on": on})
+        # Fraction of the way from the view (0) to the hub (1), from the joint that travels furthest.
+        lead = max(PITCH, key=lambda m: abs(hub[m] - pose[m]))
+        if abs(hub[lead] - pose[lead]) <= AT_TOL:
+            continue
+        f = (present[lead] - pose[lead]) / (hub[lead] - pose[lead])
+        if not -0.05 <= f <= 1.05:
+            continue
+        miss = max(abs(present[m] - (pose[m] + (hub[m] - pose[m]) * f)) for m in PITCH)
+        if miss <= AT_TOL and (best is None or miss < best[0]):
+            best = (miss, {"where": "spoke", "view": name})
     return best[1] if best else {"where": "unknown"}
 
 
@@ -204,57 +208,40 @@ def _pick(pose, ids):
 
 
 def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, int]],
-               exit_order=view_exit_order, allow_unknown_start: bool = False) -> list[tuple[str, dict[int, int]]]:
+               allow_unknown_start: bool = False) -> list[tuple[str, dict[int, int]]]:
     """Ordered segments [(name, {motor: goal})] from the measured pose to `target`.
 
     Each segment moves one joint group; everything else holds still. `views` must be clamped
     and include the transit pose. Raises MotionError when the arm is not on the network.
     """
     hub = views[TRANSIT]
-    loc = locate(present, views, exit_order)
-
-    def to_hub(name):   # leaving view `name`
-        lift, fold = ("lift", _pick(hub, LIFT)), ("fold", _pick(hub, SHAPE))
-        return [lift, fold] if exit_order(name) == "lift_first" else [fold, lift]
-
-    def from_hub(name):  # entering view `name`: the exact reverse of leaving it
-        pose = views[name]
-        shape, lower = ("shape", _pick(pose, SHAPE)), ("lower", _pick(pose, LIFT))
-        return [shape, lower] if exit_order(name) == "lift_first" else [lower, shape]
+    loc = locate(present, views)
+    rise = [("rise", _pick(hub, PITCH))]
 
     if loc["where"] == "view" and loc["view"] == target:
         return []
-    if loc["where"] == "view":
-        out = to_hub(loc["view"])
-    elif loc["where"] == "spoke":
-        if loc["view"] == target:     # already on the target's own spoke: go straight down it
-            return from_hub(target)
-        out = to_hub(loc["view"])
+    if loc["where"] == "spoke" and loc["view"] == target:
+        return [("descend", _pick(views[target], PITCH))]      # straight back down its own spoke
+    if loc["where"] in ("view", "spoke"):
+        out = rise
     elif loc["where"] == "hub":
         out = []
     elif allow_unknown_start:
-        out = [("lift", _pick(hub, LIFT)), ("fold", _pick(hub, SHAPE))]
+        out = rise
     else:
         raise MotionError(
             "the arm is not at a known pose, so there is no checked path from here. "
-            "Move it by hand to the transit pose (Go limp, pose it, Hold here), "
-            "or use 'Recover to transit' with someone watching the arm")
+            "Move it by hand to the transit pose (Go limp, pose it, Hold here)")
 
     if target == TRANSIT:
         return out + [("turn", _pick(hub, TURN))]
-    return out + [("turn", _pick(views[target], TURN))] + from_hub(target)
+    return out + [("turn", _pick(views[target], TURN)), ("descend", _pick(views[target], PITCH))]
 
 
 # ---------------------------------------------------------------- execution
 
 def _ease(s: float) -> float:
     return s * s * (3 - 2 * s)
-
-
-def _movable(arm) -> list[int]:
-    present = arm.joints(max_age_s=STALE_S)
-    grip = gripper_id(present)
-    return [m for m in sorted(present) if m != grip]
 
 
 async def _write(arm, goals, **kw):
@@ -267,24 +254,30 @@ async def _write(arm, goals, **kw):
 async def hold(arm):
     """Freeze the arm where it is right now. Limp joints and the gripper are left alone."""
     tel = arm.telemetry(max_age_s=STALE_S)
-    grip = gripper_id(tel)
-    goals = {m: t["pos"] for m, t in tel.items() if m != grip and t["torque"]}
+    goals = {m: tel[m]["pos"] for m in MOVABLE if m in tel and tel[m]["torque"]}
     if goals:
         await _write(arm, goals)
 
 
 async def _safe_hold(arm):
+    """Hold after an abort. With stale data or a dead link we cannot, and must not guess: the
+    last goal we wrote is at most LEAD_LIMIT from where the arm was, so not writing is safe."""
     try:
-        await hold(arm)
-    except Exception as e:   # stale data or a dead link: the last goal was at most LEAD_LIMIT ahead
+        await asyncio.shield(hold(arm))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
         logger.error("could not confirm hold: %s", e)
 
 
 async def engage(arm):
-    """Make a limp arm hold its present pose: goal := present, then torque on (gripper stays limp)."""
-    ids = _movable(arm)
-    present = arm.joints(max_age_s=STALE_S)
-    await _write(arm, {m: present[m] for m in ids})
+    """Make a limp arm hold its present pose (gripper stays limp).
+
+    Goal := present with a low speed ceiling, then torque on. Never torque on first: the goal
+    registers hold stale values from whatever drove the arm last, and it would jump to them."""
+    tel = arm.telemetry(max_age_s=STALE_S)
+    ids = [m for m in MOVABLE if m in tel]
+    await _write(arm, {m: tel[m]["pos"] for m in ids}, speed=SPEED_SLOW, accel=SERVO_ACCEL)
     await asyncio.wait_for(arm.set_torque(True, ids), WRITE_TIMEOUT_S)
 
 
@@ -295,19 +288,35 @@ async def release(arm):
     await asyncio.wait_for(arm.set_torque(False), WRITE_TIMEOUT_S)
 
 
-def _check_faults(tel, moving_ids, over_since, now, stats):
-    for m, t in tel.items():
+class _Watch:
+    """Faults that must persist for FAULT_S before they end a move (one noisy sample is not a fault)."""
+
+    def __init__(self):
+        self.since: dict[tuple, float] = {}
+
+    def check(self, key, bad: bool, now: float, message: str):
+        if not bad:
+            self.since.pop(key, None)
+        elif now - self.since.setdefault(key, now) > FAULT_S:
+            raise MotionError(message)
+
+
+def _check_faults(tel, moving_ids, watch: _Watch, now: float, stats: dict):
+    for m in MOVABLE:
+        t = tel[m]
         if t["status"] & ~STATUS_IGNORE:
             raise MotionError(f"motor {m} reports a fault (status 0x{t['status']:02x})")
+        watch.check(("read", m), bool(t.get("read_error")), now,
+                    f"motor {m} is not answering: {t.get('read_error')}")
+        stats["max_temp"] = max(stats.get("max_temp", 0), t.get("temp", 0))
     for m in moving_ids:
-        cur = tel[m]["current"]
+        cur, load = tel[m]["current"], tel[m]["load"]
         stats["max_current"][m] = max(stats["max_current"].get(m, 0), cur)
-        if cur > CURRENT_LIMIT:
-            over_since.setdefault(m, now)
-            if now - over_since[m] > CURRENT_S:
-                raise MotionError(f"motor {m} is drawing too much current ({cur}); it may be blocked")
-        else:
-            over_since.pop(m, None)
+        stats["max_load"][m] = max(stats["max_load"].get(m, 0), load)
+        watch.check(("current", m), cur > CURRENT_LIMIT, now,
+                    f"motor {m} is drawing too much current ({cur}); it may be blocked")
+        watch.check(("load", m), load > LOAD_LIMIT, now,
+                    f"motor {m} is pushing at full effort (load {load}); it may be blocked")
 
 
 async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float, stats: dict) -> float:
@@ -318,19 +327,32 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float, 
     dist = max(abs(goal[m] - start[m]) for m in ids)
     if dist <= SKIP_TOL:
         return 0.0
-    held = {m: tel[m]["pos"] for m in MOVABLE if m in tel and m not in goal}
+    held_pos = {m: tel[m]["pos"] for m in MOVABLE if m not in goal}
+    held_goal = {m: tel[m]["goal"] for m in MOVABLE if m not in goal}
     duration = max(MIN_SEGMENT_S, 1.5 * dist / peak_speed)   # smoothstep peaks at 1.5x the average
     servo_speed = int(peak_speed * 1.5) + 50                 # the servo's own ceiling, just above ours
 
-    s, last, stalled_since, over_since, first = 0.0, time.monotonic(), None, {}, True
+    s, last, stalled_since, first = 0.0, time.monotonic(), None, True
+    watch = _Watch()
     cmd = dict(start)
+    sent = deque([dict(start)], maxlen=12)                   # what we wrote over the last ~0.4 s
     while True:
         now = time.monotonic()
-        tel = arm.telemetry(max_age_s=STALE_S)               # raises if the data is stale
-        _check_faults(tel, ids, over_since, now, stats)
-        for m, ref in held.items():
+        tel = arm.telemetry(max_age_s=STALE_S)               # raises if any motor's data is stale
+        _check_faults(tel, ids, watch, now, stats)
+        # Is something else (Station mirroring, another program) writing goals to this arm?
+        # A held joint's goal must not change at all; a moving joint's goal must be one we sent
+        # recently (the register read-back lags our writes by a few ticks).
+        other = "something else is commanding motor {}; is the follower still linked to a leader in Station?"
+        for m, g in held_goal.items():
+            if abs(tel[m]["goal"] - g) > GOAL_MATCH:
+                raise MotionError(other.format(m))
+        foreign = [m for m in ids if not first and all(abs(tel[m]["goal"] - c[m]) > GOAL_MATCH for c in sent)]
+        watch.check("foreign", bool(foreign), now, other.format(foreign[0] if foreign else ""))
+        for m, ref in held_pos.items():
             if abs(tel[m]["pos"] - ref) > DRIFT_LIMIT:
                 raise MotionError(f"motor {m} was pushed off its position while holding still")
+
         lag_m = max(ids, key=lambda m: abs(cmd[m] - tel[m]["pos"]))
         lag = abs(cmd[lag_m] - tel[lag_m]["pos"])
         stats["max_lag"][lag_m] = max(stats["max_lag"].get(lag_m, 0), lag)
@@ -350,16 +372,17 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float, 
             first = False
         else:
             await _write(arm, cmd)
+        sent.append(cmd)
         if s >= 1.0:
             break
         await asyncio.sleep(1 / RATE_HZ)
 
-    # Arrived? Every moved joint close to its goal and standing still.
+    # Arrived? Every moved joint close to its goal and standing still. Guards stay on meanwhile.
     deadline, prev = time.monotonic() + SETTLE_S, None
     while True:
         await asyncio.sleep(SETTLE_POLL_S)
         tel = arm.telemetry(max_age_s=STALE_S)
-        _check_faults(tel, ids, over_since, time.monotonic(), stats)
+        _check_faults(tel, ids, watch, time.monotonic(), stats)
         pos = {m: tel[m]["pos"] for m in ids}
         close = all(abs(pos[m] - goal[m]) <= ARRIVE_TOL for m in ids)
         still = prev is not None and all(abs(pos[m] - prev[m]) <= 6 for m in ids)
@@ -379,24 +402,26 @@ async def _preflight(arm, target: str | None):
         raise MotionError("no 'transit' pose saved yet; capture one on the capture page")
     tel = arm.telemetry(max_age_s=STALE_S)
     present = {m: t["pos"] for m, t in tel.items()}
-    grip = gripper_id(present)
-    if sorted(m for m in present if m != grip) != list(MOVABLE):
+    if tuple(sorted(present)) != EXPECTED_MOTORS:
         raise MotionError(f"expected motors 1-8 on the bus, found {sorted(present)}")
+    ranges = arm.ranges()
     for name in {TRANSIT, target} - {None}:
         bus = raw[name].get("bus")
         if bus and bus != arm.bus_serial and not getattr(arm, "is_sim", False):
             raise MotionError(f"view '{name}' was captured on arm {bus}, but this is arm {arm.bus_serial}")
-    for m, t in tel.items():
-        if t["status"] & ~STATUS_IGNORE:
-            raise MotionError(f"motor {m} reports a fault (status 0x{t['status']:02x})")
-    limp = [m for m in MOVABLE if not tel[m]["torque"]]
-    if limp:
+        check_calibration(name, ranges)
+    for m in MOVABLE:
+        if tel[m]["status"] & ~STATUS_IGNORE:
+            raise MotionError(f"motor {m} reports a fault (status 0x{tel[m]['status']:02x})")
+        if tel[m].get("read_error"):
+            raise MotionError(f"motor {m} is not answering: {tel[m]['read_error']}")
+    if [m for m in MOVABLE if not tel[m]["torque"]]:
         raise MotionError("the arm is limp; press 'Hold here' first (with the arm supported)")
     source = await arm.mirroring_source()
     if source:
         raise MotionError(f"Station is mirroring leader {source} onto this arm; "
                           "set the follower to '(Self-controlled)' in Station first")
-    env = envelope(arm.ranges())
+    env = envelope(ranges)
     for m, (lo, hi) in env.items():
         if not lo - 2 * AT_TOL <= present[m] <= hi + 2 * AT_TOL:
             raise MotionError(f"motor {m} reads {present[m]}, far outside its calibrated range; recalibrate")
@@ -416,7 +441,7 @@ async def describe(arm, name: str | None = None, allow_unknown_start: bool = Fal
     """Where the arm is and what a move to `name` would do, without moving anything."""
     try:
         present, views = await _preflight(arm, name)
-    except MotionError as e:
+    except (MotionError, RuntimeError) as e:
         return {"ok": False, "error": str(e)}
     out = {"ok": True, "error": None, "where": locate(present, views)}
     if name:
@@ -441,7 +466,7 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
         return {"ok": False, "view": name, "error": "already moving"}
     async with _move_lock:
         t0 = time.time()
-        stats = {"max_lag": {}, "max_current": {}}
+        stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
         result = {"ok": False, "view": name, "error": None, "duration": 0.0, "route": []}
         status.update(moving=True, view=name, phase="check", phase_index=0, phase_count=0,
                       progress=0.0, error=None, route=[])
@@ -460,19 +485,19 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
                 result["duration"] += await _run_segment(arm, seg, goal, max_speed, stats)
             result["ok"] = True
         except asyncio.CancelledError:
+            result["error"] = "stopped"
             if started:
                 await _safe_hold(arm)
-            result["error"] = "stopped"
             raise
         except (MotionError, RuntimeError) as e:    # RuntimeError: stale data, lost bus
-            if started:
-                await _safe_hold(arm)
             result["error"] = str(e)
-        except Exception as e:
             if started:
                 await _safe_hold(arm)
+        except Exception as e:
             result["error"] = f"unexpected error: {e!r}"
             logger.exception("move to %s failed", name)
+            if started:
+                await _safe_hold(arm)
         finally:
             result["duration"] = round(result["duration"], 2)
             status.update(moving=False, phase=None, error=result["error"], last_result=dict(result),

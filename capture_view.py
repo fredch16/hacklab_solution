@@ -78,6 +78,8 @@ async def capture(arm: Arm, data: dict, name: str, cam=None, description: str = 
         "joints": {str(mid): pos for mid, pos in sorted(joints.items())},
         "description": description or data["views"].get(name, {}).get("description", ""),
         "bus": arm.bus_serial,
+        # Saved poses are raw encoder steps: only valid for the calibration they were captured with.
+        "ranges": {str(m): list(r) for m, r in sorted(arm.ranges().items())},
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     if cam is not None:

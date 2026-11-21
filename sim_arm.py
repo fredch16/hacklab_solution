@@ -4,7 +4,8 @@ their goals. Lets motion, the web UI, the director and voice run end to end with
     python capture_server.py --sim        uv run python director.py --sim
 
 Faults can be injected for tests: `stuck` (motors that don't move), `stale` (no fresh data),
-`fail_writes`, `mirror` (pretend Station is mirroring a leader onto this arm).
+`fail_writes`, `mirror` (pretend Station is mirroring a leader onto this arm), `load` (pretend
+PWM load per motor) and `hijack` (another writer keeps overwriting these goals).
 """
 
 import asyncio
@@ -44,6 +45,8 @@ class SimArm:
         self.stale = False
         self.fail_writes = False
         self.mirror: str | None = None
+        self.load: dict[int, int] = {}                # pretend PWM load per motor (0-1000)
+        self.hijack: dict[int, int] = {}              # another writer keeps forcing these goals
 
     @classmethod
     async def connect(cls, *args, **kwargs) -> "SimArm":
@@ -71,8 +74,9 @@ class SimArm:
 
     def telemetry(self, max_age_s: float = 0.5) -> dict[int, dict]:
         pos = self.joints(max_age_s)
-        return {m: {"pos": pos[m], "goal": int(round(self._goal[m])), "load": 0, "current": 0,
-                    "status": 0, "torque": self._torque[m]} for m in pos}
+        return {m: {"pos": pos[m], "goal": int(round(self._goal[m])), "load": self.load.get(m, 0),
+                    "current": 0, "status": 0, "torque": self._torque[m], "temp": 30, "voltage": 12.0,
+                    "read_error": ""} for m in pos}
 
     def ranges(self) -> dict[int, tuple[int, int]]:
         return {m: SIM_RANGES.get(m, (0, 4095)) for m in self._pos}
@@ -96,6 +100,8 @@ class SimArm:
             self._torque[m] = True          # like the real servo: a goal write energises the joint
             if speed is not None:
                 self._speed[m] = speed
+        for m, g in self.hijack.items():
+            self._goal[m] = float(g)
 
     async def settled(self, tolerance: int = 8, timeout_s: float = 3.0) -> dict[int, int]:
         await asyncio.sleep(0.1)

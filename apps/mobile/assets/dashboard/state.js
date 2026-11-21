@@ -190,7 +190,7 @@ export function phoneEncoderRows(p) {
         ["Limited by", st?.quality_limitation ? st.quality_limitation : "\u2014"],
     ];
 }
-// ---------- Slice 2: recording + camera settings ----------
+// ---------- Slice 2: recording ----------
 export function formatElapsed(ms) {
     if (ms == null || !Number.isFinite(ms) || ms < 0)
         return "\u2014";
@@ -247,111 +247,4 @@ export function warningMessage(code) {
     if (code === "THERMAL")
         return "The phone is hot. Recording continues; let it cool if you can.";
     return code ? `Warning: ${code}` : null;
-}
-// --- capabilities -> pickers ---
-export function lensLabel(l) {
-    const k = { wide: "Wide", ultrawide: "Ultra-wide", tele: "Telephoto", front: "Front" };
-    const name = (l.kind && k[l.kind]) || `Camera ${l.id}`;
-    return l.focal_mm != null && l.kind !== "front" ? `${name} \u00B7 ${l.focal_mm} mm` : name;
-}
-export const qualityKey = (w, h, fps, codec) => `${w}x${h}@${fps}:${codec}`;
-export function qualityBadge(verified, measured) {
-    if (verified === "passed")
-        return `Tested \u2713${measured?.fps != null ? ` ${measured.fps.toFixed(1)} fps` : ""}`;
-    if (verified === "failed")
-        return "Failed";
-    return "Untested";
-}
-/** Every resolution x fps x codec combination of a lens, biggest first. */
-export function qualityOptions(lens) {
-    if (!lens)
-        return [];
-    const out = [];
-    for (const v of lens.video)
-        for (const codec of v.codecs) {
-            const t = v.tests?.[codec] ?? null;
-            const verified = t?.result === "passed" || t?.result === "failed" ? t.result : "untested";
-            const badge = qualityBadge(verified, t);
-            out.push({ key: qualityKey(v.width, v.height, v.fps, codec), width: v.width, height: v.height, fps: v.fps, codec, hdr: !!v.hdr, verified, measured: t, badge, label: `${v.fps} fps \u00B7 ${codec.toUpperCase()} \u2014 ${badge}` });
-        }
-    const rank = (c) => (c === "hevc" ? 0 : 1);
-    return out.sort((a, b) => b.width * b.height - a.width * a.height || b.fps - a.fps || rank(a.codec) - rank(b.codec));
-}
-/** Group options by resolution (input order preserved) for <optgroup>. */
-export function groupByResolution(opts) {
-    const g = new Map();
-    for (const o of opts) {
-        const k = `${o.width}\u00D7${o.height}`;
-        g.set(k, [...(g.get(k) ?? []), o]);
-    }
-    return [...g].map(([label, options]) => ({ label, options }));
-}
-export const findLens = (caps, id) => caps?.lenses.find((l) => l.id === id);
-export function currentQuality(lens, s) {
-    return qualityOptions(lens).find((o) => o.key === qualityKey(s?.width, s?.height, s?.fps, s?.codec));
-}
-export const hdrSupported = (lens, s) => !!currentQuality(lens, s)?.hdr;
-export function formatZoom(z) { return z == null ? "\u2014" : `${z.toFixed(1)}\u00D7`; }
-export function exposureLabel(steps, step) {
-    if (steps == null)
-        return "\u2014";
-    if (steps === 0 || !step)
-        return "0 EV";
-    const ev = steps * step;
-    return `${ev > 0 ? "+" : "\u2212"}${Math.abs(ev).toFixed(1)} EV`;
-}
-// --- settings diff / validation ---
-export const LOCKED_WHILE_RECORDING = ["lens_id", "width", "height", "fps", "codec", "hdr", "stabilization"];
-export const lockedKeys = (patch) => LOCKED_WHILE_RECORDING.filter((k) => patch[k] !== undefined);
-export function diffSettings(cur, want) {
-    const out = {};
-    for (const [k, v] of Object.entries(want))
-        if (v !== undefined && cur?.[k] !== v)
-            out[k] = v;
-    return out;
-}
-/** Patch for switching lens: keeps the current quality if the lens has it, else its first option; clamps zoom. */
-export function settingsForLens(caps, lensId, cur) {
-    const lens = findLens(caps, lensId);
-    const patch = { lens_id: lensId };
-    if (!lens)
-        return patch;
-    const opts = qualityOptions(lens);
-    if (opts.length && !opts.some((o) => o.key === qualityKey(cur?.width, cur?.height, cur?.fps, cur?.codec))) {
-        const o = opts[0];
-        Object.assign(patch, { width: o.width, height: o.height, fps: o.fps, codec: o.codec });
-    }
-    if (lens.zoom_range && cur?.zoom != null) {
-        const z = Math.min(Math.max(cur.zoom, lens.zoom_range[0]), lens.zoom_range[1]);
-        if (z !== cur.zoom)
-            patch.zoom = z;
-    }
-    return patch;
-}
-/** Returns a user-facing problem with the patch, or null if it looks valid for the capabilities. */
-export function validateSettings(caps, patch, cur) {
-    if (!caps)
-        return "Camera capabilities are not loaded yet.";
-    const m = { ...cur, ...patch };
-    const lens = findLens(caps, m.lens_id);
-    if (!lens)
-        return "Unknown lens.";
-    if (["lens_id", "width", "height", "fps", "codec"].some((k) => patch[k] !== undefined) && !currentQuality(lens, m))
-        return "This lens does not support that quality.";
-    if (patch.hdr === true && !hdrSupported(lens, m))
-        return "HDR is not supported at this quality.";
-    if (patch.stabilization != null && !(lens.stabilization ?? []).includes(patch.stabilization))
-        return "That stabilization mode is not supported.";
-    if (patch.orientation_lock != null && !["auto", "portrait", "landscape"].includes(patch.orientation_lock))
-        return "Unknown orientation setting.";
-    if (patch.zoom != null && lens.zoom_range && (patch.zoom < lens.zoom_range[0] || patch.zoom > lens.zoom_range[1]))
-        return "Zoom is outside the supported range.";
-    if (patch.exposure_comp != null) {
-        const r = lens.exposure_comp;
-        if (!Number.isInteger(patch.exposure_comp) || (r && (patch.exposure_comp < r[0] || patch.exposure_comp > r[1])))
-            return "Exposure is outside the supported range.";
-    }
-    if (patch.torch === true && !lens.torch)
-        return "This lens has no torch.";
-    return null;
 }

@@ -59,13 +59,8 @@ input#code{min-height:52px;font:600 26px ui-monospace,Menlo,Consolas,monospace;l
 .btn.danger{background:var(--ink800);border-color:var(--danger);color:var(--danger)}
 .banner{margin:12px 0 0;padding:8px 12px;border-radius:11px;border:1px solid var(--ink700);background:var(--ink800)}
 .banner.warn{border-color:var(--warn);color:var(--warn)}.banner.bad{border-color:var(--danger);color:var(--danger)}
-.field{display:grid;grid-template-columns:minmax(90px,32%) 1fr;gap:8px 12px;align-items:center;margin-top:12px}
-.field label{color:var(--t2)}.field .ctl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
-select{min-height:44px;max-width:100%;min-width:0;flex:1 1 180px;background:var(--ink950);color:var(--t1);border:1px solid var(--ink700);border-radius:11px;font:inherit;padding:0 10px}
-input[type=range]{flex:1 1 140px;accent-color:var(--teal)}
-input[type=checkbox]{width:22px;height:22px;accent-color:var(--teal)}
 .recs{list-style:none;margin:0;padding:0;display:grid;gap:12px;max-height:340px;overflow:auto}
 .recs li{display:grid;gap:2px;overflow-wrap:anywhere}
 .dlg{background:var(--ink900);color:var(--t1);border:1px solid var(--ink700);border-radius:16px;padding:20px;max-width:min(420px,90vw)}
 .dlg::backdrop{background:rgba(8,13,20,.75)}
-@media(max-width:640px){.field{grid-template-columns:1fr}}
+@media(max-width:640px){

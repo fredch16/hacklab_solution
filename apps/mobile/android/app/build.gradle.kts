@@ -19,7 +19,7 @@ android {
         applicationId = "dev.localvision.local_vision"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 30 // Pixel-first (Camera2 SessionConfiguration, thermal API)
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -45,11 +45,7 @@ kotlin {
 }
 
 dependencies {
-    val cameraX = "1.7.0"
-    implementation("androidx.camera:camera-core:$cameraX")
-    implementation("androidx.camera:camera-camera2:$cameraX")
-    implementation("androidx.camera:camera-lifecycle:$cameraX")
-    implementation("androidx.camera:camera-video:$cameraX")
+    implementation("androidx.lifecycle:lifecycle-common-java8:2.8.7")
     // libwebrtc build (BSD-3-Clause; wrapper Apache-2.0). Pinned.
     implementation("io.github.webrtc-sdk:android:144.7559.15")
     // Pure-Java QR decoder (Apache-2.0); replaces ML Kit, which phoned home.

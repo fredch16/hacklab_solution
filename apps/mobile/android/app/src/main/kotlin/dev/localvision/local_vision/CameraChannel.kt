@@ -1,15 +1,5 @@
 package dev.localvision.local_vision
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.media.MediaCodec
-import android.media.MediaFormat
-import android.media.MediaMuxer
-import android.util.Log
-import java.io.File
-import java.nio.ByteBuffer
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
@@ -17,13 +7,16 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
-/** Thin Flutter bridge for CameraSession + VisionStream. */
+/** Thin Flutter bridge for CameraSession, VisionStream and MasterRecorder. */
 class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
     private val emit: (Map<String, Any?>) -> Unit = { e -> main.post { sink?.success(e) } }
     private lateinit var camera: CameraSession
     private val vision = VisionStream(activity.applicationContext, emit) { camera.stop("stream") }
+    private val audio = AudioCaptureBus()
+    private val store = RecordingStore(activity)
+    private lateinit var recorder: MasterRecorder
     private var ticking = true
     private var offerGen = 0
 
@@ -39,6 +32,8 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
 
     init {
         camera = CameraSession(activity, activity, engine.renderer, vision, emit)
+        recorder = MasterRecorder(activity, camera, audio, store, emit)
+        camera.onBackgrounded = { recorder.stopForLifecycle("background") }
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "dev.localvision/camera").setMethodCallHandler { call, result ->
             when (call.method) {
@@ -52,6 +47,12 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
                 }
                 "webrtcOffer" -> offer(call.argument<String>("sdp"), result)
                 "webrtcStop" -> { vision.stop(call.argument<String>("reason") ?: "browser_stop"); result.success(null) }
+                "recordStart" -> recorder.start { err -> result.success(mapOf("ok" to (err == null), "error" to err)) }
+                "recordStop" -> {
+                    val err = recorder.stop(call.argument<String>("reason") ?: "user")
+                    result.success(mapOf("ok" to (err == null), "error" to err))
+                }
+                "recordState" -> result.success(mapOf("recording" to recorder.snapshot(), "recordings" to store.list()))
                 else -> result.notImplemented()
             }
         }
@@ -85,92 +86,10 @@ class CameraChannel(activity: FlutterActivity, engine: FlutterEngine) {
         }
     }
 
-    // ---- SPIKE (debug): adb shell am broadcast -a dev.localvision.SPIKE --es mime video/hevc --ei w 3840 --ei h 2160 --ei fps 30 --ei seconds 20
-    private val activityRef = activity
-    private val spikeReceiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) {
-            runSpike(
-                i.getStringExtra("mime") ?: "video/hevc",
-                i.getIntExtra("w", 3840), i.getIntExtra("h", 2160),
-                i.getIntExtra("fps", 30), i.getIntExtra("seconds", 20),
-                i.getIntExtra("mbps", 50),
-                i.getStringExtra("skip") ?: "",
-            )
-        }
-    }
-
-    init {
-        androidx.core.content.ContextCompat.registerReceiver(
-            activity, spikeReceiver, IntentFilter("dev.localvision.SPIKE"),
-            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
-        )
-    }
-
-    private fun runSpike(mime: String, w: Int, h: Int, fps: Int, seconds: Int, mbps: Int, skip: String) {
-        camera.debugSkip = skip
-        run {
-            val cm = activityRef.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
-            Log.i("LVC", "SPIKE camera ids=${cm.cameraIdList.toList()}")
-            for (id in cm.cameraIdList) {
-                val ch = cm.getCameraCharacteristics(id)
-                val map = ch.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-                val priv = map.getOutputSizes(android.graphics.SurfaceTexture::class.java).take(6)
-                val yuv = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888).take(4)
-                val level = ch.get(android.hardware.camera2.CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
-                Log.i("LVC", "SPIKE cam $id level=$level priv=$priv yuv=$yuv caps=${ch.get(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList()}")
-                val q = listOf(android.media.CamcorderProfile.QUALITY_HIGH, android.media.CamcorderProfile.QUALITY_2160P, android.media.CamcorderProfile.QUALITY_8KUHD)
-                for (qq in q) if (android.media.CamcorderProfile.hasProfile(id.toInt(), qq)) {
-                    val pr = android.media.CamcorderProfile.get(id.toInt(), qq)!!
-                    Log.i("LVC", "SPIKE cam $id profile q=$qq ${pr.videoFrameWidth}x${pr.videoFrameHeight}@${pr.videoFrameRate}")
-                }
-            }
-        }
-        val file = File(activityRef.cacheDir, "spike.mp4").also { it.delete() }
-        Log.i("LVC", "SPIKE start $mime ${w}x$h@$fps ${mbps}Mbps ${seconds}s")
-        val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        var track = -1
-        var t0 = -1L
-        var frames = 0
-        var out: VideoEncoderOutput? = null
-        val sink = object : VideoSink {
-            override fun onFormat(format: MediaFormat, width: Int, height: Int, rotationDegrees: Int) {
-                Log.i("LVC", "SPIKE format $format rot=$rotationDegrees")
-                muxer.setOrientationHint(rotationDegrees)
-                track = muxer.addTrack(format); muxer.start()
-            }
-            override fun onSample(data: ByteBuffer, info: MediaCodec.BufferInfo, ptsUs: Long) {
-                if (track < 0) return
-                if (t0 < 0) t0 = ptsUs
-                info.presentationTimeUs = ptsUs - t0
-                muxer.writeSampleData(track, data, info); frames++
-            }
-            override fun onEnded() {
-                try { if (track >= 0) muxer.stop() } catch (e: Throwable) { Log.w("LVC", "SPIKE muxer stop: $e") }
-                muxer.release()
-                main.post {
-                    camera.attachVideo(null, null)
-                    camera.stop("record")
-                    Log.i("LVC", "SPIKE done frames=$frames actual=${out?.actualWidth}x${out?.actualHeight}")
-                    MediaFileProbe.log("LVC", MediaFileProbe.probe(file))
-                }
-            }
-            override fun onError(code: String, t: Throwable?) { Log.e("LVC", "SPIKE error $code $t") }
-        }
-        val spec = VideoSpec(mime, w, h, fps, mbps * 1_000_000)
-        camera.onVideoBindFailed = { Log.e("LVC", "SPIKE bind failed $it") }
-        camera.start("record") { id ->
-            if (id == null) { Log.e("LVC", "SPIKE camera did not start"); return@start }
-            val o = VideoEncoderOutput(spec, sink)
-            out = o
-            camera.attachVideo(o, spec)
-            main.postDelayed({ o.finish() }, seconds * 1000L)
-        }
-    }
-
     fun dispose() {
-        try { activityRef.unregisterReceiver(spikeReceiver) } catch (_: Throwable) {}
         ticking = false
         main.removeCallbacks(tick)
+        recorder.stopForLifecycle("session_ended")
         vision.dispose()
         camera.shutdown()
     }

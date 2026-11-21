@@ -130,53 +130,6 @@ test("stats: missing data yields nulls and dashes", () => {
   assert.equal(r[2][1], "912 kbps · 29.7 fps");
 });
 
-const caps = { lenses: [
-  { id: "0", kind: "wide", focal_mm: 6.9, zoom_range: [1, 10], stabilization: ["off", "on"], exposure_comp: [-12, 12], exposure_step: 1 / 6, torch: true,
-    video: [
-      { width: 3840, height: 2160, fps: 30, codecs: ["avc", "hevc"], hdr: true, tests: { hevc: { result: "passed", fps: 29.9 }, avc: { result: "failed" } } },
-      { width: 3840, height: 2160, fps: 60, codecs: ["hevc"], hdr: true },
-      { width: 1920, height: 1080, fps: 30, codecs: ["avc"] }] },
-  { id: "1", kind: "front", zoom_range: [1, 2], torch: false, stabilization: ["off"], video: [{ width: 1280, height: 720, fps: 30, codecs: ["avc"], tests: { avc: { result: "failed" } } }] },
-] };
-
-test("lens labels and quality options", () => {
-  assert.equal(S.lensLabel(caps.lenses[0]), "Wide · 6.9 mm");
-  assert.equal(S.lensLabel(caps.lenses[1]), "Front");
-  assert.equal(S.lensLabel({ id: "7", kind: "weird", video: [] }), "Camera 7");
-  const o = S.qualityOptions(caps.lenses[0]);
-  assert.equal(o.length, 4);
-  assert.deepEqual(o.map((x) => x.key), ["3840x2160@60:hevc", "3840x2160@30:hevc", "3840x2160@30:avc", "1920x1080@30:avc"]);
-  assert.equal(o[0].badge, "Untested"); // 60 fps hevc has no tests entry
-  assert.equal(o[1].badge, "Tested \u2713 29.9 fps"); // per-codec result
-  assert.equal(o[2].badge, "Failed");
-  assert.equal(o[3].badge, "Untested");
-  assert.deepEqual(S.groupByResolution(o).map((g) => [g.label, g.options.length]), [["3840\u00D72160", 3], ["1920\u00D71080", 1]]);
-  assert.equal(S.qualityOptions(caps.lenses[1])[0].badge, "Failed");
-  assert.deepEqual(S.qualityOptions(undefined), []);
-});
-
-test("hdr only when current quality supports it", () => {
-  const l = caps.lenses[0];
-  assert.ok(S.hdrSupported(l, { width: 3840, height: 2160, fps: 30, codec: "hevc" }));
-  assert.ok(!S.hdrSupported(l, { width: 1920, height: 1080, fps: 30, codec: "avc" }));
-});
-
-test("settings diff, lens switch, validation", () => {
-  const cur = { lens_id: "0", width: 3840, height: 2160, fps: 30, codec: "hevc", zoom: 5, torch: false };
-  assert.deepEqual(S.diffSettings(cur, { zoom: 5, torch: true, hdr: undefined }), { torch: true });
-  const p = S.settingsForLens(caps, "1", cur);
-  assert.deepEqual(p, { lens_id: "1", width: 1280, height: 720, fps: 30, codec: "avc", zoom: 2 });
-  assert.equal(S.validateSettings(caps, p, cur), null);
-  assert.match(S.validateSettings(caps, { lens_id: "1" }, cur), /quality/);
-  assert.match(S.validateSettings(caps, { hdr: true, width: 1920, height: 1080, fps: 30, codec: "avc" }, cur), /HDR/);
-  assert.match(S.validateSettings(caps, { zoom: 11 }, cur), /Zoom/);
-  assert.match(S.validateSettings(caps, { exposure_comp: 13 }, cur), /Exposure/);
-  assert.match(S.validateSettings(caps, { exposure_comp: 1.5 }, cur), /Exposure/);
-  assert.match(S.validateSettings(caps, { torch: true, lens_id: "1", width: 1280, height: 720, fps: 30, codec: "avc" }, cur), /torch/);
-  assert.match(S.validateSettings(null, {}, cur), /not loaded/);
-  assert.deepEqual(S.lockedKeys({ zoom: 2, codec: "avc", torch: true }), ["codec"]);
-});
-
 test("elapsed + profile + audio formatting", () => {
   assert.equal(S.formatElapsed(204000), "03:24");
   assert.equal(S.formatElapsed(3723000), "1:02:03");
@@ -188,7 +141,6 @@ test("elapsed + profile + audio formatting", () => {
   assert.equal(S.formatProfile({ width: 3840, height: 2160, fps: 30, codec: "hevc" }), "3840×2160 · 30 fps · HEVC");
   assert.equal(S.formatProfile(null), "—");
   assert.equal(S.formatAudio({ sample_rate: 48000, channels: 2 }), "48 kHz · stereo");
-  assert.equal(S.exposureLabel(-6, 1 / 6), "−1.0 EV");
 });
 
 test("every slice 2 error code has a plain message", () => {

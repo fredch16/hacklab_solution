@@ -58,6 +58,14 @@
   .pose button { padding: 10px 14px; }
   .torque { font-size: 13px; color: var(--muted); }
   .torque.on { color: var(--ok); } .torque.off { color: var(--warn); }
+  /* The same "next step" line as the control page, when something needs doing before a view can be saved. */
+  .next { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 20px 0; padding: 8px 12px; border-radius: 8px;
+          border: 1px solid var(--warn); background: rgba(245, 165, 36, .08); font-size: 15px; }
+  .next[hidden] { display: none; }
+  .next.bad { border-color: var(--bad); background: rgba(255, 93, 93, .09); }
+  .next span { flex: 1 1 300px; min-width: 0; overflow-wrap: anywhere; }
+  .next button { padding: 8px 16px; }
+  @media (max-width: 900px) { .next { margin: 12px 16px 0; } }
 </style>
 </head>
 <body>
@@ -68,6 +76,8 @@
   <label>Camera <select id="camera"></select></label>
   <div id="joints">connecting…</div>
 </header>
+
+<div class="next" id="next" hidden><span id="nextText"></span><button id="nextDo" class="primary" hidden></button></div>
 
 <main>
   <section>
@@ -197,7 +207,30 @@ async function refresh() {
     : state.connected === false ? "no data from the arm: is it plugged in and visible in Station?"
     : limp ? "limp: move it by hand, then Hold here" : "holding: hands off, check the picture";
   $("nav").hidden = !state.motion;
+  renderNext();
   render();
+}
+
+// The server's one "next step" (state.advice, also on the control page): shown here when the arm is limp
+// after coming back, its data has stopped, or Station still links a leader to it.
+const NEXT_DO = {
+  hold: ["Hold here", () => $("hold").click()],
+  unlink: ["Unlink from leader", async () => {
+    try { await post("/api/unlink", { generation: state && state.generation }); } catch (e) { alert(e.message); }
+    refresh();
+  }],
+};
+function renderNext() {
+  const a = state.advice;   // older servers do not send it
+  const show = !!a && (a.level === "bad" || (a.level === "warn" && a.code !== "limp" && a.code !== "unknown_pose" && a.code !== "no_transit"))
+    || (!!a && a.code === "limp" && /is back/.test(a.text));
+  $("next").hidden = !show;
+  if (!show) return;
+  $("next").className = "next" + (a.level === "bad" ? " bad" : "");
+  $("nextText").textContent = a.text;
+  const act = NEXT_DO[a.action];
+  $("nextDo").hidden = !act;
+  if (act) { $("nextDo").textContent = act[0]; $("nextDo").onclick = act[1]; }
 }
 
 async function post(url, body) {

@@ -487,6 +487,117 @@ def part_a():
     check(st.torque_doubt is None and arm.torque, "a confirmed Hold here clears it")
     st.arm = SimArm()
 
+    # --- the control centre: status strip advice, unlink, settings, joint table, arm picture, history
+    def look():
+        """A fresh look at the arm (motion.describe), then the state the page would get."""
+        async def again():
+            st._forget_where()
+            await st._describe()
+        st.call(again())
+        return st.snapshot()
+
+    fresh_arm()
+    snap = look()
+    check(snap["advice"]["code"] == "ready" and snap["advice"]["action"] is None, f"ready: {snap['advice']}")
+    check(snap["data"]["fresh"] and snap["link"]["linked"] is False, f"data fresh, no leader linked: {snap['data']} {snap['link']}")
+    check(set(snap["speed_options"]) == {"slow", "normal", "fast", "turbo"} and all(k in snap["speed_about"] for k in snap["speed_options"]),
+          "every speed has a plain description")
+    check(snap["joints"].startswith("j1=") and "gripper=" in snap["joints"], "the joints string other tools parse is unchanged")
+
+    st.arm.mirror = "5B61033001"                            # Station still links the leader
+    snap = look()
+    check(snap["link"] == {"linked": True, "leader": "5B61033001", "text": snap["link"]["text"]} and snap["can_move"] is False,
+          f"linked to a leader: {snap['link']}")
+    check(snap["advice"]["code"] == "linked" and snap["advice"]["action"] == "unlink", f"advice says unlink: {snap['advice']}")
+    r = st.call(st.unlink())
+    check(r == {"ok": True, "linked": False} and st.arm.mirror is None, f"unlink: {r}")
+    snap = look()
+    check(snap["link"]["linked"] is False and snap["advice"]["code"] == "ready", f"after unlink: {snap['link']} {snap['advice']}")
+
+    st.call(st.set_torque(False, gen=st.gen))               # limp: the next step is Hold here
+    snap = look()
+    check(snap["advice"]["code"] == "limp" and snap["advice"]["action"] == "hold" and '"home"' in snap["advice"]["text"],
+          f"limp advice: {snap['advice']}")
+    st.call(st.set_torque(True, gen=st.gen))
+
+    st.arm.stale = True                                     # arm data stops: no override, a clear message
+    snap = st.snapshot()
+    check(not snap["data"]["fresh"] and snap["data"]["since_clock"] and snap["joints"] == "no data", f"stale data: {snap['data']}")
+    time.sleep(1.1)
+    snap = st.snapshot()
+    check(snap["advice"]["code"] == "stale" and snap["advice"]["action"] is None and "ago" in snap["advice"]["text"]
+          and snap["data"]["age_s"] >= 1.0, f"stale advice with its age: {snap['advice']} {snap['data']}")
+    msg = refusal(lambda: go())
+    check(msg and "no arm data" in msg and "USB" in msg and not st.moving, f"goto with no arm data is refused with what to do: {msg}")
+    msg = refusal(lambda: st.call(st.set_torque(True, gen=st.gen)))
+    check(msg and "no arm data" in msg, f"Hold here with no arm data: {msg}")
+    check(st.telemetry()["ok"] is False and st.pose()["ok"] is False and st.pose().get("available") is True, "joint table and picture say so too")
+    st.arm.stale = False
+    snap = look()
+    check(snap["data"]["fresh"] and snap["data"]["back_clock"] and snap["advice"]["code"] == "ready", f"data back: {snap['data']}")
+    st.call(st.set_torque(False, gen=st.gen))
+    snap = look()
+    check(snap["advice"]["code"] == "limp" and "is back" in snap["advice"]["text"], f"limp after coming back says so: {snap['advice']}")
+    st.call(st.set_torque(True, gen=st.gen))
+
+    fresh_arm()                                             # joint table
+    st.arm.load = {2: 700}
+    t = st.telemetry()
+    check(t["ok"] and [j["id"] for j in t["joints"]] == list(range(1, 9)), "telemetry lists joints 1-8")
+    row = t["joints"][1]
+    check(row["warn"] == ["load"] and row["holding"] and row["goal_error"] == 0 and {"pos", "current_a", "temp", "voltage"} <= set(row),
+          f"joint 2 with a high load is flagged: {row}")
+    check(all(j["warn"] == [] for j in t["joints"] if j["id"] != 2), "the others are not")
+    st.arm.load = {}
+
+    pose = st.pose()                                        # arm picture
+    check(pose["ok"] and len(pose["chain"]) == 9 and len(pose["camera"]) == 3 and "transit" in pose["views"]
+          and pose["clear_height_m"] == motion.CLEAR_HEIGHT_M and pose["lowest_m"] > 0, f"pose: { {k: pose[k] for k in ('ok', 'lowest_m', 'clearance_m')} }")
+
+    defaults = dict(capture_server.SETTING_DEFAULTS)        # motion settings
+    for bad in ({"BLEND": "yes"}, {"BLEND": 1}, {"CLEAR_HEIGHT_M": 0.1}, {"CLEAR_HEIGHT_M": 0.41}, {"CLEAR_HEIGHT_M": True},
+                {"SPEED_TURBO": 799}, {"SPEED_TURBO": 3401}, {"SPEED_TURBO": 900.5}, {"SPEED_TURBO": "fast"}, {"NOPE": 1}, {},
+                {"BLEND": False, "SPEED_TURBO": 5000}):
+        try:
+            capture_server.check_settings(bad)
+            check(False, f"settings {bad} must be refused")
+        except Refused as e:
+            check(e.status == 400, f"settings {bad}: {e}")
+    check({k: getattr(motion, k) for k in defaults} == defaults, "a refused change changes nothing")
+    r = st.call(st.change_settings(capture_server.check_settings({"BLEND": False, "CLEAR_HEIGHT_M": 0.3, "SPEED_TURBO": 1200})))
+    check(r["ok"] and (motion.BLEND, motion.CLEAR_HEIGHT_M, motion.SPEED_TURBO) == (False, 0.3, 1200), f"settings applied: {r['changed']}")
+    check(capture_server.SPEEDS["turbo"] == 1200 and st.snapshot()["settings_changed"] and st.snapshot()["settings"]["SPEED_TURBO"] == 1200,
+          "the Turbo button follows, and state says the settings differ from the defaults")
+    go()
+    msg = refusal(lambda: st.call(st.change_settings(capture_server.check_settings({"defaults": True}))))
+    check(msg and "press STOP first" in msg and motion.SPEED_TURBO == 1200, f"settings are locked while moving: {msg}")
+    msg = refusal(lambda: st.call(st.unlink()))
+    check(msg and "press STOP first" in msg, f"so is unlink: {msg}")
+    check(st.snapshot()["advice"]["code"] == "moving", "advice while moving")
+    st.call(st.stop())
+    r = st.call(st.change_settings(capture_server.check_settings({"defaults": True})))
+    check({k: getattr(motion, k) for k in defaults} == defaults and capture_server.SPEEDS["turbo"] == defaults["SPEED_TURBO"]
+          and not st.snapshot()["settings_changed"], "back to the defaults")
+
+    h = st.moves()                                          # history and the time on the last result
+    last = st.snapshot()["motion"]["last_result"]
+    check(h["ok"] and h["source"] == "memory" and h["moves"] and h["moves"][0]["view"] == "top" and h["moves"][0]["error"] == "stopped"
+          and h["moves"][0]["asked"] == "slow", f"history, newest first: {h['moves'][:1]}")
+    check(all(a["t"] >= b["t"] for a, b in zip(h["moves"], h["moves"][1:])), "history is newest first")
+    check(last["error"] == "stopped" and abs(last["at"] - time.time()) < 5 and last["at_clock"], f"the last result carries its time: {last}")
+
+    was_checked = motion.view_checked                       # the speed a view will really run at
+    motion.view_checked = lambda name: name != "left"
+    try:
+        check("not marked checked" in State.first_run_reason("left", {"where": "view", "view": "home"}), "an unchecked target runs at first-run speed")
+        check('"left"' in State.first_run_reason("top", {"where": "view", "view": "left"}), "so does a move that starts from an unchecked view")
+        check(State.first_run_reason("top", {"where": "view", "view": "home"}) is None, "checked to checked runs at the picked speed")
+        check(State.first_run_reason(motion.TRANSIT, {"where": "hub"}) and State.first_run_reason(motion.TRANSIT, {"where": "view", "view": "top"}) is None,
+              "to transit: only at the picked speed when it starts from a checked view")
+    finally:
+        motion.view_checked = was_checked
+    fresh_arm()
+
     # --- which arm: never guess between several
     pick, T = capture_server.pick_bus, {"transit": {"bus": "F"}, "top": {"bus": "F"}}
 
@@ -736,6 +847,56 @@ def part_b():
         print(f"  Go limp vs goto over HTTP x40: {tally}")
         post("/api/stop")
         check(click("/api/torque", {"on": True})[0] == 200, "holding again")
+
+        # --- the control centre's endpoints over HTTP
+        def get(path):
+            return send(connect(), "GET", path)
+
+        r = get("/api/telemetry")
+        check(r[0] == 200 and r[1]["ok"] and len(r[1]["joints"]) == 8 and r[1]["warn_at"]["temp"] == 55, f"GET /api/telemetry: {r[0]}")
+        r = get("/api/pose")
+        check(r[0] == 200 and r[1]["ok"] and len(r[1]["chain"]) == 9, f"GET /api/pose: {r[0]}")
+        r = get("/api/history")
+        check(r[0] == 200 and r[1]["ok"] and r[1]["source"] == "memory" and len(r[1]["moves"]) >= 5, f"GET /api/history: {r[0]} {len(r[1]['moves'])}")
+        r = get("/api/extras")
+        check(r[0] == 200 and isinstance(r[1]["mcp"]["up"], bool), f"GET /api/extras: {r}")
+        r = get("/api/settings")
+        check(r[0] == 200 and set(r[1]["settings"]) == {"BLEND", "CLEAR_HEIGHT_M", "SPEED_TURBO"} and r[1]["settings"]["SPEED_TURBO"]["min"] == 1000,
+              f"GET /api/settings: {r[0]}")
+        for bad in ({"SPEED_TURBO": 100}, {"CLEAR_HEIGHT_M": 2}, {"BLEND": "on"}, {"UNKNOWN": 1}, {}):
+            r = post("/api/settings", bad) if bad else send(connect(), "POST", "/api/settings", {})
+            check(r[0] == 400, f"POST /api/settings {bad} is refused: {r}")
+        r = post("/api/settings", {"SPEED_TURBO": 1500, "BLEND": False})
+        check(r[0] == 200 and r[1]["settings"]["SPEED_TURBO"]["value"] == 1500 and r[1]["settings"]["BLEND"]["value"] is False, f"POST /api/settings: {r[0]}")
+        s1 = state()
+        check(s1["settings"] == {"BLEND": False, "CLEAR_HEIGHT_M": 0.25, "SPEED_TURBO": 1500} and s1["speed_options"]["turbo"] == 1500
+              and s1["settings_changed"], f"state shows the settings: {s1['settings']}")
+        check(click("/api/goto", {"view": views[0]})[0] == 200, "a move starts")
+        r = post("/api/settings", {"defaults": True})
+        check(r[0] == 409 and state()["settings"]["SPEED_TURBO"] == 1500, f"settings are refused while moving: {r}")
+        post("/api/stop")
+        r = post("/api/settings", {"defaults": True})
+        check(r[0] == 200 and not state()["settings_changed"], f"defaults: {r[0]}")
+        post("/api/sim", {"mirror": "5B61033001"})
+        time.sleep(1.5); state(); time.sleep(0.3)
+        s1 = state()
+        check(s1["link"]["linked"] is True and s1["advice"]["action"] == "unlink", f"linked: {s1['link']} {s1['advice']['code']}")
+        r = click("/api/unlink", {})
+        check(r[0] == 200 and r[1]["linked"] is False, f"POST /api/unlink: {r}")
+        time.sleep(0.3); state(); time.sleep(0.3)
+        check(state()["link"]["linked"] is False, "no longer linked")
+        r = post("/api/unlink", {"generation": -1})
+        check(r[0] == 409, f"unlink with a stale generation is refused: {r}")
+        post("/api/sim", {"stale": True})
+        time.sleep(1.2)
+        s1 = state()
+        check(s1["advice"]["code"] == "stale" and not s1["data"]["fresh"] and s1["data"]["age_s"] >= 1, f"stale over HTTP: {s1['advice']['code']}")
+        r = click("/api/goto", {"view": views[0]})
+        check(r[0] == 503 and "no arm data" in r[1]["error"], f"goto with no arm data: {r}")
+        check(get("/api/telemetry")[1]["ok"] is False and get("/api/pose")[1]["ok"] is False, "no joint table, no picture")
+        post("/api/sim", {"stale": False})
+        time.sleep(0.8)
+        check(state()["data"]["fresh"] and state()["data"]["back_clock"], "data is back, and state says since when")
 
         # --- /api/state keeps the fields other tools read
         j = state()["joints"]

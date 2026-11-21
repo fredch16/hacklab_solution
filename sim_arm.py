@@ -93,6 +93,9 @@ class SimArm:
     async def mirroring_source(self, timeout_s: float = 2.0) -> str | None:
         return self.mirror
 
+    async def stop_mirroring(self):
+        self.mirror = None
+
     async def set_torque(self, enable: bool, motor_ids=None):
         self._advance()
         for m in (motor_ids if motor_ids is not None else self._pos):

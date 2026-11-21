@@ -6,82 +6,127 @@
 <title>Camera Control</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #181b22; --panel-2: #20242d; --line: #2c313c;
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1f232c; --line: #2a2f3a;
     --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --ok: #3ecf8e; --warn: #f5a524; --bad: #ff5d5d;
-    --stop: #d7353b;
+    --stop: #d7353b; --arm: #4f8cff; --cam: #f5a524; --table: #3ecf8e; --ghost: #5b6474;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
          padding-bottom: calc(96px + env(safe-area-inset-bottom)); /* render() keeps this in step with the STOP bar */ }
-  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  a { color: var(--accent); }
+  select, button, input { font: inherit; color: var(--text); }
+  select, button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  select { max-width: 100%; }
+  button { cursor: pointer; touch-action: manipulation; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled:hover { border-color: var(--line); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.caution { border-color: var(--warn); color: var(--warn); }
+  button.quiet { background: none; border-color: transparent; color: var(--muted); padding: 2px 8px; }
+  button.quiet:hover { color: var(--text); border-color: var(--line); }
+
+  /* ---- top bar ---- */
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 4px 0 0; }
   header label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
   nav { display: flex; gap: 4px; }
   nav a { color: var(--muted); text-decoration: none; font-size: 13px; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
   nav a:hover { color: var(--text); }
   nav a.here { color: var(--text); background: var(--panel-2); border-color: var(--line); }
-  select, button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
-  select { max-width: 100%; }
-  button { cursor: pointer; touch-action: manipulation; }
-  button:hover { border-color: var(--accent); }
+  .links { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
+  .links a { text-decoration: none; }
   #arm { color: var(--muted); font-size: 12px; }
   #arm b { color: var(--text); font-weight: 600; }
-  #joints { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; flex-basis: 100%; overflow-wrap: anywhere; }
-  main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); gap: 20px; padding: 20px; }
-  main > section { min-width: 0; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); padding: 16px; } header { padding: 12px 16px; } }
+  .spacer { flex: 1; }
+  .help { margin: 0; padding: 12px 20px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .help ol { margin: 6px 0 0; padding-left: 20px; max-width: 95ch; }
+  .help li { margin: 3px 0; }
+
+  /* ---- status strip: can I move, and if not, what do I do ---- */
+  .strip { position: sticky; top: 0; z-index: 9; background: rgba(15, 17, 21, .97); border-bottom: 1px solid var(--line); padding: 8px 20px 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+          font-size: 12px; white-space: nowrap; color: var(--text); background: var(--panel); }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .chip.ok::before { background: var(--ok); } .chip.warn::before { background: var(--warn); } .chip.bad::before { background: var(--bad); }
+  .chip.info::before { background: var(--accent); }
+  .chip.warn { border-color: var(--warn); } .chip.bad { border-color: var(--bad); color: #ffd9d9; }
+  .chip.muted { color: var(--muted); }
+  .next { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; padding: 8px 12px; border-radius: 8px;
+          border: 1px solid var(--line); background: var(--panel); font-size: 15px; }
+  .next .text { flex: 1 1 320px; min-width: 0; overflow-wrap: anywhere; }
+  .next .label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-right: 8px; }
+  .next.ok { border-color: rgba(62, 207, 142, .5); } .next.ok .label { color: var(--ok); }
+  .next.info { border-color: rgba(79, 140, 255, .6); } .next.info .label { color: var(--accent); }
+  .next.warn { border-color: var(--warn); background: rgba(245, 165, 36, .08); } .next.warn .label { color: var(--warn); }
+  .next.bad { border-color: var(--bad); background: rgba(255, 93, 93, .09); } .next.bad .label { color: var(--bad); }
+  .next .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .next .actions button, .next .actions a.button { padding: 8px 16px; font-size: 15px; }
+  a.button { display: inline-block; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; text-decoration: none; color: var(--text); }
+  .msg { min-height: 0; font-size: 13px; overflow-wrap: anywhere; }
+  .msg:not(:empty) { margin-top: 6px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+
+  /* ---- layout ---- */
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; padding: 16px 20px; align-items: start; }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  .below { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .below .full { grid-column: 1 / -1; }
+  @media (max-width: 1000px) {
+    main, .below { grid-template-columns: minmax(0, 1fr); }
+    /* one column: camera, the move, the views, then the arm picture and the rest */
+    .col { display: contents; }
+    .live { order: 1; } #movePanel { order: 2; } #viewsPanel { order: 3; } #picPanel { order: 4; } .below { order: 5; }
+    main { padding: 16px; } header, .strip, .help { padding-left: 16px; padding-right: 16px; }
+  }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .panel > h2, details.panel > summary { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin: 0 0 10px; font-weight: 600; }
+  details.panel > summary { cursor: pointer; margin: 0; list-style-position: inside; }
+  details.panel[open] > summary { margin-bottom: 12px; }
+  details.panel > summary span { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 8px; }
+  .hint { color: var(--muted); font-size: 12px; }
   .live { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
   .live img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .live .badge { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 16px; }
-  .panel .count { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-  .panel h2 { margin: 4px 0 2px; font-size: 26px; overflow-wrap: anywhere; }
-  .panel h2.lost { color: var(--warn); font-size: 20px; }
+
+  /* ---- the move in progress, and the last one ---- */
+  #headline { font-size: 22px; font-weight: 700; overflow-wrap: anywhere; }
   .phase { color: var(--muted); min-height: 21px; overflow-wrap: anywhere; }
   .phase b { color: var(--text); font-weight: 600; }
-  .bar { height: 8px; margin: 10px 0 2px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
-  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .25s linear; }
-  .bar.idle { visibility: hidden; }
-  .route { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding: 0; list-style: none; min-height: 26px; }
+  .route { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
   .route li { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .route li.done { color: var(--ok); border-color: transparent; background: rgba(62, 207, 142, .1); }
   .route li.now { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
-  .where { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
-  .where.warn { color: var(--warn); font-weight: 600; }
-  .blockers { margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 8px; background: rgba(245, 165, 36, .08); overflow-wrap: anywhere; }
-  .blockers b { color: var(--warn); }
-  .blockers ul { margin: 4px 0 0; padding-left: 18px; }
-  .alert { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--bad); border-radius: 8px; background: rgba(255, 93, 93, .1);
-           color: var(--bad); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
-  .alert small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-bottom: 2px; }
-  [hidden] { display: none !important; }
-  button.caution { border-color: var(--warn); color: var(--warn); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button:disabled:hover { border-color: var(--line); }
-  .msg { margin-top: 10px; min-height: 20px; font-size: 13px; overflow-wrap: anywhere; }
-  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); } .msg.stale { opacity: .45; }
-  .pose { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-  .pose button { padding: 10px 14px; }
-  .torque { font-size: 13px; color: var(--muted); }
-  .torque.on { color: var(--ok); } .torque.off { color: var(--warn); }
-  .reminder { border: 1px solid var(--warn); border-radius: 10px; padding: 12px 14px; color: var(--text); background: rgba(245, 165, 36, .08); }
-  .reminder b { color: var(--warn); }
-  .reminder ul { margin: 6px 0 0; padding-left: 18px; }
-  .speed { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; color: var(--muted); font-size: 12px; }
+  .bar { height: 8px; margin: 10px 0 2px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .25s linear; }
+  .bar.idle { display: none; }
+  .last { margin-top: 12px; padding: 8px 10px 9px 12px; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; overflow-wrap: anywhere; }
+  .last .when { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .last .when span { flex: 1; }
+  .last.ok { border-left-color: var(--ok); } .last.bad { border-left-color: var(--bad); } .last.bad .what { color: #ffb4b4; font-weight: 600; }
+  .last .old { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  /* ---- speed and views ---- */
+  .speed { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; background: var(--panel-2); color: var(--muted); padding: 8px 18px; font-size: 14px; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel-2); color: var(--muted); padding: 8px 16px; font-size: 14px; }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
-  h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 22px 0 10px; }
+  .about { margin: 8px 0 0; color: var(--text); overflow-wrap: anywhere; }
+  .about small { display: block; color: var(--warn); font-size: 12px; margin-top: 2px; }
+  h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin: 16px 0 8px; font-weight: 600; }
   h3 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; min-width: 0; }
+  .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; min-width: 0; display: flex; flex-direction: column; }
   .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
   .card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .card.target { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
   .grid.locked .card { cursor: default; pointer-events: none; }
   .grid.locked .card:not(.target) { opacity: .4; }
-  .card .thumb { aspect-ratio: 16 / 9; background: var(--panel-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .grid.blocked .card:not(.current) .thumb { opacity: .55; }
+  .card .thumb { aspect-ratio: 16 / 9; background: #0b0d11; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
   .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .card .meta { padding: 6px 8px 0; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
   .card .name { font-weight: 600; overflow-wrap: anywhere; }
@@ -89,33 +134,74 @@
   .card .tag:empty { display: none; }
   .card.current .tag { background: var(--accent); color: #fff; }
   .card.target .tag { background: var(--warn); color: #1a1300; }
-  .card .desc { padding: 0 8px 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card .desc { padding: 0 8px 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card .runs { padding: 0 8px 6px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; margin-top: auto; }
+  .card .runs.forced { color: var(--warn); }
   .card .flags { padding: 0 8px 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 11px; }
   .card .flag { border-radius: 999px; padding: 1px 8px; border: 1px solid var(--line); color: var(--muted); }
   .card .flag.unchecked, .card .flag.limit { color: var(--warn); border-color: var(--warn); }
   .card .flag.limit { cursor: help; }
   .card .flag.checked { color: var(--ok); border-color: transparent; padding-left: 0; }
-  .card .mark { font-size: 11px; padding: 1px 8px; color: var(--muted); }
-  .secondary { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 14px; color: var(--muted); font-size: 12px; }
+  .card .mark { font-size: 11px; padding: 1px 8px; color: var(--muted); background: var(--panel); }
+  .secondary { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 12px; color: var(--muted); font-size: 12px; }
   .secondary button { padding: 8px 14px; }
   .secondary button.current { border-color: var(--accent); }
-  .empty { color: var(--muted); }
-  .empty a { color: var(--accent); }
-  .stopbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; align-items: center; gap: 8px 20px;
-             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); background: rgba(15, 17, 21, .95); border-top: 1px solid var(--line); }
+
+  /* ---- arm picture ---- */
+  .figures { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .figures figure { margin: 0; background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .figures figcaption { padding: 5px 10px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .figures canvas { display: block; width: 100%; aspect-ratio: 1 / 1; }
+  #picPanel.dim canvas { opacity: .35; }
+
+  /* ---- arm power and joints ---- */
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+  .buttons button { padding: 9px 14px; }
+  .buttons .state { font-size: 13px; color: var(--muted); }
+  .buttons .state.on { color: var(--ok); } .buttons .state.off { color: var(--warn); }
+  .scroll { overflow-x: auto; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  th:first-child, td:first-child { text-align: left; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.warn { color: var(--warn); font-weight: 700; }
+  td.off { color: var(--warn); } td.on { color: var(--ok); } td.muted, tr.muted td { color: var(--muted); }
+  td.bad { color: var(--bad); } td.good { color: var(--ok); }
+  td.left { text-align: left; white-space: normal; overflow-wrap: anywhere; min-width: 16ch; }
+
+  /* ---- settings ---- */
+  .setting { padding: 10px 0; border-top: 1px solid var(--line); }
+  .setting:first-of-type { border-top: 0; padding-top: 0; }
+  .setting .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .setting .head b { flex: 1 1 auto; }
+  .setting .value { font-variant-numeric: tabular-nums; min-width: 9ch; text-align: right; }
+  .setting .value.changed { color: var(--warn); }
+  .setting input[type=range] { flex: 1 1 160px; min-width: 120px; accent-color: var(--accent); }
+  .setting p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .switch { position: relative; width: 46px; height: 26px; border-radius: 999px; padding: 0; background: var(--panel-2); flex: none; }
+  .switch::after { content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); transition: left .15s; }
+  .switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+  .switch[aria-checked="true"]::after { left: 23px; background: #fff; }
+
+  /* ---- STOP ---- */
+  .stopbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
+             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); background: #0f1115; border-top: 1px solid var(--line); }
   .stopbar .info { flex: 1; min-width: 0; font-size: 15px; overflow-wrap: anywhere; }
   .stopbar .info.bad { color: var(--bad); font-weight: 600; }
-  .stopbar .info .err { display: block; color: var(--bad); font-weight: 600; }
-  .stopbar { flex-wrap: wrap; }
+  .stopbar .info .err { display: block; color: var(--warn); font-size: 13px; }
   .holdfail { flex: 0 0 100%; padding: 10px 14px; border-radius: 8px; background: var(--stop); color: #fff; font-size: 16px; font-weight: 800; overflow-wrap: anywhere; }
   .holdfail small { display: block; font-size: 12px; font-weight: 500; margin-top: 2px; }
-  #stop { flex: none; min-width: 280px; padding: 12px 28px; background: var(--stop); border: 2px solid #ff8f93; border-radius: 12px;
-          color: #fff; font-size: 24px; font-weight: 800; letter-spacing: .1em; line-height: 1.1; }
+  #stop { flex: none; min-width: 300px; padding: 12px 28px; background: var(--stop); border: 2px solid #ff8f93; border-radius: 12px;
+          color: #fff; font-size: 26px; font-weight: 800; letter-spacing: .1em; line-height: 1.1; }
   #stop small { display: block; font-size: 11px; font-weight: 500; letter-spacing: .04em; opacity: .9; margin-top: 3px; }
   #stop:hover { border-color: #fff; }
   #stop:active, #stop.pressed { background: #a8262b; }
   @media (max-width: 600px) {
-    body { padding-bottom: calc(132px + env(safe-area-inset-bottom)); }
+    .strip { padding-top: 6px; padding-bottom: 8px; }
+    .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .next { font-size: 14px; padding: 6px 10px; }
+    .figures { grid-template-columns: 1fr 1fr; }
     .stopbar { flex-direction: column; align-items: stretch; padding-left: 16px; padding-right: 16px; }
     .stopbar .info { font-size: 13px; }
     #stop { min-width: 0; width: 100%; padding: 14px; }
@@ -126,84 +212,164 @@
 <header>
   <h1>Camera Control</h1>
   <nav><a href="/">Capture</a><a href="/control" class="here">Control</a></nav>
-  <label>Camera <select id="camera"></select></label>
+  <label id="cameraPick" hidden>Camera <select id="camera"></select></label>
   <span id="arm"></span>
-  <div id="joints">connecting…</div>
+  <span class="spacer"></span>
+  <span class="links">
+    <a id="stationLink" href="http://localhost:8889" target="_blank" rel="noopener">Station &#8599;</a>
+    <span id="mcp" title="The MCP server lets Claude pick views through this page's server" hidden></span>
+  </span>
+  <button id="helpBtn" class="quiet" aria-expanded="false" aria-controls="help">? How a move works</button>
 </header>
+<div class="help" id="help" hidden>
+  <b>How a move works</b>
+  <ol>
+    <li>The arm must be <b>holding</b> (not limp), at a pose it knows (a saved view, the transit pose, or the path between them), with live data and no leader arm linked. The status strip says which of these is missing and what to do.</li>
+    <li>Every move has up to three steps: <b>rise</b> to the transit pose (the safe raised pose), <b>turn</b> there, then <b>descend</b> into the view. At Fast and Turbo the steps may overlap high above the desk ("blended").</li>
+    <li>A view that nobody has marked as <b>checked</b> always runs at first-run speed, whatever speed is selected. Watch it go there and back cleanly, then mark it checked.</li>
+    <li><b>STOP</b> (the red button, Space or Esc) holds the arm where it is. It then reports whether the arm confirmed the hold.</li>
+    <li>If the arm ends up somewhere it does not know: <b>Recover to transit</b> lifts it straight up slowly, or go limp, pose it by hand at the transit pose and press Hold here. One person stays at the arm, power plug within reach.</li>
+  </ol>
+</div>
+
+<section class="strip" aria-label="Status">
+  <div class="chips" id="chips"><span class="chip muted">Connecting&hellip;</span></div>
+  <div class="next info" id="next" aria-live="polite">
+    <div class="text"><span class="label">Next step</span><span id="nextText">Connecting to the arm server&hellip;</span></div>
+    <div class="actions" id="nextActions"></div>
+  </div>
+  <div class="msg" id="msg" aria-live="polite"></div>
+</section>
 
 <main>
-  <section>
+  <div class="col">
     <div class="live">
       <img id="live" src="/stream" alt="Live camera">
       <div class="badge" id="badge">live</div>
     </div>
 
-    <div class="panel">
-      <div class="count">Status</div>
-      <h2 id="headline">Connecting…</h2>
-      <div class="where" id="where"></div>
-      <div class="blockers" id="blockers" hidden></div>
+    <section class="panel" id="picPanel" hidden>
+      <h2>Arm picture <span class="hint" id="picNote" style="text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px"></span></h2>
+      <div class="figures">
+        <figure><figcaption>From the side</figcaption><canvas id="picSide" width="480" height="480"></canvas></figure>
+        <figure><figcaption>From above</figcaption><canvas id="picTop" width="480" height="480"></canvas></figure>
+      </div>
+      <p class="hint" style="margin:8px 0 0">Blue: the arm. Orange: the camera. Green: the desk. Dashed: the clear height for blending. Grey dots: where the gripper sits in each saved view. This is the geometry model's picture of the joints, not a camera: good for the shape and order of a move, not for exact clearances.</p>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="panel" id="movePanel">
+      <h2>Move</h2>
+      <div id="headline">Connecting&hellip;</div>
       <div class="phase" id="phase"></div>
-      <ol class="route" id="route" aria-label="Route"></ol>
+      <ol class="route" id="route" aria-label="Steps of this move"></ol>
       <div class="bar idle" id="bar"><div id="barFill"></div></div>
-      <div class="alert" id="alert" role="alert" hidden></div>
-      <div class="msg" id="result" aria-live="polite"></div>
-      <div class="pose">
-        <button id="hold">Hold here</button>
-        <button id="recover" class="caution" hidden>Recover to transit…</button>
-        <span id="torque" class="torque"></span>
+      <div class="last" id="last" hidden>
+        <div class="when"><span id="lastWhen"></span><button class="quiet" id="lastDismiss" title="Hide this result">Dismiss &#10005;</button></div>
+        <div class="what" id="lastWhat"></div>
+        <div class="old" id="lastOld"></div>
       </div>
-      <div class="msg" id="msg" aria-live="polite"></div>
-    </div>
-  </section>
+    </section>
 
-  <section>
-    <div class="reminder">
-      <b>Before you click a view</b>
-      <ul>
-        <li>The follower must be on <b>"(Self-controlled)"</b> in Station.</li>
-        <li><b>Someone stands at the arm</b>, power plug within reach. STOP (below, or Space / Esc) holds the arm where it is.</li>
-        <li>The arm must be holding (<b>Hold here</b>) and at a known pose. A move rises to the transit pose, turns, then descends: 30 to 60 s at first-run speed (every view until it is marked as checked), quicker after that.</li>
-      </ul>
-    </div>
-
-    <div class="speed">
-      <span>Speed</span>
-      <div class="seg" id="speed">
-        <button data-speed="slow" aria-pressed="true">Slow</button>
-        <button data-speed="normal" aria-pressed="false">Normal</button>
-        <button data-speed="fast" aria-pressed="false">Fast</button>
-        <button data-speed="turbo" aria-pressed="false">Turbo</button>
+    <section class="panel" id="viewsPanel">
+      <h2>Views <span class="hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px">one click moves the arm</span></h2>
+      <div class="speed">
+        <span class="hint">Speed</span>
+        <div class="seg" id="speed">
+          <button data-speed="slow" aria-pressed="true">Slow</button>
+          <button data-speed="normal" aria-pressed="false">Normal</button>
+          <button data-speed="fast" aria-pressed="false">Fast</button>
+          <button data-speed="turbo" aria-pressed="false">Turbo</button>
+        </div>
       </div>
-      <span id="speedHint"></span>
-    </div>
+      <p class="about" id="speedAbout"></p>
+      <div class="grid" id="grid" style="margin-top:14px"></div>
+      <div class="secondary">
+        <button id="transit">Go to transit</button>
+        <button id="recover" class="caution" hidden>Recover to transit&hellip;</button>
+        <span id="transitHint">the safe raised pose every move passes through (not a camera view)</span>
+      </div>
+    </section>
+  </div>
 
-    <h3>Views <span>· one click moves the arm</span></h3>
-    <div class="grid" id="grid"></div>
-    <div class="secondary">
-      <button id="transit">Go to transit</button>
-      <span id="transitHint">the safe raised pose every move passes through (not a camera view)</span>
-    </div>
-  </section>
+  <div class="below">
+    <details class="panel" id="secPower" open>
+      <summary>Arm power and joints <span id="powerSummary"></span></summary>
+      <div class="buttons">
+        <button id="hold" class="primary">Hold here</button>
+        <button id="limp">Go limp&hellip;</button>
+        <button id="unlink">Unlink from leader</button>
+        <span class="state" id="powerState"></span>
+      </div>
+      <p class="hint" style="margin:8px 0 0"><b>Hold here</b> stiffens joints 1 to 7 where they are (the gripper holding the camera stays limp on purpose). <b>Go limp</b> lets the arm drop: someone must be holding it. <b>Unlink</b> tells Station to stop copying a leader arm onto this one; it moves nothing.</p>
+      <div class="scroll">
+        <table id="joints" aria-label="Joints">
+          <thead><tr><th>Joint</th><th title="Encoder steps, 4096 per turn">Position</th><th title="Goal minus position, in steps. A loaded joint rests a little short of its goal.">Off goal</th>
+            <th title="How hard the servo pushes, 0 to 1000">Load</th><th>Current</th><th>Temp</th><th>Voltage</th><th>Power</th></tr></thead>
+          <tbody id="jointRows"><tr class="muted"><td colspan="8">waiting for the arm&hellip;</td></tr></tbody>
+        </table>
+      </div>
+      <p class="hint" id="jointNote" style="margin:8px 0 0"></p>
+    </details>
+
+    <details class="panel" id="secSettings" open>
+      <summary>Motion settings <span id="settingsSummary"></span></summary>
+      <div id="settings"><p class="hint">loading&hellip;</p></div>
+      <div class="buttons" style="margin-top:10px">
+        <button id="settingsDefaults">Back to defaults</button>
+        <span class="state" id="settingsNote"></span>
+      </div>
+      <p class="hint" style="margin:8px 0 0">These apply to the next move and can only be changed while the arm is not moving. They go back to the defaults when the server restarts.</p>
+    </details>
+
+    <details class="panel full" id="secHistory" open>
+      <summary>History: the last moves <span id="historySummary"></span></summary>
+      <div class="buttons"><button id="historyRefresh">Refresh</button><span class="state" id="historyNote"></span></div>
+      <div class="scroll">
+        <table aria-label="Last moves">
+          <thead><tr><th>Time</th><th>View</th><th style="text-align:left">Result</th><th>Speed</th><th>Took</th>
+            <th title="How far the worst joint trailed its goal, in steps">Worst lag</th><th title="0 to 1000">Peak load</th><th>Peak current</th><th>Max temp</th></tr></thead>
+          <tbody id="historyRows"><tr class="muted"><td colspan="9">open to load</td></tr></tbody>
+        </table>
+      </div>
+    </details>
+  </div>
 </main>
 
 <div class="stopbar">
   <div class="holdfail" id="holdFail" role="alert" hidden></div>
-  <div class="info" id="stopInfo">Connecting…</div>
-  <button id="stop">STOP<small>Space / Esc · holds the arm where it is</small></button>
+  <div class="info" id="stopInfo">Connecting&hellip;</div>
+  <button id="stop">STOP<small>Space / Esc &middot; holds the arm where it is</small></button>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const store = {
+  get(key, fallback) { try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {} },
+};
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 let state = null;      // last /api/state
 let lost = false;      // the state poll is failing
 let pending = null;    // view just clicked, until the server reports the move
 let holdFail = "";     // the last STOP did not come back with a confirmed hold; stays until a STOP or Hold here does
-let speed = "slow";
-try { speed = localStorage.getItem("controlSpeed") || speed; } catch (e) {}
+let speed = store.get("controlSpeed", "slow");
+let dismissed = store.get("controlDismissed", 0);   // the `at` of the last-move result the user has hidden
 
+const SPEED_NAMES = { slow: "Slow", normal: "Normal", fast: "Fast", turbo: "Turbo" };
 const motionState = () => (state && state.motion) || {};
 const isMoving = () => pending !== null || !!motionState().moving;
+const generation = () => (state ? state.generation : null);   // what this page knew when the user clicked
+
+function fmtAgo(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 90) return `${s} s`;
+  if (s < 5400) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+}
 
 async function request(url, options, timeoutMs) {
   const ctl = new AbortController();
@@ -222,10 +388,15 @@ async function request(url, options, timeoutMs) {
 const post = (url, body, timeoutMs = 8000) =>
   request(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, timeoutMs);
 
-function note(text, cls = "") { $("msg").className = "msg " + cls; $("msg").textContent = text; }
+let noteTimer = null;
+function note(text, cls = "") {
+  $("msg").className = "msg " + cls; $("msg").textContent = text;
+  clearTimeout(noteTimer);
+  if (text && cls !== "bad") noteTimer = setTimeout(() => { $("msg").textContent = ""; }, 12000);   // errors stay until the next action
+}
 
-// ---- polling: 4x per second while moving, 1x otherwise ----
-let seq = 0, applied = 0, gen = 0, timer = null;
+// ---- polling the state: 4x per second while moving, 1x otherwise ----
+let seq = 0, applied = 0, gen = 0, timer = null, wasMoving = false;
 async function refresh() {
   const n = ++seq;
   try {
@@ -236,6 +407,9 @@ async function refresh() {
     if (n < applied) return;
     applied = n; lost = true;
   }
+  const moving = !!motionState().moving;
+  if (wasMoving && !moving) loadHistory();   // a move just ended
+  wasMoving = moving;
   render();
 }
 async function loop(g) {
@@ -249,16 +423,14 @@ let starting = null;   // the /api/goto request while it is in flight
 async function go(name, recover = false) {
   if (isMoving()) return;
   pending = name; note(""); render();
-  // `generation` is what this page knew when the user clicked: the server refuses the click if a STOP came since.
-  const generation = state ? state.generation : null;
-  starting = post("/api/goto", recover ? { view: name, recover: true, generation } : { view: name, speed, generation });
+  starting = post("/api/goto", recover ? { view: name, recover: true, generation: generation() } : { view: name, speed, generation: generation() });
   try {
     await starting;
   } catch (e) {
     note(`Could not start "${name}": ${e.message}`, "bad");
   }
   starting = null;
-  await kick();   // a move that motion refuses (limp arm, unknown pose, ...) is already over by now: its error is in state
+  await kick();   // a move that is refused (limp arm, unknown pose, ...) is already over by now: its reason is in state
   pending = null; render();
 }
 
@@ -271,7 +443,7 @@ async function setChecked(name, checked) {
   if (checked && !confirm(`Mark "${name}" as checked?\n\nYou watched this view's move run cleanly on the real arm, there and back?`)) return;
   try {
     await post("/api/checked", { view: name, checked });
-    note(checked ? `"${name}" marked as checked: it may now run at the speed you pick.` : `"${name}" is unchecked again: it runs very slow.`, "ok");
+    note(checked ? `"${name}" is marked as checked: it now runs at the speed you pick.` : `"${name}" is unchecked again: it runs at first-run speed.`, "ok");
   } catch (e) {
     note(`Could not mark "${name}": ${e.message}`, "bad");
   }
@@ -326,237 +498,561 @@ async function stop() {
 
 async function holdHere() {
   try {
-    await post("/api/torque", { on: true, generation: state ? state.generation : null });
+    await post("/api/torque", { on: true, generation: generation() });
     holdFail = "";   // the server only answers ok once it has read back that the joints are holding
-    note("Holding (joints 1-7; the gripper stays limp).", "ok");
+    note("Holding (joints 1 to 7; the gripper stays limp on purpose).", "ok");
   } catch (e) {
-    note("Hold failed: " + e.message, "bad");
+    note("Hold here did not work: " + e.message, "bad");
+  }
+  kick();
+}
+
+async function goLimp() {
+  if (!confirm("Go limp: the arm will sag and drop.\n\nIs someone holding it?")) return;
+  try {
+    await post("/api/torque", { on: false, generation: generation() });
+    note("The arm is limp. Pose it by hand, then press Hold here.", "");
+  } catch (e) {
+    note("Go limp did not work: " + e.message, "bad");
+  }
+  kick();
+}
+
+async function unlink() {
+  try {
+    await post("/api/unlink", { generation: generation() });
+    note("Station no longer links a leader to this arm.", "ok");
+  } catch (e) {
+    note("Unlink did not work: " + e.message, "bad");
   }
   kick();
 }
 
 function setSpeed(name) {
   speed = name;
-  try { localStorage.setItem("controlSpeed", name); } catch (e) {}
+  store.set("controlSpeed", name);
   render();
 }
 
-// ---- rendering ----
-function fillSelect(el, items, value, label) {
-  const want = JSON.stringify(items);
-  if (el.dataset.items !== want) {
-    el.innerHTML = "";
-    items.forEach((it) => { const o = document.createElement("option"); o.value = it; o.textContent = label(it); el.appendChild(o); });
-    el.dataset.items = want;
+// ---- status strip ----
+function whereText(w) {
+  if (!w) return null;
+  if (w.where === "view") return `At "${w.view}"`;
+  if (w.where === "hub") return "At the transit pose";
+  if (w.where === "spoke") return `Between "${w.view}" and transit`;
+  return "At an unknown pose";
+}
+
+// A capture_server.py started before this page was updated does not send the status-strip fields or have the
+// newer endpoints. The page still has to tell the truth with what that server does send, until it is restarted.
+const legacy = () => !!state && state.advice === undefined;
+function legacyLink() {
+  const text = (state.blockers || []).find((b) => /mirroring/.test(b));
+  const m = text && text.match(/mirroring leader (\S+) onto/);
+  return text ? { linked: m ? true : null, leader: m ? m[1] : null, text } : { linked: state.where || state.torque ? false : null, leader: null, text: null };
+}
+function legacyAdvice() {
+  const m = motionState(), w = state.where || {}, first = (state.blockers || [])[0];
+  const say = (code, level, text, action = null) => ({ code, level, text, action });
+  if (m.moving) return say("moving", "info", `Moving to ${m.view}. STOP holds the arm where it is.`);
+  if (!state.connected) return say("stale", "bad", "No data from the arm. Check its USB cable and power, and that the laptop did not sleep. Nothing can move until it is back.");
+  if (state.torque === "limp") return say("limp", "warn", "The arm is limp. Support it, then press Hold here.", "hold");
+  if (w.where === "unknown") return say("unknown_pose", "warn", "The arm is holding at an unknown pose. Recover lifts it straight up to the transit pose, slowly; or pose it by hand (Go limp, move it, Hold here).", "recover");
+  if (first) return say("blocked", "warn", "A move cannot start: " + first, /Hold here/.test(first) ? "hold" : null);
+  return say("ready", "ok", "Ready. Click a view and the camera moves there.");
+}
+
+function chips() {
+  if (lost || !state) return [["No connection to the arm server", lost ? "bad" : "muted"]];
+  const old = legacy();
+  const d = state.data || { fresh: !!state.connected, age_s: null };
+  const c = state.camera_state || { present: state.cameras.length > 0, live: state.cameras.length > 0 };
+  const link = state.link || legacyLink(), m = motionState(), out = [];
+  if (old) out.push(["Restart capture_server.py to get all panels of this page", "warn", "The running server is older than this page: the joint table, settings, arm picture, history and Unlink need the newer server."]);
+  if (d.fresh) out.push([d.back_ago_s != null && d.back_ago_s < 120 ? `Arm data live (back since ${d.back_clock})` : "Arm data live", "ok"]);
+  else out.push([(d.age_s == null ? "No arm data" : `No arm data for ${fmtAgo(d.age_s)}`) + (d.since_clock ? ` (since ${d.since_clock})` : ""), "bad", d.reason || ""]);
+  out.push(c.present ? (c.live ? ["Camera live", "ok"] : ["Camera: no picture", "warn"]) : [state.sim ? "No camera (simulated arm)" : "No camera", state.sim ? "muted" : "warn"]);
+  out.push(!d.fresh ? ["Holding or limp: unknown", "muted"] : state.torque === "holding" ? ["Holding", "ok"] : state.torque === "limp" ? ["Limp", "warn"] : ["Holding or limp: unknown", "muted"]);
+  const w = isMoving() ? null : whereText(state.where);
+  out.push(w ? [w, state.where.where === "unknown" ? "warn" : "ok"] : [isMoving() ? "On the way" : "Where: not known", "muted"]);
+  out.push(link.linked ? [`Leader ${link.leader} is linked`, "bad", link.text] : link.linked === false ? ["No leader linked", "ok"] : ["Leader link: not known", link.text ? "warn" : "muted", link.text || ""]);
+  out.push(isMoving() ? [`Moving to ${pending !== null ? pending : m.view}`, "info"] : state.stopping ? ["Stopping", "info"] : ["Idle", "muted"]);
+  return out;
+}
+
+const ACTIONS = {
+  hold: () => Object.assign(el("button", "primary", "Hold here"), { onclick: holdHere }),
+  unlink: () => Object.assign(el("button", "primary", "Unlink from leader"), { onclick: unlink }),
+  recover: () => Object.assign(el("button", "caution", "Recover to transit…"), { onclick: recover }),
+  capture: () => Object.assign(el("a", "button", "Open the Capture page"), { href: "/" }),
+};
+let nextKey = "";
+function renderStrip() {
+  const box = $("chips");
+  box.innerHTML = "";
+  chips().forEach(([text, cls, title]) => { const c = el("span", "chip " + cls, text); if (title) c.title = title; box.appendChild(c); });
+
+  let advice = state && (legacy() ? legacyAdvice() : state.advice);
+  if (lost) advice = { code: "lost", level: "bad", action: null, text: "This page cannot reach capture_server.py. Is it still running in its terminal? STOP below still tries; the power plug always works." };
+  else if (!advice) advice = { code: "connecting", level: "info", action: null, text: "Connecting to the arm server…" };
+  else if (pending !== null && !motionState().moving) advice = { code: "starting", level: "info", action: null, text: `Starting the move to ${pending}…` };
+  $("next").className = "next " + advice.level;
+  $("nextText").textContent = advice.text;
+  const key = advice.code + "|" + advice.action;
+  if (key !== nextKey) {   // only rebuild the button when it changes, so it is never swapped under a click
+    nextKey = key;
+    $("nextActions").innerHTML = "";
+    if (advice.action && ACTIONS[advice.action]) $("nextActions").appendChild(ACTIONS[advice.action]());
   }
-  if (document.activeElement !== el) el.value = value;
+}
+
+// ---- the move in progress, and the last one ----
+let lastProgress = 0;
+function renderMove() {
+  const m = motionState(), moving = isMoving();
+  const target = pending !== null ? pending : m.view;
+  $("headline").textContent = lost ? "No connection" : moving ? `Moving to ${target}` : state ? "Idle" : "Connecting…";
+
+  const route = (moving && m.moving && m.route) || [];
+  const running = new Set(String(m.phase || "").split("+"));
+  $("route").innerHTML = "";
+  route.forEach((seg, i) => {
+    const li = el("li", running.has(seg) ? "now" : (i + 1 <= m.phase_index ? "done" : ""), seg);
+    if (running.has(seg)) li.setAttribute("aria-current", "step");
+    $("route").appendChild(li);
+  });
+  if (moving) {
+    const phase = !m.moving ? "check" : (m.phase || "moving");
+    const together = phase.includes("+");
+    $("phase").innerHTML = "";
+    $("phase").append(el("b", "", phase === "check" ? "checking the arm and planning the route" : together ? phase.split("+").join(" and ") + " together (blended)" : phase));
+    const inOrder = !together && route.indexOf(phase) + 1 === m.phase_index;   // blended moves finish steps out of order
+    if (m.moving && m.phase_count > 0 && m.phase_index > 0) $("phase").append(inOrder ? ` · step ${m.phase_index} of ${m.phase_count}` : together ? "" : " (blended with the other steps)");
+    const p = m.moving ? Math.max(0, Math.min(1, Number(m.progress) || 0)) : 0;
+    $("barFill").style.transition = p < lastProgress ? "none" : "";   // a new step starts at 0: jump, don't rewind
+    $("barFill").style.width = (p * 100).toFixed(1) + "%";
+    lastProgress = p;
+    $("bar").className = "bar";
+  } else {
+    const w = state && !lost ? whereText(state.where) : null;
+    $("phase").textContent = w ? w + "." : "";
+    $("bar").className = "bar idle";
+    $("barFill").style.width = "0"; lastProgress = 0;
+  }
+
+  // The last move: clearly a thing of the past, with its time, and it can be put away.
+  const r = m.last_result, at = r && r.at;
+  const show = !!r && !moving && !(at && at === dismissed);
+  $("last").hidden = !show;
+  if (show) {
+    const age = at && state.now ? state.now - at : null;
+    const stopped = !r.ok && /^stopped/.test(r.error || "");
+    $("last").className = "last " + (r.ok ? "ok" : stopped ? "" : "bad");
+    $("lastWhen").textContent = "Last move" + (r.at_clock ? ` · ${r.at_clock}` + (age != null ? ` · ${fmtAgo(age)} ago` : "") : "");
+    $("lastWhat").textContent = r.ok ? `Reached "${r.view}"` + (r.duration ? ` in ${r.duration} s` : "") + "."
+      : stopped ? `Stopped on the way to "${r.view}".` + (r.error !== "stopped" ? " " + r.error : "")
+      : `"${r.view}" did not complete: ${r.error || "unknown reason"}`;
+    $("lastOld").textContent = !r.ok && !stopped ? (age != null && age > 60
+      ? "This is what happened then. What is true now is in the status strip at the top."
+      : "What to do now is in the status strip at the top.") : "";
+  }
+}
+
+// ---- views ----
+function fillSelect(sel, items, value, label) {
+  const want = JSON.stringify(items);
+  if (sel.dataset.items !== want) {
+    sel.innerHTML = "";
+    items.forEach((it) => { const o = el("option", "", label(it)); o.value = it; sel.appendChild(o); });
+    sel.dataset.items = want;
+  }
+  if (document.activeElement !== sel) sel.value = value;
+}
+
+function runsAt(firstRun) {
+  // What speed a move will REALLY run at with the current selection: [text, forced]
+  const options = state.speed_options || {};
+  if (firstRun) return [`Will run at first-run speed (${state.first_speed} steps/s): ${firstRun}.`, true];
+  return [`Will run at ${SPEED_NAMES[speed] || speed} (${options[speed]} steps/s).`, false];
 }
 
 let gridKey = null;
 function buildGrid() {
   const cards = state.cards || [];
-  const key = JSON.stringify([cards, state.sim]);
+  const key = JSON.stringify([cards.map((c) => [c.name, c.description, c.snapshot, c.captured_at, c.checked, c.limit_notes]), state.sim]);
   if (key === gridKey) return;
   gridKey = key;
   const grid = $("grid");
   grid.innerHTML = "";
   if (!cards.length) {
-    grid.innerHTML = `<div class="empty">No saved views yet. Capture some on the <a href="/">Capture</a> page.</div>`;
+    grid.append(el("div", "hint", "No saved views yet. Capture some on the Capture page."));
     return;
   }
-  const make = (tag, cls, text) => Object.assign(document.createElement(tag), { className: cls, textContent: text || "" });
   cards.forEach((v) => {
     const name = v.name;
-    const card = make("div", "card");
+    const card = el("div", "card");
     card.dataset.name = name; card.tabIndex = 0; card.setAttribute("role", "button");
-    const thumb = make("div", "thumb");
+    const thumb = el("div", "thumb");
     if (v.snapshot) {
       const img = document.createElement("img");
-      img.alt = ""; img.loading = "lazy";
+      img.alt = "";
       img.src = `/views/${encodeURIComponent(name)}.jpg?t=${encodeURIComponent(v.captured_at || "")}`;
       img.onerror = () => { thumb.textContent = "no image"; };
       thumb.appendChild(img);
     } else {
       thumb.textContent = "no image";
     }
-    const meta = make("div", "meta");
-    meta.append(make("span", "name", name), make("span", "tag"));
-    const flags = make("div", "flags");
+    const meta = el("div", "meta");
+    meta.append(el("span", "name", name), el("span", "tag"));
+    const flags = el("div", "flags");
     if (v.limit_notes && v.limit_notes.length) {
-      const limit = make("span", "flag limit", "\u26A0 at a joint limit");
+      const limit = el("span", "flag limit", "⚠ at a joint limit");
       limit.title = "Saved pose is at a joint limit; re-capture it a bit away from the stop. The arm stops just short, so the picture differs slightly from the snapshot.\n" + v.limit_notes.join("\n");
       flags.append(limit);
     }
-    flags.append(v.checked ? make("span", "flag checked", "\u2713 checked") : make("span", "flag unchecked", "unchecked: runs very slow"));
-    const mark = make("button", "mark", v.checked ? "Uncheck" : "Mark as checked");
+    flags.append(v.checked ? el("span", "flag checked", "✓ checked") : el("span", "flag unchecked", "not checked"));
+    const mark = el("button", "mark", v.checked ? "Uncheck" : "Mark as checked");
     mark.disabled = !!state.sim;
-    mark.title = state.sim ? "Views are read-only in --sim" : (v.checked ? "Make this view run slow again" : "After you watched its move run cleanly on the real arm");
+    mark.title = state.sim ? "Views are read-only on the simulated arm" : (v.checked ? "Make this view run at first-run speed again" : "After you watched its move run cleanly on the real arm, there and back");
     mark.onclick = (e) => { e.stopPropagation(); setChecked(name, !v.checked); };
     mark.onkeydown = (e) => e.stopPropagation();   // Enter here marks; it must not also start the move
     flags.append(mark);
-    card.append(thumb, meta, make("div", "desc", v.description), flags);
+    card.append(thumb, meta, el("div", "desc", v.description), el("div", "runs"), flags);
     card.onclick = () => go(name);
     card.onkeydown = (e) => { if (e.key === "Enter") go(name); };
     grid.appendChild(card);
   });
 }
 
-function whereText() {
-  // [text, needs attention]. Shown also while the arm is limp: pose it by hand until this says "at the transit pose".
-  if (!state.connected) return ["no data from the arm", true, "No data from the arm. Is it plugged in and visible in Station?"];
-  const w = state.where;
-  if (!w) return (state.blockers || []).length ? ["position not known", true, "Where the arm is: not known."] : ["checking where the arm is\u2026", false, "Checking where the arm is\u2026"];
-  let at = "not at a known pose";
-  if (w.where === "view") at = `at "${w.view}"`;
-  if (w.where === "hub") at = "at the transit pose";
-  if (w.where === "spoke") at = `between "${w.view}" and the transit pose`;
-  return [at, w.where === "unknown", `The arm is ${at}.`];
-}
-const UNKNOWN_HELP = "There is no checked path from here. Move the arm by hand to the transit pose (Capture page: Go limp, pose it until this page says \"at the transit pose\", Hold here), or use Recover to transit with someone watching the arm.";
+function renderViews() {
+  const options = (state && state.speed_options) || { slow: 200, normal: 400, fast: 800, turbo: 2000 };
+  if (!(speed in options)) speed = "slow";
+  document.querySelectorAll("#speed button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.speed === speed)));
+  if (!state) return;
+  const moving = isMoving(), m = motionState(), target = pending !== null ? pending : m.view;
+  const cards = state.cards || [];
+  const forced = cards.filter((c) => c.first_run || (c.first_run === undefined && c.checked === false)).length;
+  $("speedAbout").textContent = (state.speed_about || {})[speed] || "";
+  const blendOff = state.settings && state.settings.BLEND === false && (speed === "fast" || speed === "turbo");
+  const extra = [];
+  if (forced) extra.push(`${forced === cards.length ? "All" : forced + " of " + cards.length} views will still run at first-run speed (${state.first_speed} steps/s) because they are not marked checked: see each card.`);
+  if (blendOff) extra.push("Blending is switched off in Motion settings: the steps run one after the other.");
+  if (moving) extra.push("A new speed applies to the next move.");
+  if (extra.length) $("speedAbout").append(el("small", "", extra.join(" ")));
 
-function resultText(r) {
-  if (!r) return ["", ""];
-  if (r.ok) return [`Last move: reached "${r.view}"` + (r.duration ? ` (${r.duration} s)` : ""), "ok"];
-  if (r.error === "stopped") return [`Last move: stopped on the way to "${r.view}".`, ""];
-  return ["", ""];   // failures and refusals go in the alert box instead
-}
-const failure = (r) => (r && !r.ok && r.error !== "stopped" ? r : null);
+  buildGrid();
+  $("grid").classList.toggle("locked", moving);
+  $("grid").classList.toggle("blocked", !moving && state.can_move === false);
+  const byName = Object.fromEntries(cards.map((c) => [c.name, c]));
+  document.querySelectorAll("#grid .card").forEach((card) => {
+    const name = card.dataset.name, c = byName[name] || {};
+    const isTarget = moving && name === target, isCurrent = !moving && name === state.current_view;
+    card.classList.toggle("target", isTarget);
+    card.classList.toggle("current", isCurrent);
+    card.setAttribute("aria-disabled", String(moving));
+    card.querySelector(".tag").textContent = isTarget ? "moving…" : (isCurrent ? "here" : "");
+    // (an older server does not say why; an unchecked view is always forced)
+    const [text, isForced] = runsAt(c.first_run !== undefined ? c.first_run : (c.checked === false ? "this view is not marked checked yet" : null));
+    const runs = card.querySelector(".runs");
+    runs.className = "runs" + (isForced ? " forced" : "");
+    runs.textContent = isCurrent ? "The arm is here." : text;
+  });
 
-let lastProgress = 0;
+  const w = state.where || {};
+  const atHub = !moving && w.where === "hub";
+  $("transit").disabled = moving || !state.has_transit;
+  $("transit").className = atHub ? "current" : "";
+  $("transit").textContent = moving && target === state.transit ? "Going to transit…" : "Go to transit";
+  const unknown = !moving && w.where === "unknown";
+  $("recover").hidden = !(unknown && state.torque === "holding" && state.has_transit);
+  $("transitHint").textContent = !state.has_transit ? "No transit pose saved yet: capture one named \"transit\" on the Capture page. Nothing can move without it."
+    : atHub ? "The arm is at the transit pose."
+    : "The safe raised pose every move passes through (not a camera view). " + runsAt(state.transit_first_run)[0];
+}
+
+// ---- arm power and the joint table ----
+function renderPower() {
+  if (!state) return;
+  const old = legacy();
+  const moving = isMoving(), fresh = state.data ? state.data.fresh : !!state.connected, link = state.link || {};
+  $("unlink").hidden = old; $("secSettings").hidden = old; $("secHistory").hidden = old;   // these need the newer server
+  const torque = fresh ? state.torque : null;
+  $("powerState").className = "state " + (torque === "holding" ? "on" : torque === "limp" ? "off" : "");
+  $("powerState").textContent = torque === "holding" ? "The arm is holding." : torque === "limp" ? "The arm is limp." : "No data from the arm.";
+  $("powerSummary").textContent = torque === "holding" ? "holding" : torque === "limp" ? "limp" : "no data";
+  $("hold").disabled = moving; $("limp").disabled = moving || torque === "limp"; $("unlink").disabled = moving;
+  $("hold").title = moving ? "A move is running: press STOP to hold the arm where it is" : "";
+  $("unlink").className = link.linked ? "primary" : "";
+  $("hold").className = torque === "limp" ? "primary" : "";
+}
+
+let telemetryTimer = null;
+async function loadTelemetry() {
+  clearTimeout(telemetryTimer);
+  if ($("secPower").open && !document.hidden) {
+    try {
+      const r = await fetch("/api/telemetry"), t = await r.json();
+      const rows = $("jointRows");
+      rows.innerHTML = "";
+      if (!t.ok) {
+        const tr = el("tr", "muted"); const td = el("td", "left", "No joint data: " + (t.error || "the arm is not answering") + ". See the status strip."); td.colSpan = 8;
+        tr.appendChild(td); rows.appendChild(tr);
+      } else {
+        const lim = t.warn_at || {};
+        t.joints.forEach((j) => {
+          const tr = el("tr");
+          const cell = (text, cls) => tr.appendChild(el("td", cls || "num", text));
+          cell(`${j.id} ${j.name}`, "");
+          cell(String(j.pos));
+          cell(j.holding ? (j.goal_error > 0 ? "+" : "") + j.goal_error : "–", j.holding ? "num" : "num muted");
+          cell(j.load == null ? "–" : String(j.load), "num" + (j.warn.includes("load") ? " warn" : ""));
+          cell(j.current_a == null ? "–" : j.current_a.toFixed(2) + " A", "num" + (j.warn.includes("current") ? " warn" : ""));
+          cell(j.temp == null ? "–" : j.temp + " °C", "num" + (j.warn.includes("temp") ? " warn" : ""));
+          cell(j.voltage == null ? "–" : Number(j.voltage).toFixed(1) + " V");
+          cell(j.read_error ? "not answering" : j.holding ? "holding" : (j.id === 8 ? "limp (on purpose)" : "limp"), j.read_error ? "bad" : j.holding ? "on" : (j.id === 8 ? "muted" : "off"));
+          if (j.read_error) tr.title = j.read_error;
+          rows.appendChild(tr);
+        });
+        $("jointNote").textContent = `Highlighted when temperature reaches ${lim.temp} °C, load ${lim.load} or current ${(lim.current * 0.0065).toFixed(1)} A. Updated once a second while this section is open.`;
+      }
+    } catch (e) {   // an older server has no /api/telemetry; a lost server is already announced in the status strip
+      if (legacy()) { $("jointRows").innerHTML = ""; const tr = el("tr", "muted"), td = el("td", "left", "The joint table needs the newer server: restart capture_server.py."); td.colSpan = 8; tr.appendChild(td); $("jointRows").appendChild(tr); }
+    }
+  }
+  telemetryTimer = setTimeout(loadTelemetry, 1000);
+}
+
+// ---- motion settings ----
+let settingSpecs = null, settingsBusy = false;
+const settingText = (spec, v) => spec.type === "bool" ? (v ? "on" : "off") : spec.unit === "m" ? `${Math.round(v * 100)} cm` : `${v} ${spec.unit || ""}`.trim();
+async function loadSettings() {
+  try {
+    settingSpecs = (await request("/api/settings", {}, 3000)).settings;
+  } catch (e) {
+    $("settings").innerHTML = ""; $("settings").append(el("p", "hint", "Could not load the settings: " + e.message));
+    return;
+  }
+  const box = $("settings");
+  box.innerHTML = "";
+  Object.entries(settingSpecs).forEach(([name, spec]) => {
+    const row = el("div", "setting"), head = el("div", "head");
+    head.append(el("b", "", spec.label));
+    let input;
+    if (spec.type === "bool") {
+      input = el("button", "switch"); input.setAttribute("role", "switch"); input.setAttribute("aria-label", spec.label);
+      input.onclick = () => changeSettings({ [name]: input.getAttribute("aria-checked") !== "true" });
+    } else {
+      input = el("input"); input.type = "range"; input.min = spec.min; input.max = spec.max; input.step = spec.step; input.setAttribute("aria-label", spec.label);
+      input.oninput = () => { value.textContent = settingText(spec, Number(input.value)); };
+      input.onchange = () => changeSettings({ [name]: Number(input.value) });
+    }
+    input.id = "set_" + name;
+    const value = el("span", "value"); value.id = "val_" + name;
+    head.append(input, value);
+    row.append(head, el("p", "", `${spec.help} Default: ${settingText(spec, spec.default)}` + (spec.type === "bool" ? "." : `; allowed ${settingText(spec, spec.min)} to ${settingText(spec, spec.max)}.`)));
+    box.appendChild(row);
+  });
+  renderSettings();
+}
+function renderSettings() {
+  if (!state || !settingSpecs) return;
+  const moving = isMoving(), values = state.settings || {};
+  Object.entries(settingSpecs).forEach(([name, spec]) => {
+    const input = $("set_" + name), value = $("val_" + name), v = values[name];
+    if (!input || v === undefined) return;
+    input.disabled = moving || settingsBusy;
+    if (spec.type === "bool") input.setAttribute("aria-checked", String(!!v));
+    else if (document.activeElement !== input) input.value = v;
+    if (spec.type === "bool" || document.activeElement !== input) value.textContent = settingText(spec, v);
+    value.className = "value" + (v !== spec.default ? " changed" : "");
+  });
+  $("settingsDefaults").disabled = moving || settingsBusy || !state.settings_changed;
+  $("settingsSummary").textContent = state.settings_changed ? "changed from the defaults" : "defaults";
+  $("settingsNote").textContent = moving ? "Locked while the arm is moving." : "";
+}
+async function changeSettings(body) {
+  settingsBusy = true; renderSettings();
+  try {
+    const r = await post("/api/settings", body);
+    Object.entries(r.settings).forEach(([k, s]) => { if (state && state.settings) state.settings[k] = s.value; });
+    note(body.defaults ? "Motion settings are back at the defaults." : "Motion settings changed: " + r.changed.map((k) => `${settingSpecs[k].label.toLowerCase()} is now ${settingText(settingSpecs[k], r.settings[k].value)}`).join(", ") + ".", "ok");
+  } catch (e) {
+    note("Could not change the settings: " + e.message, "bad");
+  }
+  settingsBusy = false;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  kick();
+}
+
+// ---- history ----
+async function loadHistory() {
+  if (!$("secHistory").open) return;
+  const rows = $("historyRows");
+  try {
+    const h = await request("/api/history", {}, 4000);
+    rows.innerHTML = "";
+    $("historyNote").textContent = h.note || "";
+    $("historySummary").textContent = h.moves.length ? `${h.moves.length} shown, newest first` : "";
+    if (!h.moves.length) { const td = el("td", "left", "No moves yet."); td.colSpan = 9; const tr = el("tr", "muted"); tr.appendChild(td); rows.appendChild(tr); return; }
+    const today = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+    h.moves.forEach((mv) => {
+      const tr = el("tr");
+      const cell = (text, cls) => tr.appendChild(el("td", cls || "num", text));
+      const peak = (p, unit) => (p ? `${unit ? unit(p.value) : p.value} (joint ${p.motor})` : "–");
+      cell((mv.date && mv.date !== today ? mv.date + " " : "") + (mv.clock || "–"));
+      cell(mv.view || "–");
+      cell(mv.ok ? "ok" : (mv.error || "failed"), "left " + (mv.ok ? "good" : /^stopped/.test(mv.error || "") ? "" : "bad"));
+      cell(mv.speed == null ? "–" : `${mv.speed_name ? mv.speed_name + " " : ""}${mv.speed}` + (mv.asked && mv.speed_name && mv.asked !== mv.speed_name ? ` (asked ${mv.asked})` : ""));
+      cell(mv.took != null ? mv.took + " s" : "–");
+      cell(peak(mv.worst_lag));
+      cell(peak(mv.peak_load));
+      cell(peak(mv.peak_current, (v) => (v * 0.0065).toFixed(2) + " A"));
+      cell(mv.max_temp == null ? "–" : mv.max_temp + " °C");
+      rows.appendChild(tr);
+    });
+  } catch (e) {
+    $("historyNote").textContent = "Could not load the history: " + e.message;
+  }
+}
+
+// ---- arm picture (the geometry model's stick figure) ----
+const FIGS = {   // which model axes run right / up in each canvas, and where the arm's base sits
+  picSide: { h: (p) => p[1], v: (p) => p[2], ox: 0.32, oy: 0.86, desk: true },
+  picTop: { h: (p) => p[0], v: (p) => p[1], ox: 0.5, oy: 0.68, desk: false },
+};
+const SPAN_M = 0.78;   // metres shown across each canvas
+let poseTimer = null, poseOff = false, lastPose = null;
+function drawFigure(id, pose, target) {
+  const c = $(id), F = FIGS[id];
+  const size = Math.round((c.clientWidth || 240) * (window.devicePixelRatio || 1));
+  if (c.width !== size) { c.width = size; c.height = size; }
+  const g = c.getContext("2d"), W = c.width, k = W / SPAN_M, px = W / 480;
+  const X = (p) => W * F.ox + F.h(p) * k, Y = (p) => W * F.oy - F.v(p) * k;
+  g.clearRect(0, 0, W, W);
+  g.lineWidth = 1; g.strokeStyle = cssVar("--line");
+  for (let m = -0.8; m <= 0.8; m += 0.1) {   // 10 cm grid
+    g.beginPath(); g.moveTo(W * F.ox + m * k, 0); g.lineTo(W * F.ox + m * k, W); g.stroke();
+    g.beginPath(); g.moveTo(0, W * F.oy - m * k); g.lineTo(W, W * F.oy - m * k); g.stroke();
+  }
+  if (F.desk) {
+    g.strokeStyle = cssVar("--table"); g.lineWidth = 3 * px; g.beginPath(); g.moveTo(0, W * F.oy); g.lineTo(W, W * F.oy); g.stroke();
+    if (pose.clear_height_m) {
+      const y = W * F.oy - pose.clear_height_m * k;
+      g.strokeStyle = cssVar("--muted"); g.lineWidth = 1.5 * px; g.setLineDash([6 * px, 6 * px]);
+      g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.setLineDash([]);
+    }
+  }
+  g.font = `${11 * px}px system-ui, sans-serif`;
+  Object.entries(pose.views || {}).forEach(([name, p]) => {
+    const isTarget = name === target;
+    g.fillStyle = isTarget ? cssVar("--warn") : cssVar("--ghost");
+    g.beginPath(); g.arc(X(p), Y(p), (isTarget ? 6 : 4) * px, 0, 7); g.fill();
+    g.fillText(name, X(p) + 8 * px, Y(p) + 4 * px);
+  });
+  if (!pose.chain) return;
+  g.strokeStyle = cssVar("--arm"); g.lineWidth = 8 * px; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath(); g.moveTo(X([0, 0, 0]), Y([0, 0, 0]));
+  pose.chain.forEach((p) => g.lineTo(X(p), Y(p)));
+  g.stroke();
+  g.fillStyle = cssVar("--text");
+  pose.chain.forEach((p) => { g.beginPath(); g.arc(X(p), Y(p), 3.5 * px, 0, 7); g.fill(); });
+  g.fillStyle = cssVar("--cam"); g.beginPath(); g.arc(X(pose.camera), Y(pose.camera), 7 * px, 0, 7); g.fill();
+}
+async function loadPose() {
+  clearTimeout(poseTimer);
+  if (poseOff) return;
+  if (!document.hidden) {
+    try {
+      const r = await fetch("/api/pose"), pose = await r.json();
+      if (pose.available === false) { poseOff = true; $("picPanel").hidden = true; return; }   // no geometry model: no picture
+      $("picPanel").hidden = false;
+      if (pose.ok) lastPose = pose; else if (lastPose) lastPose = { ...lastPose, views: pose.views || lastPose.views };
+      $("picPanel").classList.toggle("dim", !pose.ok);
+      $("picNote").textContent = pose.ok
+        ? `lowest point ${Math.round(pose.lowest_m * 100)} cm above the desk` + (pose.clearance_m != null ? `, forearm to camera ${Math.round(pose.clearance_m * 100)} cm (by the model)` : "")
+        : "no live joint data: showing the last known pose";
+      const shown = lastPose || pose, target = isMoving() ? (pending !== null ? pending : motionState().view) : null;
+      Object.keys(FIGS).forEach((id) => drawFigure(id, shown, target));
+    } catch (e) { /* the status strip already says when the server is gone */ }
+  }
+  poseTimer = setTimeout(loadPose, isMoving() ? 200 : 1000);
+}
+
+// ---- links ----
+async function loadExtras() {
+  try {
+    const x = await request("/api/extras", {}, 3000);
+    $("mcp").hidden = false;
+    $("mcp").textContent = x.mcp.up ? "● MCP server is up" : "○ MCP server is not running";
+    $("mcp").style.color = x.mcp.up ? cssVar("--ok") : "";
+    $("mcp").title = `${x.mcp.url}: the MCP server lets Claude pick views through this page's server`;
+  } catch (e) { $("mcp").hidden = true; }
+  setTimeout(loadExtras, 20000);
+}
+
+// ---- everything together ----
 function render() {
-  const m = motionState();
-  const moving = isMoving();
-  const target = pending !== null ? pending : m.view;
-  const failed = moving ? null : failure(m.last_result);
-  const [whereLine, whereWarn, whereSentence] = state ? whereText() : ["", false, ""];
-  const unknown = !!(state && !moving && state.where && state.where.where === "unknown");
-  const blockers = state && !moving && state.connected ? [...(state.blockers || [])] : [];
-  if (unknown && !blockers.length) blockers.push(UNKNOWN_HELP);
+  renderStrip();
+  renderMove();
+  renderViews();
+  renderPower();
+  renderSettings();
 
-  // Headline + sticky bar: usable even before the first state arrives.
-  let headline = "Connecting\u2026";
-  if (moving) headline = `Moving to ${target}`;
-  else if (state) headline = "Idle";
-  const info = $("stopInfo");
+  // The STOP bar: usable and truthful even before the first state arrives.
+  const m = motionState(), moving = isMoving(), info = $("stopInfo");
   if (lost) {
-    $("headline").className = "lost";
-    $("headline").textContent = "No connection to capture_server.py";
     info.className = "info bad";
     info.textContent = "No connection to capture_server.py. STOP still tries; the power plug always works.";
   } else {
-    $("headline").className = "";
-    $("headline").textContent = headline;
     info.className = "info";
-    info.textContent = moving && m.phase ? `${headline} \u00B7 ${m.phase}` : (!moving && state && whereLine ? `${headline} \u00B7 ${whereLine}` : headline);
-    // Refusals, aborts and blockers say what to do next; keep them in view wherever the page is scrolled.
-    const problem = failed ? `"${failed.view}": ${failed.error}` : (blockers[0] || "");
-    if (problem) info.append(Object.assign(document.createElement("span"), { className: "err", textContent: problem }));
+    const w = state && !moving ? whereText(state.where) : null;
+    info.textContent = moving ? `Moving to ${pending !== null ? pending : m.view}` + (m.phase ? ` · ${m.phase.split("+").join(" and ")}` : "") : state ? "Idle" + (w ? ` · ${w.charAt(0).toLowerCase() + w.slice(1)}` : "") : "Connecting…";
   }
   // A stop or abort whose hold could not be confirmed: loud, and it stays until a hold is confirmed.
   const unheld = holdFail || (state && state.hold === "unconfirmed" ? (m.last_result && m.last_result.hold === "unconfirmed" && m.last_result.error) || "the last hold could not be confirmed" : "");
   $("holdFail").hidden = !unheld;
   if (unheld) {
     $("holdFail").textContent = "HOLD NOT CONFIRMED: check the arm, pull the follower's power plug if it is still moving";
-    $("holdFail").append(Object.assign(document.createElement("small"), { textContent: unheld + " \u00B7 press STOP again to confirm the hold" }));
+    $("holdFail").append(el("small", "", unheld + " · press STOP again to confirm the hold"));
   }
   document.body.style.paddingBottom = (document.querySelector(".stopbar").offsetHeight + 16) + "px";
 
-  // Speed selector works without state too.
-  const options = (state && state.speed_options) || { slow: 200, normal: 400, fast: 800, turbo: 2000 };
-  if (!(speed in options)) speed = "slow";
-  document.querySelectorAll("#speed button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.speed === speed)));
-  const first = state && state.first_speed;
-  $("speedHint").textContent = `${options[speed]} steps/s \u00B7 unchecked views run very slow` + (first ? ` (${first} steps/s)` : "") + (moving ? " \u00B7 applies to the next move" : "");
-
   if (!state) return;
-
   $("arm").innerHTML = "";
-  $("arm").append("Arm ", Object.assign(document.createElement("b"), { textContent: state.bus + (state.sim ? " (simulated)" : "") }));
-  if (!lost) $("joints").textContent = state.joints;
+  $("arm").append("Arm ", el("b", "", state.bus + (state.sim ? " (simulated)" : "")));
+  $("cameraPick").hidden = !state.cameras.length;
   fillSelect($("camera"), state.cameras, state.camera, (q) => "camera " + q.split("/").pop().slice(0, 6));
-  $("badge").textContent = state.cameras.length ? "live" : (state.sim ? "simulated arm \u00B7 no camera" : "no camera");
-
-  $("where").className = "where" + (whereWarn && !moving ? " warn" : "");
-  $("where").textContent = moving ? "" : whereSentence;
-  $("blockers").hidden = !blockers.length;
-  if (blockers.length) {
-    const list = document.createElement("ul");
-    blockers.forEach((b) => list.appendChild(Object.assign(document.createElement("li"), { textContent: b })));
-    $("blockers").innerHTML = "";
-    $("blockers").append(Object.assign(document.createElement("b"), { textContent: "A move cannot start right now" }), list);
-  }
-
-  // Phase, route steps and progress.
-  const route = (moving && m.moving && m.route) || [];
-  $("route").innerHTML = "";
-  route.forEach((seg, i) => {
-    const li = document.createElement("li");
-    li.textContent = seg;
-    li.className = i + 1 < m.phase_index ? "done" : (i + 1 === m.phase_index ? "now" : "");
-    if (i + 1 === m.phase_index) li.setAttribute("aria-current", "step");
-    $("route").appendChild(li);
-  });
-  if (moving) {
-    const phase = !m.moving ? "check" : (m.phase || "moving");
-    $("phase").innerHTML = "";
-    $("phase").append(Object.assign(document.createElement("b"), { textContent: phase === "check" ? "checking the arm and planning the route" : phase }));
-    if (m.moving && m.phase_count > 0 && m.phase_index > 0) $("phase").append(` \u00B7 step ${m.phase_index} of ${m.phase_count}`);
-    const p = m.moving ? Math.max(0, Math.min(1, Number(m.progress) || 0)) : 0;
-    $("barFill").style.transition = p < lastProgress ? "none" : "";   // a new segment starts at 0: jump, don't rewind
-    $("barFill").style.width = (p * 100).toFixed(1) + "%";
-    lastProgress = p;
-    $("bar").className = "bar";
-  } else {
-    $("phase").textContent = "";
-    $("bar").className = "bar idle";
-    $("barFill").style.width = "0"; lastProgress = 0;
-  }
-
-  // Last result: failures and refusals loud, everything else quiet.
-  $("alert").hidden = !failed;
-  if (failed) {
-    $("alert").innerHTML = "";
-    $("alert").append(Object.assign(document.createElement("small"), { textContent: `Move to "${failed.view}" did not complete` }), failed.error || "unknown error");
-  }
-  const [text, cls] = resultText(m.last_result);
-  $("result").className = "msg " + cls + (moving ? " stale" : "");
-  $("result").textContent = text;
-
-  const torque = state.connected ? state.torque : null;
-  $("torque").className = "torque " + (torque === "holding" ? "on" : "off");
-  $("torque").textContent = torque === "holding" ? "arm is holding" : torque === "limp" ? "arm is limp: support it, then Hold here before moving" : "no data from the arm";
-  $("recover").hidden = !(unknown && torque === "holding" && state.has_transit);
-  $("hold").disabled = moving;
-  $("hold").title = moving ? "A move is running: press STOP to hold the arm where it is" : "";
-
-  buildGrid();
-  $("grid").classList.toggle("locked", moving);
-  document.querySelectorAll("#grid .card").forEach((card) => {
-    const name = card.dataset.name;
-    const isTarget = moving && name === target;
-    const isCurrent = !moving && name === state.current_view;
-    card.classList.toggle("target", isTarget);
-    card.classList.toggle("current", isCurrent);
-    card.setAttribute("aria-disabled", String(moving));
-    card.querySelector(".tag").textContent = isTarget ? "moving\u2026" : (isCurrent ? "here" : "");
-  });
-
-  const atHub = !moving && state.where && state.where.where === "hub";
-  $("transit").disabled = moving || !state.has_transit;
-  $("transit").className = atHub ? "current" : "";
-  $("transit").textContent = moving && target === state.transit ? "Going to transit\u2026" : "Go to transit";
-  $("transitHint").textContent = !state.has_transit ? "No transit pose saved yet: capture one named \"transit\" on the Capture page. Nothing can move without it."
-    : atHub ? "the arm is at the transit pose" : "the safe raised pose every move passes through (not a camera view)";
+  $("badge").textContent = state.cameras.length ? "live" : (state.sim ? "simulated arm · no camera" : "no camera");
 }
 
 // ---- wiring ----
 $("stop").onclick = stop;
 $("hold").onclick = holdHere;
+$("limp").onclick = goLimp;
+$("unlink").onclick = unlink;
 $("recover").onclick = recover;
 $("transit").onclick = () => go(state.transit);
+$("lastDismiss").onclick = () => { const r = motionState().last_result; dismissed = (r && r.at) || 0; store.set("controlDismissed", dismissed); render(); };
+$("settingsDefaults").onclick = () => changeSettings({ defaults: true });
+$("historyRefresh").onclick = loadHistory;
 document.querySelectorAll("#speed button").forEach((b) => { b.onclick = () => setSpeed(b.dataset.speed); });
 $("camera").onchange = () => post("/api/camera", { queue: $("camera").value }).then(kick, kick);
 $("live").onerror = () => { $("badge").textContent = "no camera"; setTimeout(() => { $("live").src = "/stream?" + Date.now(); }, 2000); };
+$("stationLink").href = `http://${location.hostname || "localhost"}:8889`;
+
+// Help and the open/closed sections are remembered.
+function showHelp(open) { $("help").hidden = !open; $("helpBtn").setAttribute("aria-expanded", String(open)); store.set("controlHelp", open); }
+$("helpBtn").onclick = () => showHelp($("help").hidden);
+showHelp(store.get("controlHelp", false));
+const openState = store.get("controlOpen", {});
+["secPower", "secSettings", "secHistory"].forEach((id) => {
+  if (id in openState) $(id).open = !!openState[id];
+  $(id).addEventListener("toggle", () => {
+    openState[id] = $(id).open; store.set("controlOpen", openState);
+    if (id === "secHistory") loadHistory();
+    if (id === "secPower") loadTelemetry();
+  });
+});
 
 // Space and Esc always mean STOP on this page, whatever has focus.
 const isSpace = (e) => e.key === " " || e.code === "Space";
@@ -567,9 +1063,15 @@ window.addEventListener("keydown", (e) => {
   }
 }, true);
 window.addEventListener("keyup", (e) => { if (isSpace(e)) { e.preventDefault(); e.stopPropagation(); } }, true);  // no click on a focused button
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadPose(); loadTelemetry(); } });
 
 render();
 kick();
+loadSettings();
+loadTelemetry();
+loadPose();
+loadHistory();
+loadExtras();
 </script>
 </body>
 </html>

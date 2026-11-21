@@ -281,6 +281,8 @@ export function recordingStateLabel(state: string | null | undefined): string {
 
 export function commandErrorMessage(code: string | null | undefined, message?: string | null): string {
   const m: Record<string, string> = {
+    PHONE_DISCONNECTED: "Not connected to the phone.",
+    COMMAND_TIMEOUT: "No response from the phone.",
     ACTION_NOT_ALLOWED_WHILE_RECORDING: "That setting can't be changed while recording. Stop the recording first.",
     PROFILE_UNSUPPORTED: "The phone can't record with that quality setting. Choose another quality.",
     LOW_STORAGE: "Not enough free storage on the phone to start recording (at least 2 GB needed).",

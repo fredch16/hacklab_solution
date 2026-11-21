@@ -1,9 +1,30 @@
 import { commandErrorMessage } from "./state.js";
 export const MAX_TRANSCRIPTS = 50;
 export const initialLive = () => ({ transcripts: [], commands: {} });
+/** Interpret a fresh final only. The phone supplies text from two decoders. */
+export function planVoiceCommand(type, payload) {
+    if (type !== "voice.transcript.final" || !payload || typeof payload !== "object")
+        return null;
+    const { utterance_id, text, end_reason, acoustic_text } = payload;
+    if (end_reason !== "silence" || typeof text !== "string" ||
+        typeof utterance_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(utterance_id))
+        return null;
+    const request = text.toLowerCase().replace(/[^a-z0-9' ]/g, " ").replace(/\s+/g, " ").trim()
+        .replace(/^(?:(?:okay|ok|please|can you|could you|would you) )+/, "")
+        .replace(/(?: (?:please|right now|now|thank you|okay|i think))+$/, "");
+    const request_id = `voice:${utterance_id}`;
+    if ((request === "record" && acoustic_text === "record") ||
+        (/^(start|begin) (the )?recording$/.test(request) && acoustic_text === "start recording")) {
+        return { type: "recording.start", request_id };
+    }
+    if (/^(stop|end) (the )?recording$/.test(request) && acoustic_text === "stop recording") {
+        return { type: "recording.stop", request_id };
+    }
+    return null;
+}
 const ts = (t) => Date.parse(t.started_utc ?? t.ended_utc ?? "") || 0;
 const newestFirst = (list) => [...list].sort((a, b) => ts(b) - ts(a)).slice(0, MAX_TRANSCRIPTS);
-/** Fold finals and command results from phone->browser voice.* events into the transcript list. (Wake/partials drive the popup only.) */
+/** Fold phone finals and dashboard command outcomes into the transcript list. */
 export function applyVoiceEvent(live, type, p) {
     const id = typeof p?.utterance_id === "string" ? p.utterance_id : null;
     switch (type) {
@@ -22,8 +43,8 @@ export function applyVoiceEvent(live, type, p) {
     }
 }
 /** Badge for a transcript's voice command, or null when none/no action. */
-export function commandBadge(t, ev) {
-    const command = ev?.command ?? t.command ?? null;
+export function commandBadge(ev) {
+    const command = ev?.command;
     if (!command || command === "none")
         return null;
     if (ev && !ev.ok)
@@ -110,8 +131,8 @@ export function popupView(p) {
     else if (p.command) {
         const c = p.command;
         result = !c.ok ? { kind: "bad", text: commandErrorMessage(c.error) }
-            : c.command === "recording.start" ? { kind: "rec", text: "▶ Starting recording" }
-                : c.command === "recording.stop" ? { kind: "neutral", text: "■ Stopping recording" }
+            : c.command === "recording.start" ? { kind: "rec", text: "▶ Started recording" }
+                : c.command === "recording.stop" ? { kind: "neutral", text: "■ Stopped recording" }
                     : { kind: "neutral", text: "No matching command" };
     }
     return { title: none ? "No command" : "Heard", subtitle: null, stable: none ? "" : p.text, tail: "", mode: "done", glyph: result?.kind === "bad" ? "!" : none || result?.text === "No matching command" ? "\u2013" : "\u2713", result, announce: [none ? "" : p.text, result?.text].filter(Boolean).join(". ") || "Didn’t hear a command" };

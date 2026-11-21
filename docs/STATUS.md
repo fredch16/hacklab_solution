@@ -13,8 +13,8 @@ _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any ag
 | Slice 0 — phone app shell, embedded HTTPS/WSS server, pairing | ✅ QR pairing (browser shows QR, phone scans + Approve), 6-digit code fallback, revoke/replace, live device status (battery/charging instant, thermal, storage, network) |
 | Slice 1 — camera → WebRTC → browser | ✅ Camera starts when the browser clicks **Start video**; H.264 hardware encoder, 640×360 ~25–30 fps, ~0.6–1.3 Mbps, RTT ~26–31 ms over the phone hotspot |
 | Slice 2 — local recording while streaming | ✅ Record/Stop from browser (confirm on stop) and phone; best effort 1080p ~60 fps HEVC + AAC 48 kHz stereo → `Movies/LocalVision` |
-| Slices 3–4 — wake word + command transcription | ⚠️ Fixed **Hey** prefix with a name entered in dashboard Settings. Dedicated offline Zipformer spotter with local pronunciation for new names. The Pixel clip test passed the Alexa-versus-Google demo criterion. The Android voice path uses final-pass Whisper base.en and verifies recording commands with a separate phoneme check. [Command and room-noise replay evidence](evidence/slice-04-command-accuracy-2026-11-21.md). See [wake regression evidence](evidence/slice-03-wake-2026-11-21.md). **Owner microphone, streaming and recording acceptance pending.** |
-| Voice commands | Static demo rules: "start/begin (the) recording", "record" → start; "stop/end (the) recording" → stop |
+| Slices 3–4 — wake word + command transcription | Fixed **Hey** prefix with a name entered in dashboard Settings. Dedicated offline Zipformer spotter with local pronunciation for new names. The Pixel clip test passed the Alexa-versus-Google demo criterion. The Android voice path uses final-pass Whisper base.en and verifies recording commands with a separate phoneme check. [Command and room-noise replay evidence](evidence/slice-04-command-accuracy-2026-11-21.md). See [wake regression evidence](evidence/slice-03-wake-2026-11-21.md). **Owner reported the previous build worked well enough for the demo.** Live voice after the dashboard routing change is pending. [Routing checks and owner test steps](evidence/slice-04-dashboard-voice-routing-2026-11-21.md). |
+| Voice commands | Paired browser routes live, silence-ended finals with matching acoustic text. The phone accepts the normal authenticated recording RPC. Static demo rules: "start/begin (the) recording", "record" → start; "stop/end (the) recording" → stop |
 | Dashboard voice overlay | ✅ Assistant-style overlay (bottom sheet, animated bars/waveform, glowing light bar, live text, command result chip), fixed a CSS bug that hid it on desktop |
 | Slice 5 — original file download over LAN | ⏳ Not started |
 | Slice 6 — iOS | ⏳ Not started (needs Mac + iPhone) |
@@ -30,7 +30,7 @@ _Last updated: 2026-11-21. Keep this file current: it is the hand-off for any ag
 
 ## Architecture (as built)
 - **Phone (Flutter + Kotlin)**: `apps/mobile`. Dart: session controller, embedded `dart:io` HTTPS/WSS server (`lib/features/connectivity/`), signaling relay, UI tabs Capture/Voice/Files/Link. Kotlin (`android/app/src/main/kotlin/dev/localvision/local_vision/`): `CameraSession` (Camera2 single owner: preview texture + 640×360 YUV for WebRTC/QR + encoder surface), `VisionStream` (native libwebrtc `io.github.webrtc-sdk:android`, network monitor disabled so the hotspot interface is used, SDP filtered to private IPv4), `MasterRecorder`/`VideoEncoder`/`AacEncoder`, `AudioCaptureBus` (only mic owner, fan-out), `VoiceEngine` (sherpa-onnx, models in assets), `QrScanner` (ZXing), `RecordingStore` (MediaStore).
-- **Dashboard**: `apps/dashboard` (TypeScript, no framework, no runtime deps; vendored MIT qrcode-generator). `npm run build` writes flat files into `apps/mobile/assets/dashboard/`, served by the phone.
+- **Dashboard**: `apps/dashboard` (TypeScript, no framework, no runtime deps; vendored MIT qrcode-generator. Owns spoken recording intent and command results). `npm run build` writes flat files into `apps/mobile/assets/dashboard/`, served by the phone.
 - **Contract**: `packages/protocol/README.md` (locked; later sections supersede earlier ones where stated).
 - **ADRs**: `docs/adr/0001` self-signed HTTPS · `0002` single camera owner + native WebRTC (+ hotspot notes) · `0003` recording pipeline (Camera2 spike result) · `0004` voice pipeline.
 - **Evidence**: `docs/evidence/slice-0{0,1,2}-2026-11-21.md`.
@@ -57,6 +57,6 @@ Phone joins a public Wi-Fi (client isolation — PC↔phone impossible there) **
 - Dev-only: `apps/dashboard/dev/server.mjs` is a mock phone for UI work; not shipped.
 
 ## Next
-1. Owner re-tests voice → fix until wake + commands are reliable.
+1. Owner re-tests voice after dashboard routing and verifies reconnect does not replay commands.
 2. Slice 5: download finalized recordings over LAN with SHA-256 verification.
-3. More voice commands (owner to define).
+3. Future dashboard-side MCP command service. See [handoff](ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff).

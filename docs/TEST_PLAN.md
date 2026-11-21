@@ -33,7 +33,7 @@
 | S3-02 | 3 | Audio while video+recording | Master audio intact and wake recognition still operates |
 | S3-03 | 3 | Mute microphone | KWS stops, both UIs reflect actual mic state |
 | S3-04 | 3 | Negative speech/noise test | Measured false positives recorded, no fabricated accuracy claim |
-| S4-01 | 4 | Wake phrase + 3 utterances | Final transcripts and command results visible on phone and browser |
+| S4-01 | 4 | Wake phrase + 3 utterances | Final transcripts visible on phone and browser. Browser sends authenticated recording commands and shows replies. |
 | S4-02 | 4 | VAD endpoint/timeout | Utterance completes or times out with clear state |
 | S4-03 | 4 | Missing/invalid model | Clear model error, other capture features remain operable |
 | S4-04 | 4 | WAN off, no ASR API | Offline transcription still completes, no Internet egress |

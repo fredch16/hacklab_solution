@@ -84,19 +84,6 @@ class SignalingRelay {
     'message': message,
   }, requestId: id);
 
-  /// Runs a command that did not come from the browser (voice), through the same
-  /// idempotent path: a repeated [requestId] returns the stored result.
-  Future<Map<String, Object?>> execute(String requestId, String type) async {
-    final r = await (_results[requestId] ??= _runCommand(type, const {})
-        .catchError(
-          (Object _) => <String, Object?>{
-            'ok': false,
-            'error': 'RECORDING_FAILED',
-          },
-        ));
-    return r;
-  }
-
   Future<void> handle(String raw) async {
     if (raw.length > _maxMessageChars)
       return _error(null, 'BAD_REQUEST', 'Message too large.');

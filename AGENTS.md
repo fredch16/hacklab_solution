@@ -4,11 +4,11 @@ Applies to Claude Code, Codex, Cursor, Copilot, reviewers, and humans executing 
 
 ## 1. Mission and boundaries
 
-Build a **phone-first, fully local, foreground** Flutter application that owns camera/mic capture, low-bitrate WebRTC transmission, high-quality **on-device** recording, offline wake-word detection and speech-to-text. The same Flutter app is a **useful on-phone control screen**. It also hosts the signaling/control/download endpoints and a **browser-only PC dashboard**. The PC does **not** run AI inference, camera processing, Python, an SFU or a mandatory server.
+Build a **phone-first, fully local, foreground** Flutter application that owns camera/mic capture, low-bitrate WebRTC transmission, high-quality **on-device** recording, offline wake-word detection and speech-to-text. The same Flutter app is a **useful on-phone control screen**. It also hosts the signaling/control/download endpoints and a **browser-only PC dashboard**. The paired dashboard is the sole interpreter of speech commands. Its recording requests use the same authenticated API as the manual browser controls. The phone records and transcribes. The standalone dashboard requires no server on the PC. See [dashboard-side MCP handoff](docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) for the separate hackathon integration.
 
 The Pixel 10 Pro XL is the first target. Maintain shared Dart UI/domain code and clean Kotlin/Swift native bridges for iOS compatibility. Do not claim iOS behavior works without testing it on real iPhone hardware.
 
-One camera (the phone) in this MVP. Do not add robot USB cameras, calibration suites, robotics control, ROS, autonomous actions, agents/LLMs, remote cloud services, or full-resolution video streaming.
+One camera (the phone) in this MVP. Do not add robot USB cameras, calibration suites, robotics control, ROS, autonomous actions, agents/LLMs, remote cloud services, or full-resolution video streaming to this component. Complex command handling and any future MCP client belong on the dashboard side of the hackathon integration.
 
 ## 2. Vertical slices are mandatory
 
@@ -52,7 +52,7 @@ Suggested question format: "I recommend A because X; B trades that for Y. This a
 - **Single microphone input owner** routes/taps audio for recording and **on-phone** wake word/VAD/ASR. Avoid concurrent independent recording plugins that contend for the microphone.
 - **Master file** stays local until a **separate**, authenticated LAN transfer after stop/finalization. Never send master 4K recording through WebRTC or to a cloud.
 - Remote WebRTC is **vision-only** by default; raw microphone audio is *not* sent to PC. Only transcript/status events go to the dashboard unless user explicitly approves a future change.
-- All inference **on phone**, using bundled or locally imported model assets and verified license. No speech API, hosted STT, cloud STUN/TURN, Firebase, telemetry SaaS, external CDN, analytics or remote signaling.
+- All wake and speech inference **on phone**, using bundled or locally imported model assets and verified license. No speech API, hosted STT, cloud STUN/TURN, Firebase, telemetry SaaS, external CDN, analytics or remote signaling.
 - Device stays foreground and keeps screen on while active. Handle OS interruptions truthfully; never promise uninterrupted capture on phone calls, thermal shutdown or backgrounding.
 - Public Internet must not be necessary after installing app/models; test by disabling WAN while keeping local Wi-Fi connected.
 - Host **secure** LAN dashboard/control endpoints. Pair before remote controls/downloads; no unauthenticated LAN admin endpoints. Document certificate/trust onboarding accurately and avoid telling users to disable browser security.

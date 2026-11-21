@@ -169,14 +169,14 @@ Fixed recording profile **1920×1080 @ 60 fps HEVC** (AVC fallback, reported in 
 ### Events phone → browser
 - `voice.wake_detected` `{"utterance_id","phrase","timestamp_utc"}`
 - `voice.transcript.partial` is a legacy event accepted by the dashboard. Current Android builds send final text after endpoint detection.
-- `voice.transcript.final` `{"utterance_id","text","started_utc","ended_utc","end_reason","asr_latency_ms"}`
+- `voice.transcript.final` `{"utterance_id","text","started_utc","ended_utc","end_reason","asr_latency_ms","acoustic_text"}` — `acoustic_text` is the phone’s constrained second decode (`"start recording"`, `"stop recording"`, `"record"`, or `null`).
 End of command: VAD silence ≥ 1.0 s after speech started, or 15 s since wake (`max_duration`); if no speech within 5 s of wake → final with empty text and `end_reason:"no_speech"`. Cooldown 1 s after final before next wake. **No audio ever leaves the phone.**
 
 ### Voice owner update (2026-11-21) — supersedes above where conflicting
 - **Voice listening starts when the PC starts the video stream** (with the WebRTC peer) and stops when the stream stops. Mic permission still requested at session start. Snapshot `voice.state` = `unavailable` with reason "Starts with the video stream" while no stream.
-- **Static voice commands (demo)** — Android requires agreement between final text and a separate acoustic command check. The phone normalizes the transcript and matches the whole request, allowing polite phrases before or after it.
+- **Static voice commands (demo)** — The dashboard requires a fresh, silence-ended `voice.transcript.final` and agreement with `acoustic_text`. The dashboard normalizes and matches the whole text, allowing polite phrases before or after it.
   - "start recording" (also "begin recording", "record") → `recording.start`
   - "stop recording" (also "end recording") → `recording.stop` (no confirmation for voice)
   - otherwise → no action.
-  Emit `voice.command` `{"utterance_id","command":"recording.start|recording.stop|none","ok":bool,"error":null|"<CODE>"}`; snapshot transcripts gain `"command": "recording.start"|"recording.stop"|null`.
+  The dashboard sends the standard paired recording request with `request_id: "voice:<utterance_id>"`. It associates `command.result` with the original transcript. The phone publishes transcripts and recorder state. Snapshot history is display-only, and the phone does not send a `voice.command` event.
 - Wake word verification is done by the owner in the real world; automated checks cover the logic and supplied audio fixtures.

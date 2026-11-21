@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_vision/features/connectivity/signaling.dart';
 import 'package:local_vision/features/recording/recording_controller.dart';
-import 'package:local_vision/features/voice/voice_commands.dart';
 import 'package:local_vision/features/voice/voice_controller.dart';
 
 import 'fakes.dart';
@@ -24,54 +23,6 @@ String cmd(String type, String id, [Map<String, Object?> payload = const {}]) =>
     });
 
 void main() {
-  group('voice command matcher', () {
-    test('start phrases', () {
-      for (final t in [
-        'Start recording',
-        'please start recording now',
-        'Begin recording.',
-        'record',
-        'ok, record!',
-        'start the recording',
-        'START   RECORDING',
-      ]) {
-        expect(matchVoiceCommand(t), 'recording.start', reason: t);
-      }
-    });
-    test('stop phrases', () {
-      for (final t in [
-        'Stop recording',
-        'stop the recording',
-        'end recording',
-        'please stop recording now',
-        'End the recording.',
-      ]) {
-        expect(matchVoiceCommand(t), 'recording.stop', reason: t);
-      }
-    });
-    test('everything else does nothing', () {
-      for (final t in [
-        '',
-        'hello world',
-        'recorder',
-        'recording',
-        'prerecord',
-        'stop',
-        'start the video',
-        'stout recording',
-        'it was a stout record',
-        "don't stop recording",
-        'do not start recording',
-        'I said start recording yesterday',
-        'start recording and stop recording',
-        'what did you record',
-        'they stopped recording',
-      ]) {
-        expect(matchVoiceCommand(t), isNull, reason: t);
-      }
-    });
-  });
-
   test('wake phrase validation', () {
     expect(validateWakePhrase('  hey   robot '), 'hey robot');
     expect(validateWakePhrase("don't stop"), isNull);
@@ -103,7 +54,6 @@ void main() {
         send: (t, p, {requestId}) => out.add((t, p)),
       );
       voice.sender = (t, p, {requestId}) => out.add((t, p));
-      voice.commandRunner = relay.execute;
     });
 
     Map<String, Object?> finalEvent(String id, String text) => {
@@ -138,116 +88,21 @@ void main() {
       },
     );
 
-    test(
-      'final "start recording" runs recording.start and reports voice.command',
-      () async {
-        cam.emit(finalEvent('utt-1', 'Please start recording now'));
-        await pumpEventQueue();
-        expect(cam.recordCalls, ['start']);
-        expect(
-          out.map((m) => m.$1),
-          containsAll(['voice.transcript.final', 'voice.command']),
-        );
-        expect(out.firstWhere((m) => m.$1 == 'voice.command').$2, {
-          'utterance_id': 'utt-1',
-          'command': 'recording.start',
-          'ok': true,
-          'error': null,
-        });
-      },
-    );
-
-    test(
-      'stop and failures are reported, unrelated speech does nothing',
-      () async {
-        cam.emit(finalEvent('utt-2', 'stop the recording'));
-        await pumpEventQueue();
-        expect(cam.recordCalls, ['stop:user']);
-        cam.recordStartError = 'LOW_STORAGE';
-        cam.emit(finalEvent('utt-3', 'record'));
-        await pumpEventQueue();
-        final c3 = out.lastWhere((m) => m.$1 == 'voice.command').$2;
-        expect(c3, {
-          'utterance_id': 'utt-3',
-          'command': 'recording.start',
-          'ok': false,
-          'error': 'LOW_STORAGE',
-        });
-        cam.emit(finalEvent('utt-4', 'what time is it'));
-        await pumpEventQueue();
-        expect(
-          out.lastWhere((m) => m.$1 == 'voice.command').$2['command'],
-          'none',
-        );
-        expect(cam.recordCalls, ['stop:user', 'start']);
-      },
-    );
-
-    test(
-      'a failed acoustic check blocks a command and stays on the phone',
-      () async {
-        final event = finalEvent('utt-conflict', 'stop recording');
-        (event['payload'] as Map<String, Object?>)['verified_command'] = null;
-        cam.emit(event);
-        await pumpEventQueue();
-        expect(cam.recordCalls, isEmpty);
-        expect(
-          out.lastWhere((m) => m.$1 == 'voice.command').$2['command'],
-          'none',
-        );
-        expect(
-          out.firstWhere((m) => m.$1 == 'voice.transcript.final').$2,
-          isNot(contains('verified_command')),
-        );
-
-        final agreed = finalEvent('utt-agree', 'start recording');
-        (agreed['payload'] as Map<String, Object?>)['verified_command'] =
-            'recording.start';
-        cam.emit(agreed);
-        await pumpEventQueue();
-        expect(cam.recordCalls, ['start']);
-      },
-    );
-
-    test(
-      'a repeated utterance id does not execute twice (idempotent)',
-      () async {
-        cam.emit(finalEvent('utt-9', 'start recording'));
-        cam.emit(finalEvent('utt-9', 'start recording'));
-        await pumpEventQueue();
-        expect(cam.recordCalls, ['start']);
-      },
-    );
-
-    test('snapshot transcripts carry the matched command', () async {
-      cam.emit({
-        'event': 'voice',
-        'voice': {
-          'state': 'listening',
-          'transcripts': [
-            {
-              'id': 'utt-1',
-              'text': 'start recording',
-              'started_utc': 'a',
-              'ended_utc': 'b',
-              'end_reason': 'silence',
-            },
-            {
-              'id': 'utt-0',
-              'text': 'hello',
-              'started_utc': 'a',
-              'ended_utc': 'b',
-              'end_reason': 'silence',
-            },
-          ],
-        },
-      });
-      cam.emit(finalEvent('utt-1', 'start recording'));
-      cam.emit(finalEvent('utt-0', 'hello'));
+    test('phone forwards the transcription without acting on it', () async {
+      final event = finalEvent('utt-1', 'Please start recording now');
+      (event['payload'] as Map<String, Object?>)['acoustic_text'] =
+          'start recording';
+      cam.emit(event);
       await pumpEventQueue();
-      final t = voice.voice['transcripts'] as List;
-      expect((t[0] as Map)['command'], 'recording.start');
-      expect((t[1] as Map)['command'], isNull);
+
+      expect(cam.recordCalls, isEmpty);
+      expect(out.single.$1, 'voice.transcript.final');
+      expect(out.single.$2, event['payload']);
+
+      await relay.handle(cmd('recording.start', 'voice:utt-1'));
+      await relay.handle(cmd('recording.start', 'voice:utt-1'));
+      expect(cam.recordCalls, ['start']);
+      expect(out.last.$1, 'command.result');
     });
 
     test('listening follows start/stop and end clears', () async {

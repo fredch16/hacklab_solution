@@ -47,15 +47,15 @@ test("the editable name always follows Hey", () => {
     assert.equal(V.validateWakeName(name).ok, false, name);
 });
 
-test("voice.command badges, from event and from snapshot", () => {
+test("voice command badges reflect dashboard outcomes", () => {
   let l = V.applyVoiceEvent(V.initialLive(), "voice.transcript.final", final("u1", "start recording"));
   l = V.applyVoiceEvent(l, "voice.command", { utterance_id: "u1", command: "recording.start", ok: true, error: null });
-  assert.equal(V.commandBadge(l.transcripts[0], l.commands.u1), "▶ Started recording");
+  assert.equal(V.commandBadge(l.commands.u1), "▶ Started recording");
   l = V.applyVoiceEvent(l, "voice.command", { utterance_id: "u1", command: "recording.start", ok: false, error: "LOW_STORAGE" });
-  assert.match(V.commandBadge(l.transcripts[0], l.commands.u1), /^✕ .*storage/i);
-  assert.equal(V.commandBadge({ id: "x", text: "", command: "recording.stop" }), "■ Stopped recording");
-  assert.equal(V.commandBadge({ id: "x", text: "", command: null }), null);
-  assert.equal(V.commandBadge({ id: "x", text: "" }, { command: "none", ok: true, error: null }), null);
+  assert.match(V.commandBadge(l.commands.u1), /^✕ .*storage/i);
+  assert.equal(V.commandBadge({ command: "recording.stop", ok: true, error: null }), "■ Stopped recording");
+  assert.equal(V.commandBadge(), null);
+  assert.equal(V.commandBadge({ command: "none", ok: true, error: null }), null);
   const m = V.mergeSnapshotVoice(l, { state: "listening", transcripts: [] });
   assert.ok(m.commands.u1);
 });
@@ -77,8 +77,8 @@ test("popup: wake -> partial -> final -> command, replacement, no_speech", () =>
   assert.equal(V.popupView(p).result, null); // command result not here yet
   assert.equal(V.popupReduce(p, "voice.transcript.partial", { utterance_id: "u1", text: "late" }).text, "start recording");
   const ok = V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.start", ok: true });
-  assert.deepEqual(V.popupView(ok).result, { kind: "rec", text: "▶ Starting recording" });
-  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.stop", ok: true })).result.text, "■ Stopping recording");
+  assert.deepEqual(V.popupView(ok).result, { kind: "rec", text: "▶ Started recording" });
+  assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.stop", ok: true })).result.text, "■ Stopped recording");
   assert.equal(V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "none", ok: true })).result.text, "No matching command");
   const bad = V.popupView(V.popupReduce(p, "voice.command", { utterance_id: "u1", command: "recording.start", ok: false, error: "LOW_STORAGE" }));
   assert.equal(bad.result.kind, "bad"); assert.match(bad.result.text, /storage/i);
@@ -89,4 +89,25 @@ test("popup: wake -> partial -> final -> command, replacement, no_speech", () =>
   const ns = V.popupReduce(n, "voice.transcript.final", { utterance_id: "u2", text: "", end_reason: "no_speech" });
   assert.equal(V.popupView(ns).result.text, "Didn’t hear a command");
   assert.equal(V.popupReduce(null, "voice.transcript.final", { utterance_id: "u9", text: "x" }), null);
+});
+
+test("a live recording transcript must agree with the acoustic transcription", () => {
+  const type = "voice.transcript.final";
+  const plan = (text, acoustic_text) => V.planVoiceCommand(type, { ...final("utt-1", text), acoustic_text });
+  assert.deepEqual(plan("Please begin the recording now.", "start recording"),
+    { type: "recording.start", request_id: "voice:utt-1" });
+  assert.deepEqual(plan("end recording", "stop recording"),
+    { type: "recording.stop", request_id: "voice:utt-1" });
+  assert.deepEqual(plan("ok, record!", "record"),
+    { type: "recording.start", request_id: "voice:utt-1" });
+  for (const [text, acoustic] of [
+    ["start recording", undefined], ["stop recording", null],
+    ["start recording", "stop recording"], ["start recording", "record"],
+    ["stout recording", "start recording"], ["don't stop recording", "stop recording"],
+    ["start recording and stop recording", "start recording"], ["record the meeting", "record"],
+  ]) assert.equal(plan(text, acoustic), null, text);
+  const p = { ...final("utt-1", "start recording"), acoustic_text: "start recording" };
+  assert.equal(V.planVoiceCommand("voice.transcript.partial", p), null);
+  assert.equal(V.planVoiceCommand("session.snapshot", p), null);
+  assert.equal(V.planVoiceCommand(type, { ...p, end_reason: "max_duration" }), null);
 });

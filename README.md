@@ -1,6 +1,6 @@
 # Local Vision Console — agent handoff
 
-**Status:** architecture/specification handoff; **not** an implemented or hardware-tested application.  
+**Status:** implemented Android app and paired browser dashboard. See [current status](docs/STATUS.md) for device evidence and remaining checks.
 **Prepared:** 21 November 2026.  
 **Primary device:** Google Pixel 10 Pro XL (Android), with iOS as a supported architectural target.  
 **Product:** a **foreground Flutter camera-and-voice app** on the phone and a **browser-only monitoring/control dashboard** on a PC. It works on a **local network with the public Internet disconnected**.
@@ -8,7 +8,7 @@
 ## Start here
 
 1. Read [`AGENTS.md`](AGENTS.md) — mandatory behavior for *all* coding agents.
-2. Read [`MASTER_PROMPT.md`](MASTER_PROMPT.md) — ready to paste into Claude Code, Codex, Cursor, etc.
+2. Read [`docs/STATUS.md`](docs/STATUS.md) for the current build, test and demo instructions.
 3. Read [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 4. Read [`docs/SLICE_PLAN.md`](docs/SLICE_PLAN.md) and the detailed [implementation plan](docs/superpowers/plans/2026-11-21-phone-first-console-implementation.md).
 5. Use [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md), [`ui/design-tokens.json`](ui/design-tokens.json), and the [static, nonfunctional UI preview](ui/reference-dashboard.html) as visual direction.
@@ -31,12 +31,13 @@ Phone — Flutter (always foreground during a session)
   embedded local HTTPS + WSS server ──────────────────────┤
                                                          ▼
                                              PC browser dashboard
-                                          (NO PC model or backend)
+                                  final text -> recording intent -> phone RPC
+                                  future complex requests -> dashboard MCP client
 ```
 
 **Only the phone camera** in the MVP. Robot cameras and calibration are **out of scope**. Precise robot control would later require geometric camera-to-robot calibration even with one camera.
 
-**What this bundle is:** requirements, agent instructions, contracts, UI language, delivery plan, test strategy, risks and a static HTML reference. It is **not** a completed app. The HTML preview is not a functioning dashboard.
+The Flutter app lives in [`apps/mobile`](apps/mobile) and the TypeScript browser dashboard lives in [`apps/dashboard`](apps/dashboard). The [architecture](docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff) defines the boundary for the future MCP integration. The static HTML reference is for design work.
 
 ## File map
 
@@ -44,7 +45,6 @@ Phone — Flutter (always foreground during a session)
 |---|---|
 | `AGENTS.md` | Mandatory agent rules, uncertainties, vertical-slice gates |
 | `CLAUDE.md` | Claude entry point; defers to `AGENTS.md` |
-| `MASTER_PROMPT.md` | Copy/paste first request to the implementing agent |
 | `docs/PRODUCT_SPEC.md` | Scope, product behavior, performance targets, non-goals |
 | `docs/ARCHITECTURE.md` | Capture pipeline, native/Flutter boundary, local networking |
 | `docs/SLICE_PLAN.md` | End-to-end delivery slices and stopping rules |

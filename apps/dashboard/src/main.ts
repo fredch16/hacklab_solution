@@ -1,5 +1,5 @@
 import { qrCanvas } from "./qr.js";
-import { popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
+import { popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, planVoiceCommand, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
 import { handleSignal, initVideo, startVideo, stopVideo, videoEl, view as vs } from "./video.js";
 import {
   applyEnvelope, backoffSeconds, closeMessage, formatBytes, formatClock, formatLocal, formatPercent,
@@ -127,18 +127,26 @@ let phoneStatsAt = 0;
 
 // ---- commands ----
 type Kind = "rec" | "voice";
-const pending = new Map<string, { timer: number; kind: Kind }>();
+type CommandReply = (ok: boolean, error: string | null) => void;
+const pending = new Map<string, { timer: number; kind: Kind; reply?: CommandReply }>();
 let recMsg = "", voiceMsg = "";
 let live: LiveVoice = initialLive();
 const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
 const msg = (k: Kind, m: string) => { if (k === "rec") recMsg = m; else voiceMsg = m; };
 const isPending = (k: Kind) => [...pending.values()].some((p) => p.kind === k);
 
-function sendCommand(type: string, payload: object, kind: Kind = "rec"): boolean {
-  const id = rid();
+function sendCommand(type: string, payload: object, kind: Kind = "rec", id = rid(), reply?: CommandReply): boolean {
   msg(kind, "");
-  if (!sendWs({ version: 1, type, request_id: id, payload })) { msg(kind, "Not connected to the phone."); updateDash(); return false; }
-  pending.set(id, { kind, timer: window.setTimeout(() => { pending.delete(id); msg(kind, "No response from the phone."); updateDash(); }, 10000) });
+  if (!sendWs({ version: 1, type, request_id: id, payload })) {
+    msg(kind, commandErrorMessage("PHONE_DISCONNECTED")); reply?.(false, "PHONE_DISCONNECTED"); updateDash(); return false;
+  }
+  const timer = window.setTimeout(() => {
+    pending.delete(id);
+    msg(kind, commandErrorMessage("COMMAND_TIMEOUT"));
+    reply?.(false, "COMMAND_TIMEOUT");
+    updateDash();
+  }, 10000);
+  pending.set(id, { kind, timer, reply });
   updateDash();
   return true;
 }
@@ -150,6 +158,28 @@ function onCommandResult(env: { request_id?: string; payload?: any }) {
   if (!e) return;
   clearTimeout(e.timer); pending.delete(id);
   if (!p.ok) msg(e.kind, commandErrorMessage(p.error, p.message));
+  e.reply?.(p.ok === true, typeof p.error === "string" ? p.error : null);
+  updateDash();
+}
+
+function onVoiceEvent(type: string, payload: unknown) {
+  // Command results are generated here from correlated command.result replies.
+  if (type === "voice.command") return;
+  live = applyVoiceEvent(live, type, payload);
+  setPopup(popupReduce(popup, type, payload));
+  if (type === "voice.transcript.final" && payload && typeof payload === "object") {
+    const { utterance_id } = payload as { utterance_id?: unknown };
+    if (typeof utterance_id === "string" && !Object.hasOwn(live.commands, utterance_id)) {
+      const action = planVoiceCommand(type, payload);
+      const reply: CommandReply = (ok, error) => {
+        const result = { utterance_id, command: action?.type ?? "none", ok, error };
+        live = applyVoiceEvent(live, "voice.command", result);
+        setPopup(popupReduce(popup, "voice.command", result));
+      };
+      if (!action) reply(true, null);
+      else if (!pending.has(action.request_id)) sendCommand(action.type, {}, "rec", action.request_id, reply);
+    }
+  }
   updateDash();
 }
 const sendWs = (o: object) => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(o)); return true; } return false; };
@@ -175,7 +205,10 @@ function connect() {
     try {
       const env = JSON.parse(String(m.data)) as Envelope & { request_id?: string };
       if (env.type === "camera.stats") { phoneStats = env.payload as unknown as PhoneStats; phoneStatsAt = Date.now(); updateDash(); return; }
-      if (env.type.startsWith("voice.")) { live = applyVoiceEvent(live, env.type, env.payload); setPopup(popupReduce(popup, env.type, env.payload)); updateDash(); return; }
+      if (env.type.startsWith("voice.")) {
+        if (env.version === 1 && conn === "connected" && env.session_id === state.sessionId) onVoiceEvent(env.type, env.payload);
+        return;
+      }
       if (env.type === "command.result") { onCommandResult(env); return; }
       if (env.type !== "session.snapshot") { handleSignal(env.type, env.request_id, env.payload); return; }
       const next = applyEnvelope(state, env, Date.now());
@@ -440,7 +473,7 @@ function updateVoice(d: Dash, snap: Snapshot, offline: boolean) {
   const list = live.transcripts;
   patch(d.vList, list.length ? list.map((t) => h("li", null, h("strong", null, t.text || "(no speech)"),
     h("span", "muted tnum", `${formatLocal(t.started_utc)} \u00B7 ${endReasonLabel(t.end_reason)}`),
-    ...(commandBadge(t, live.commands[t.id]) ? [h("span", "pill neutral cmd", commandBadge(t, live.commands[t.id]) as string)] : []))) : [h("li", "muted", "No transcripts yet.")]);
+    ...(commandBadge(live.commands[t.id]) ? [h("span", "pill neutral cmd", commandBadge(live.commands[t.id]) as string)] : []))) : [h("li", "muted", "No transcripts yet.")]);
   const top = list[0];
   if (top && top.id !== announced) { if (announced !== "") d.vAnnounce.textContent = top.text || "No speech heard"; announced = top.id; }
 }

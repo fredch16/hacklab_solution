@@ -80,7 +80,7 @@ internal class WakeDetector(private val assets: AssetManager) {
         return false
     }
 
-    private val commandKeywords by lazy {
+    private val recordingKeywords by lazy {
         val phrases = listOf(
             "start recording" to "START", "start the recording" to "START",
             "begin recording" to "START", "begin the recording" to "START",
@@ -100,13 +100,13 @@ internal class WakeDetector(private val assets: AssetManager) {
         pronunciation.candidates("RECORD").joinToString("/") { "$it #0.25 @RECORD" }
     }
 
-    /** Independent acoustic check for a recording action, on the worker after wake detection. */
-    fun verifyCommand(samples: FloatArray): String? {
+    /** Constrained second transcription for acoustically similar recording phrases. */
+    fun transcribeRecordingPhrase(samples: FloatArray): String? {
         val k = active ?: return null
         if (!phoneme) return null
-        return when (firstKeyword(k, commandKeywords, samples)) {
-            "START" -> "recording.start"
-            "STOP" -> "recording.stop"
+        return when (firstKeyword(k, recordingKeywords, samples)) {
+            "START" -> "start recording"
+            "STOP" -> "stop recording"
             "BLOCK" -> null
             else -> if (firstKeyword(k, recordKeyword, samples) == "RECORD") "record" else null
         }

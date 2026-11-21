@@ -39,7 +39,7 @@
 
 ## Slice 4 — Local VAD + offline speech transcription
 
-**User-visible outcome:** wake phrase → speech utterance → final transcript and any verified command result on phone and PC. Transcription still functions when public Internet inaccessible. Recording remains unaffected.
+**User-visible outcome:** wake phrase → speech utterance → final transcript on phone and PC. The paired PC dashboard interprets the final and displays any command result after the phone confirms the recording request. Transcription still functions when public Internet inaccessible. Recording remains unaffected.
 
 - sherpa-onnx model packs (or justified alternate), VAD endpointing, ASR, events, transcript list, timeout/cancel/missing model and non-blocking UI.
 - Ask user for language(s) before selecting the final ASR model.

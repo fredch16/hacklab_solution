@@ -61,7 +61,6 @@ class SessionController extends ChangeNotifier with WidgetsBindingObserver {
         server.sendMessage(type, payload, requestId: requestId);
     capture.addListener(_publish);
     capture.addListener(_followStream);
-    voice.commandRunner = (id, type) => relay.execute(id, type);
     recording.addListener(_publish);
     voice.addListener(_publish);
     voice.sender = (type, payload, {requestId}) =>

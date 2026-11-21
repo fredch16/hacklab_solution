@@ -361,12 +361,12 @@ class VoiceEngine(
         val a = asr ?: return
         val wakePhrase = flow?.phrase ?: return
         val t0 = SystemClock.elapsedRealtime()
-        var verifiedCommand: String? = null
+        var acousticText: String? = null
         val text = if (reason == "no_speech") "" else {
             setState("recognizing", null)
             val samples = commandAudio.samples()
             val finalText = a.transcribe(samples, wakePhrase)
-            if (reason == "silence") verifiedCommand = detector.verifyCommand(samples)
+            if (reason == "silence") acousticText = detector.transcribeRecordingPhrase(samples)
             finalText
         }
         commandAudio.clear()
@@ -381,7 +381,7 @@ class VoiceEngine(
         emit(mapOf("event" to "voice_event", "type" to "voice.transcript.final",
             "payload" to mapOf("utterance_id" to uttId, "text" to text, "started_utc" to uttStartedUtc,
                 "ended_utc" to ended, "end_reason" to reason, "asr_latency_ms" to latency,
-                "verified_command" to verifiedCommand)))
+                "acoustic_text" to acousticText)))
         setState("cooling_down", null)
     }
 

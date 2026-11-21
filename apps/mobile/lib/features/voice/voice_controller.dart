@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import '../../platform/camera_platform.dart';
 import '../connectivity/signaling.dart';
 import '../recording/recording_controller.dart' show MessageSenderFn;
-import 'voice_commands.dart';
 
 final _wakeNameChars = RegExp(r"^[A-Za-z' ]{2,40}$");
 final _wakeNameLetter = RegExp(r'[A-Za-z]');
@@ -50,19 +49,7 @@ class VoiceController extends ChangeNotifier implements VoicePort {
 
   var _voice = normalizeVoice(null);
 
-  /// Runs a command via the shared idempotent path (set by the session controller).
-  Future<Map<String, Object?>> Function(String requestId, String type)?
-  commandRunner;
-  final _commands = <String, String?>{}; // utterance id -> matched command
-
-  /// Snapshot object with each transcript's matched `command` merged in.
-  Map<String, Object?> get voice => {
-    ..._voice,
-    'transcripts': [
-      for (final t in (_voice['transcripts'] as List))
-        {...Map<String, Object?>.from(t as Map), 'command': _commands[t['id']]},
-    ],
-  };
+  Map<String, Object?> get voice => _voice;
 
   /// Live partial transcript of the utterance in progress (null when none).
   String? partial;
@@ -94,7 +81,6 @@ class VoiceController extends ChangeNotifier implements VoicePort {
   Future<void> end() async {
     listening = false;
     partial = null;
-    _commands.clear();
     await platform.voiceStop(clear: true);
   }
 
@@ -127,48 +113,9 @@ class VoiceController extends ChangeNotifier implements VoicePort {
         if (type == 'voice.transcript.partial')
           partial = payload['text'] as String?;
         if (type == 'voice.transcript.final') partial = null;
-        if (type == 'voice.transcript.final') {
-          final browserPayload = Map<String, Object?>.of(payload)
-            ..remove('verified_command');
-          sender?.call(type, browserPayload);
-          // The command emits further platform events.
-          scheduleMicrotask(() => _onFinal(payload));
-        } else {
-          sender?.call(type, payload);
-        }
+        sender?.call(type, payload);
         notifyListeners();
     }
-  }
-
-  Future<void> _onFinal(Map<String, Object?> p) async {
-    final id = p['utterance_id'] as String;
-    final text = (p['text'] as String?) ?? '';
-    final detected = matchVoiceCommand(text);
-    final verified = p['verified_command'];
-    final agreed =
-        verified == detected ||
-        (verified == 'record' && normalizeVoiceRequest(text) == 'record');
-    final cmd = !p.containsKey('verified_command') || agreed ? detected : null;
-    _commands[id] = cmd;
-    var ok = true;
-    String? err;
-    if (cmd != null) {
-      final r =
-          await (commandRunner?.call(id, cmd) ??
-              Future.value(<String, Object?>{
-                'ok': false,
-                'error': 'BAD_REQUEST',
-              }));
-      ok = r['ok'] == true;
-      err = r['error'] as String?;
-    }
-    sender?.call('voice.command', {
-      'utterance_id': id,
-      'command': cmd ?? 'none',
-      'ok': ok,
-      'error': err,
-    });
-    notifyListeners();
   }
 
   @override

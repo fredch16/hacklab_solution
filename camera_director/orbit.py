@@ -508,6 +508,7 @@ FOLLOW_GAIN = 0.7                 # proportional gain below 1 (visual servoing):
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
+FOLLOW_AIM_DIST = 0.35           # m: where to aim along a ray that does not meet the table
 FOLLOW_DIST_DEAD = 0.25          # keep the distance: re-dolly when it is off by more than this (box sizes jitter ~15 %)
 FOLLOW_DOLLY_MAX = 500           # steps the shoulder and elbow may move away from the view while following
 
@@ -531,18 +532,20 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
     three_d = point is not None and offset is not None
     fused = np.asarray(point, float) if three_d else None
     grip = int(now.get(motion.GRIPPER, 1279))
-    now = {m: int(now[m]) for m in motion.MOVABLE}
-    view = {m: int(view[m]) for m in motion.MOVABLE}
+    # the motion layer clamps saved views into the envelope when it moves there (right's shoulder is taught at
+    # 3032, the envelope ends at 2995): plan from where the arm really is, or every turn is refused at waypoint 0
+    now = motion.clamp_pose({m: int(now[m]) for m in motion.MOVABLE}, env)
+    view = motion.clamp_pose({m: int(view[m]) for m in motion.MOVABLE}, env)
     pose = framing.camera_pose({**now, motion.GRIPPER: grip}, ranges)
     d = np.array(framing.ray(centre[0] - bias[0], centre[1] - bias[1], pose, aspect))   # bias = real minus model
     if depth0:
         depth = depth0 / max(0.5, min(2.0, size_ratio))        # bigger in the picture = closer
         point = np.array(pose[0]) + d * depth
     else:
-        if d[2] > -0.1:
-            return {"ok": False, "reason": "the object does not lie on the table from here"}
-        depth = (framing.TABLE_Z - pose[0][2]) / d[2]
-        point = np.array(pose[0]) + d * depth
+        # turning toward the object needs its direction only: where the ray meets the table, or (a sideways camera
+        # at the left/right views looking above the horizon) a point at the usual working distance along it
+        depth = (framing.TABLE_Z - pose[0][2]) / d[2] if d[2] < -0.1 else FOLLOW_AIM_DIST
+        point = np.array(pose[0]) + d * min(depth, 1.0)
     lim = dict(limits)
     lim[1] = (max(lim[1][0], view[1] - FOLLOW_YAW_MAX), min(lim[1][1], view[1] + FOLLOW_YAW_MAX))
     target_cam = None

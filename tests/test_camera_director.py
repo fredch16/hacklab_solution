@@ -680,6 +680,23 @@ class FollowDistance(unittest.TestCase):
         same = orbit.follow_step(view, now, ranges, (0.5, 0.5), depth0=depth0, size_ratio=1.05)
         self.assertFalse(same["dolly"])                           # inside the dead band: turn only
 
+    def test_framing_turns_toward_a_corner_object_at_the_side_views(self):
+        """right's shoulder is taught just outside the envelope and its camera looks sideways: a marker in the
+        picture's top-right corner (a ray above the horizon) must still be turned toward, not refused."""
+        from camera_director import orbit
+        raw = motion._read_views_file()
+        ranges = {int(k): tuple(r) for k, r in raw["transit"]["ranges"].items()}
+        env = motion.envelope(ranges)
+        for name in ("right", "top", "wide"):
+            view = {m: int(raw[name]["joints"][str(m)]) for m in motion.MOVABLE}
+            corner = (0.84, 0.24)
+            step = orbit.follow_step(view, {**view, motion.GRIPPER: 1279}, ranges, corner)
+            self.assertTrue(step["ok"], (name, step))
+            pose0 = framing.camera_pose({**motion.clamp_pose(view, env), motion.GRIPPER: 1279}, ranges)
+            target = np.array(pose0[0]) + np.array(framing.ray(*corner, pose0, 16 / 9)) * 0.35
+            uv = framing.project(tuple(target), framing.camera_pose({**step["pose"], motion.GRIPPER: 1279}, ranges), 16 / 9)
+            self.assertLess(np.hypot(uv[0] - 0.5, uv[1] - 0.5), np.hypot(corner[0] - 0.5, corner[1] - 0.5) - 0.05, name)
+
     def test_3d_follow_moves_the_camera_with_the_object(self):
         from camera_director import orbit
         raw = motion._read_views_file()

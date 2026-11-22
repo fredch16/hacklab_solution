@@ -110,7 +110,34 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
     tabBar.append(b);
     panes.set(id, el("div", "s-pane"));
   }
-  panes.get("director")!.append(robotCard);
+  // learned moves: Claude-planned motions that worked, replayable (or say their name again)
+  const learnedList = el("div", "s-learned-list");
+  const learned = el("section", "s-learned", el("div", "s-learned-head", el("b", "", "Learned moves"),
+    el("small", "", "Motions Claude planned that worked. Play one, or just say its name again.")), learnedList);
+  async function refreshLearned() {
+    try {
+      const d = await (await fetch("/laptop/director/skills", { cache: "no-store" })).json();
+      const items = (d.skills ?? []) as { name: string; brief: string; view: string; poses: number }[];
+      learnedList.replaceChildren(...(items.length ? items.map((s) => {
+        const play = el("button", "s-chip-btn s-play", "▶ Play"); play.type = "button";
+        const del = el("button", "s-chip-btn", "Delete"); del.type = "button";
+        play.onclick = async () => {
+          setOpen(false);
+          const r = await fetch("/laptop/director/job", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: "skill", name: s.name }) });
+          const j = await r.json().catch(() => ({}));
+          setOrb(r.ok ? "working" : "error", r.ok ? `Replaying “${s.name}”` : (j.error ?? "Could not start it."), r.ok ? 0 : 5000);
+        };
+        del.onclick = async () => {
+          await fetch("/laptop/director/skills/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: s.name }) });
+          void refreshLearned();
+        };
+        return el("div", "s-learned-item", el("div", "", el("b", "", s.name), el("small", "", `from ${s.view} · ${s.poses} poses`)), play, del);
+      }) : [el("p", "s-note", "Nothing learned yet. Ask Peter for a motion it does not know, like “nod” or “look left”.")]));
+    } catch { /* arm server offline: keep the last list */ }
+  }
+  panes.get("director")!.append(learned, robotCard);
   panes.get("phone")!.append(...phoneNodes);
   const link = (text: string, href: string, note: string) => {
     const a = el("a", "s-link", el("b", "", text), el("small", "", note)); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; return a;
@@ -138,7 +165,7 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
   }
   let saved = "director"; try { saved = localStorage.getItem("peter.tab") || saved; } catch { /* default */ }
   openTab(panes.has(saved) ? saved : "director");
-  menuBtn.onclick = () => setOpen(!document.body.classList.contains("s-open"));
+  menuBtn.onclick = () => { const open = !document.body.classList.contains("s-open"); setOpen(open); if (open) void refreshLearned(); };
   closeBtn.onclick = scrim.onclick = () => setOpen(false);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
 

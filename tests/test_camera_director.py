@@ -449,6 +449,32 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         self.assertEqual(st["job"]["result"]["action"], "gimbal")
 
+    def test_9z3_a_motion_that_worked_is_learned_and_replayed_without_claude(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})[0], 200)
+        director = self.state.director
+        gate = {**director.gate(), "computed": False}
+        shot = {"name": "Nod", "hold": 2, "keyframes": [{"pan": 0, "u": 0.5, "v": 0.4, "roll": 0},
+                                                         {"pan": 0, "u": 0.5, "v": 0.6, "roll": 0},
+                                                         {"pan": 0, "u": 0.5, "v": 0.5, "roll": 0}]}
+        with patch.object(director, "gate", return_value=gate), patch.object(
+                J.brief, "plan", return_value={"reason": "a nod", "shots": [shot]}) as planner:
+            st = self.run_job({"kind": "film", "brief": "hey peter, nod please"})
+            self.assertEqual(st["job"]["status"], "DONE", st["job"])
+            self.assertEqual(st["job"]["result"]["learned"], "nod")
+            calls = planner.call_count
+            st = self.run_job({"kind": "film", "brief": "do the nod again"})          # known now: replayed
+            self.assertEqual((st["job"]["kind"], st["job"]["status"]), ("skill", "DONE"), st["job"])
+            self.assertEqual(planner.call_count, calls)                               # Claude was not asked
+        skills = http(self.base, "/api/director/skills")[1]["skills"]
+        self.assertEqual([s["name"] for s in skills], ["nod"])
+        st = self.run_job({"kind": "skill", "name": "nod"})                            # from the dashboard
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        http(self.base, "/api/director/skills/delete", {"name": "nod"})
+        self.assertEqual(http(self.base, "/api/director/skills")[1]["skills"], [])
+
     def test_9z_filming_brief_uses_the_measured_view_and_parks_the_shoulder(self):
         self.goto("top")
         fid = self.get()["camera"]["frame_id"]

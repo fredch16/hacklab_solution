@@ -277,3 +277,11 @@ html:has(body.studio){min-height:100%;background-color:var(--ink950)}
 .s-pickbar .btn{min-height:40px}
 .s-pickbar .btn.primary{background:linear-gradient(180deg,#ffb07a,#ff8a3d);border:0;color:#1a0d04;padding:0 22px;font-weight:800}
 @keyframes s-rise{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+
+/* learned moves */
+.s-learned{display:grid;gap:8px;padding:14px 16px;border-radius:16px;border:1px solid rgba(255,138,61,.35);background:linear-gradient(160deg,rgba(255,138,61,.08),rgba(22,33,63,.6))}
+.s-learned-head{display:grid}.s-learned-head small{color:var(--t3)}
+.s-learned-list{display:grid;gap:6px}
+.s-learned-item{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:8px 10px;border-radius:12px;background:rgba(7,11,24,.45)}
+.s-learned-item>div{display:grid}.s-learned-item small{color:var(--t3)}
+.s-play{color:#1a0d04!important;background:linear-gradient(180deg,#ffb07a,#ff8a3d)!important;border-color:transparent!important;font-weight:700}

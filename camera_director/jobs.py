@@ -26,6 +26,7 @@ import concurrent.futures.process
 import json
 import multiprocessing
 import math
+import re
 import time
 import uuid
 from collections import deque
@@ -88,6 +89,8 @@ FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> th
 SLIP_FRAC = 0.35         # framing: a tracker box this far (picture fraction) from where the object should be has slid
 UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
 # "slow" / "fast" in a command change that one motion's speed; Claude's custom takes default to first-run speed
+SKILL_FILLER = {"hey", "peter", "claude", "please", "can", "could", "you", "do", "a", "an", "the", "now", "again",
+                "for", "me", "us", "film", "shot", "plan", "it", "that", "this", "some", "just", "go", "ahead"}
 JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
@@ -646,7 +649,7 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave}
+                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave, "skill": self._skill}
         if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
@@ -655,7 +658,9 @@ class Director:
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind not in ("tour", "return", "snap", "goto", "wave") and self.ref is None:
+        if kind == "film" and (learned := self._skill_for(req["brief"])):
+            kind, req = "skill", {**req, "kind": "skill", "name": learned["name"]}   # done before: replay it
+        if kind not in ("tour", "return", "snap", "goto", "wave", "skill") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -1158,6 +1163,7 @@ class Director:
         """Film a free-form brief using fresh measured framing and a locally checked camera path."""
         if not gate["moves"]:
             raise Hold("physical moves not approved")
+        start_where = self.where()
         self.job["phase"] = "estimate"
         joints, stamp = await self.settle()
         look = await self.observe("film/start", joints, stamp)
@@ -1234,6 +1240,7 @@ class Director:
             return
         retry = True
         take_speed = JOB_SPEEDS.get(req.get("speed"), motion.SPEED_FIRST)
+        driven: list[dict] = []               # every commanded pose of the takes: the learned move
         i = 0
         while i < len(plan["shots"]):
             shot = plan["shots"][i]
@@ -1292,7 +1299,12 @@ class Director:
             self.job["result"]["moves"].append({"name": name, "done": True, "complete": steady, "in_frame": seen})
             if not steady:
                 raise Hold("marked subject left the closing shot")
+            driven += path["stage"] + path["path"][1:]
             i += 1
+        if start_where.get("where") == "view" and driven:     # it worked: remember it as a repeatable move
+            saved = self._save_skill(req["brief"], start_where["view"], driven, take_speed)
+            self.job["result"]["learned"] = saved["name"]
+            self.note(f"learned a new move: “{saved['name']}” (say it again, or replay it from the menu)")
 
     def _trail_path(self) -> Path:
         return self.data / "trail.json"
@@ -1708,6 +1720,61 @@ class Director:
         self.step(f"snapping back onto {name} ({gap} steps)")
         await self.move_path(self._bridge(now, {m: views[name][m] for m in motion.MOVABLE}, step=100), f"snap to {name}")
         self.job["result"] = {"view": name, "gap_steps": gap}
+
+    # ---- learned moves: Claude-planned motions that worked, kept with the joint poses they drove ----
+    def _skills_path(self) -> Path:
+        return self.data / "skills.json"
+
+    def _skills(self) -> list[dict]:
+        try:
+            return json.loads(self._skills_path().read_text())
+        except (OSError, ValueError):
+            return []
+
+    @staticmethod
+    def _skill_key(text: str) -> str:
+        words = re.findall(r"[a-z0-9']+", text.lower())
+        return " ".join(w for w in words if w not in SKILL_FILLER)
+
+    def _skill_for(self, text: str) -> dict | None:
+        key = self._skill_key(text or "")
+        return next((s for s in self._skills() if key and (key == s["key"] or re.search(rf"\b{re.escape(s['key'])}\b", key))),
+                    None)
+
+    def _save_skill(self, brief: str, view: str, poses: list[dict], speed: float) -> dict:
+        key = self._skill_key(brief)[:60] or "move"
+        skill = {"name": key, "key": key, "brief": brief.strip()[:200], "view": view, "speed": speed,
+                 "poses": [{str(m): int(p[m]) for m in motion.MOVABLE} for p in poses], "created": round(time.time())}
+        skills = [s for s in self._skills() if s["key"] != key] + [skill]
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._skills_path().write_text(json.dumps(skills, indent=1))
+        return skill
+
+    async def _skill(self, req: dict, gate: dict):
+        """Replay a learned move: back to the view it started from, then exactly the poses it drove, checked again."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        skill = next((s for s in self._skills() if s["name"] == req.get("name")), None)
+        if skill is None:
+            raise Hold(f"no learned move called {req.get('name')!r}")
+        self.job["phase"] = "reposition"
+        await self.ensure_view()
+        if self.where().get("view") != skill["view"]:
+            self.step(f"going to {skill['view']}, where “{skill['name']}” starts")
+            if not await self.move(skill["view"]):
+                raise Hold(f"the route to {skill['view']} was refused")
+        ranges = self.state.arm.ranges()
+        env = motion.envelope(ranges)
+        start = motion.clamp_pose({m: motion.load_views()[skill["view"]][m] for m in motion.MOVABLE}, env)
+        poses = [{int(m): v for m, v in p.items()} for p in skill["poses"]]
+        problem = motion.path_problem([start] + poses + [start], ranges, env, (await self._joints())[motion.GRIPPER])
+        if problem:
+            raise Hold(f"“{skill['name']}” no longer passes the checks: {problem}")
+        self.job["phase"] = "cinematic"
+        self.step(f"replaying “{skill['name']}”")
+        await self.move_path(poses + [start], skill["name"][:60],
+                             speed=JOB_SPEEDS.get(req.get("speed"), skill.get("speed", motion.SPEED_NORMAL)))
+        self.job["result"] = {"replayed": skill["name"], "view": skill["view"]}
 
     async def _wave(self, req: dict, gate: dict):
         """Wave hello: from a view, the base sways and the wrist rolls, three times, then back. Shoulder and elbow
@@ -2158,6 +2225,9 @@ class Director:
                          "tracking": obs is not None and self.tracker is not None and not self.tracker.lost(),
                          "job": self.job and {k: self.job.get(k) for k in ("kind", "status", "step")},
                          "moving": bool(st.moving)}, "application/json"
+        if method == "GET" and name == "skills":
+            return 200, {"ok": True, "skills": [{k: s[k] for k in ("name", "brief", "view", "created")} | {"poses": len(s["poses"])}
+                                                 for s in self._skills()]}, "application/json"
         if method == "GET" and name.startswith("mesh/"):
             data = twin.mesh_bytes(name[len("mesh/"):])
             return (200, data, "model/stl") if data else (404, {"ok": False, "error": "no such mesh"}, "application/json")
@@ -2171,6 +2241,10 @@ class Director:
             jpeg = self.thumbs.get(name[len("thumb/"):].removesuffix(".jpg"))
             return (200, jpeg, "image/jpeg") if jpeg else (404, {"ok": False, "error": "no such thumbnail"}, "")
         if method == "POST":
+            if name == "skills/delete":
+                kept = [s for s in self._skills() if s["name"] != req.get("name")]
+                self._skills_path().write_text(json.dumps(kept, indent=1))
+                return 200, {"ok": True, "skills": len(kept)}, "application/json"
             if name == "sim/hand" and st.sim:   # tests and demos without hardware: put a "hand" over the target
                 return 200, st.call(self._on_loop(lambda: self._sim_hand(req))), "application/json"
             handlers = {"select": lambda: self.select(req), "autofind": self.autofind, "calibrate": lambda: self.calibrate(req),

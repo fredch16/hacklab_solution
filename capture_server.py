@@ -240,6 +240,7 @@ class State:
         self._tips: tuple | None = None          # (key, {view: jaw tip xyz}) landmarks for the arm picture
         self._mcp: tuple[float, bool] = (0.0, False)
         self.last_link = {"linked": None, "leader": None, "text": None}
+        self.director = None                     # camera_director.jobs.Director with --director, else off
 
     def call(self, coro, timeout: float = 15):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
@@ -303,6 +304,8 @@ class State:
                 raise Refused(STALE_CLICK)
 
         admit()  # on arrival: a command that meets a STOP in progress is refused, not queued behind it
+        if self.director is not None:  # a person's command outranks a running director job
+            self.director.preempt_unless_own("manual control took over")
         async with self.owner:
             admit()  # and again once it owns the arm: a STOP may have come while it waited
             if idle and self.moving:
@@ -868,7 +871,7 @@ class State:
     # ---- moving ----
 
     async def start_move(self, view: str, speed: str, recover: bool = False, gen: int | None = None,
-                         click: int | None = None) -> dict:
+                         click: int | None = None, along: tuple[str, float] | None = None) -> dict:
         """Start go_to_view as a task and return at once; progress, refusals and errors show up in state."""
         gen = self.gen if gen is None else gen
         if speed not in SPEEDS:
@@ -890,14 +893,15 @@ class State:
             self.move_view, self.move_outcome = view, None
             self.move_started, self.move_speed = time.time(), (speed, SPEEDS[speed])
             self._forget_where()
-            self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover))
+            self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover, along))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
 
-    async def _run_move(self, view: str, max_speed: float, recover: bool):
+    async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None):
         try:
-            result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover)
+            result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
+                                             along=along)
             self._finish({"view": view, **result})
             if result.get("hold") or result.get("ok"):  # a refusal commanded nothing and says nothing about holding
                 self.hold_state = result.get("hold") or "confirmed"
@@ -964,6 +968,8 @@ class State:
 
     async def _stop_cleanup(self) -> dict:
         owned = False
+        if self.director is not None:
+            self.director.preempt("STOP pressed")
         try:
             task, view, was_moving = self.move_task, self.move_view, self.moving
             if was_moving:
@@ -1107,6 +1113,8 @@ def make_handler(state: State):
                     logger.exception(path)
                     answer = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 self._json(answer, 200 if answer.get("ok") or path != "/api/pose" or answer.get("available") else 404)
+            elif path.startswith("/api/director/"):
+                self._director("GET", path, {})
             elif path == "/stream":
                 self._stream()
             elif path == "/api/still.jpg":
@@ -1151,6 +1159,16 @@ def make_handler(state: State):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def _director(self, method: str, path: str, req: dict):
+            """Camera director API (camera_director/jobs.py); 404 unless started with --director."""
+            if state.director is None:
+                return self._json({"ok": False, "error": "the camera director is off; start capture_server.py "
+                                   "with --director"}, 404)
+            status, body, ctype = state.director.http(method, path[len("/api/director/"):], req)
+            if isinstance(body, bytes):
+                return self._send(body, ctype, status)
+            self._json(body, status)
+
         def _click(self, req: dict) -> int:
             """The stop generation the page had seen when the user clicked; required for anything that actuates."""
             click = req.get("generation")
@@ -1180,6 +1198,8 @@ def make_handler(state: State):
                         return self._json(result, 504 if late else 500)
                     return self._json(result, 200 if result["ok"] else 500)
                 req = self._body()
+                if self.path.startswith("/api/director/"):
+                    return self._director("POST", self.path, req)
                 if self.path == "/api/frame":  # preview only, never moves; see State.frame_preview
                     status, body = state.frame_preview(req)
                     return self._json(body, status)
@@ -1232,6 +1252,8 @@ def main():
     p.add_argument("--bus", default="auto", help="follower bus serial (auto: the arm with torque on)")
     p.add_argument("--port", type=int, default=8890)
     p.add_argument("--sim", action="store_true", help="simulated arm: no Station, no camera, views read-only")
+    p.add_argument("--director", action="store_true",
+                   help="enable the camera director (target tracking, view survey, cinematic); off by default")
     args = p.parse_args()
 
     loop = asyncio.new_event_loop()
@@ -1241,6 +1263,9 @@ def main():
         state.call(state.start_sim() if args.sim else state.start(args.server, args.bus), timeout=30)
     except Exception as e:
         raise SystemExit(f"error: {e}")
+    if args.director:
+        from camera_director.jobs import Director
+        state.director = Director(state)
     loop.call_soon_threadsafe(state.refresh_where)
     asyncio.run_coroutine_threadsafe(state.watch(), loop)
     print(f"follower bus {state.arm.bus_serial}, camera {state.cam_queue}")

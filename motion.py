@@ -601,6 +601,30 @@ def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, 
     return [rise, ("turn", _pick(views[target], TURN)), ("descend", _pick(views[target], PITCH))]
 
 
+ALONG_MAX = 0.35   # a stop part-way along a line (go_to_view along=) is at most this far from its view
+
+
+def plan_along(present: dict[int, int], view: str, toward: str, s: float, views: dict, links) -> list:
+    """The one segment from the measured pose to the pose a fraction `s` of the way along the
+    checked direct line (or arc) from `view` to `toward`: a point every move view -> toward already
+    sweeps. The arm must be at `view` or already on that line. Raises MotionError otherwise."""
+    if not 0.0 < s <= ALONG_MAX:
+        raise MotionError(f"a stop along a line must be between 0 and {ALONG_MAX} of the way")
+    if links is None:
+        raise MotionError("the geometry model is unavailable, so no line can be checked")
+    plan = links.plan(view, toward)
+    if not plan["ok"]:
+        raise MotionError(f"no checked direct line from '{view}' to '{toward}': {plan['reason']}")
+    loc = locate(present, views, links, prefer=(view, toward))
+    if loc["where"] == "view" and loc["view"] == view:
+        s0 = 0.0
+    elif loc["where"] == "between" and {loc["view"], loc["to"]} == {view, toward}:
+        s0 = loc["s"] if loc["view"] == view else 1.0 - loc["s"]
+    else:
+        raise MotionError(f"the arm must be at '{view}' or on its line to '{toward}' first (it is {loc})")
+    return [_path_segment(views, view, toward, plan["lift"], s0, s)]
+
+
 # ---------------------------------------------------------------- talking to the arm
 
 def _ease(s: float) -> float:
@@ -1334,7 +1358,7 @@ async def describe(arm, name: str | None = None, allow_unknown_start: bool = Fal
 
 
 async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
-                     allow_unknown_start: bool = False) -> dict:
+                     allow_unknown_start: bool = False, along: tuple[str, float] | None = None) -> dict:
     """Move to a saved view. The interface everyone codes against:
     {"ok", "view", "error", "duration", "route", "kind", "hold"}.
     `kind`: "direct" (one straight move of all joints), "arc" (the same, lifted) or "hub"; None if refused.
@@ -1342,6 +1366,8 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
     Cancel the task running this to stop: the arm holds where it is and CancelledError propagates.
     `allow_unknown_start` is the supervised "recover to transit" path; it forces SPEED_FIRST.
     `hold` is None when nothing was commanded, else "confirmed" / "unconfirmed" after an abort.
+    `along=(toward, s)`: stop a fraction s (<= ALONG_MAX) of the way along the checked line from
+    `name` to `toward` instead (see plan_along); the arm must be at `name` or on that line.
     """
     refused = {"ok": False, "view": name, "duration": 0.0, "route": [], "kind": None, "hold": None}   # same keys as a result
     if name not in load_views():
@@ -1359,13 +1385,14 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
             lock_file.close()
             return {**refused, "error": "another program is moving the arm"}
     try:
-        return await _go_to_view(arm, name, max_speed, allow_unknown_start)
+        return await _go_to_view(arm, name, max_speed, allow_unknown_start, along)
     finally:
         if lock_file:
             lock_file.close()
 
 
-async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: bool) -> dict:
+async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: bool,
+                      along: tuple[str, float] | None = None) -> dict:
     async with _move_lock:
         t0 = time.time()
         stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
@@ -1396,8 +1423,14 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             if allow_unknown_start or not involved or not all(view_checked(v) for v in involved):
                 # Unchecked view, or no checked view involved at all (hub -> transit): slowest speed.
                 max_speed = min(max_speed, SPEED_FIRST)
-            route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start, links=links,
-                               direct=not allow_unknown_start)
+            if along:
+                if allow_unknown_start or along[0] not in views or not all(view_checked(v) for v in (name, along[0])):
+                    raise MotionError("stops along a line are only for lines between two checked views")
+                result["along"] = {"toward": along[0], "s": along[1]}
+                route = plan_along(present, name, along[0], float(along[1]), views, links)
+            else:
+                route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start, links=links,
+                                   direct=not allow_unknown_start)
             await _fresh_again(arm)
             result["route"] = [seg for seg, _ in route]
             result["kind"] = _kind(result["route"])

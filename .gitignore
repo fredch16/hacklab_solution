@@ -12,3 +12,7 @@ scene.json
 
 /robot-recordings
 /Camera recordings/
+
+# camera director: local reference crops, results and the operator approval for physical moves
+/director_data/
+/director_safety.json

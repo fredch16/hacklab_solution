@@ -1527,6 +1527,13 @@ class Director:
         shots.append({"shot": f"closing wide ({wide})", "steady": await self._hold_shot(hold, f"closing, {wide}")})
         self.job["result"] = {"shots": shots}
 
+    def _expected_uv(self, joints: dict) -> tuple[float, float] | None:
+        """Where the fused object should appear in the picture from `joints` (with the camera offset)."""
+        if self.obj.x is None:
+            return None
+        uv = framing.project(tuple(self.obj.x), framing.camera_pose(joints, self.state.arm.ranges()), self._aspect())
+        return None if uv is None else (uv[0] + self._fuse_bias[0], uv[1] + self._fuse_bias[1])
+
     def _plausible(self, obs: dict, joints: dict) -> bool:
         """Is this detection where the fused estimate says the object is (seen from `joints`)? A tracker that slid
         onto something else at the edge of a view is not. True while there is no confident estimate yet."""
@@ -1575,8 +1582,13 @@ class Director:
                     obs = o
                     break
             if obs is not None and not self._plausible(obs, {**commanded, motion.GRIPPER: grip}):
-                self._note_once(f"framing at {view}: ignoring a detection away from the object")
-                obs = None
+                # the tracker slid onto something else: look for the object where the fused estimate says it is
+                near = self._expected_uv({**commanded, motion.GRIPPER: grip})
+                f = self.frame()
+                found = await self.vision(V.refind, self.ref, f[2], near) if near and f else None
+                self._note_once(f"framing at {view}: the tracker slid off; " + (
+                    f"re-found the object ({found['method']})" if found else "the object is not where it should be"))
+                obs = found
             if obs is None:
                 misses += 1
                 if misses >= 2 and good != commanded:

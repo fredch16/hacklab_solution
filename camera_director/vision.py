@@ -322,11 +322,15 @@ def look(ref: Reference, jpeg: bytes, reduced: bool = False, hint: list | None =
 def look_many(ref: Reference, jpegs: list[bytes]) -> tuple[list, dict]:
     """Settled frames at full size: the detections and the view score."""
     bank = _bank if any(r.uid == ref.uid for r in _bank) else [ref]
+
+    def best(g):   # the drawn crop measures the object exactly; learned looks (tracker boxes) only when it fails
+        return detect(ref, g) or max((detect(r, g) for r in bank if r.uid != ref.uid),
+                                     key=lambda h: h["confidence"] if h else -1, default=None)
     grays = [decode_gray(j) for j in jpegs]
-    hits = [max((detect(r, g) for r in bank), key=lambda h: h["confidence"] if h else -1) for g in grays]
+    hits = [best(g) for g in grays]
     if sum(h is not None for h in hits) < MIN_VALID_FRAMES:      # small / far away: full resolution
         grays = [decode_gray(j, full=True) for j in jpegs]
-        hits = [max((detect(r, g) for r in bank), key=lambda h: h["confidence"] if h else -1) for g in grays]
+        hits = [best(g) for g in grays]
     if sum(h is not None for h in hits) < MIN_VALID_FRAMES and _vit is not None:   # textureless / new angle:
         hits = [track(ref, j, redetect=False) for j in jpegs]                       # the learned tracker's view
         grays = [decode_gray(j) for j in jpegs]
@@ -473,10 +477,37 @@ def _detect_yoloe(img: np.ndarray) -> dict | None:
             "evidence": f"YOLOE visual prompt, confidence {conf:.2f}"}
 
 
-def _iou(a, b) -> float:
-    ix, iy = max(0.0, min(a[2], b[2]) - max(a[0], b[0])), max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
-    return ix * iy / union if union > 0 else 0.0
+def refind(ref: Reference, jpeg: bytes, near: tuple[float, float]) -> dict | None:
+    """The tracker slid onto something else: look for the object near where it should be (`near`, the fused
+    estimate's image position). YOLOE's confident boxes, the one nearest `near` (within REFIND_RADIUS); else SIFT
+    around it. The tracker restarts on what is found."""
+    img = _bgr(jpeg)
+    hit = None
+    model = _yoloe_model()
+    if model is not None and _vpes:
+        r = model.predict(img, conf=REFIND_CONF, verbose=False)[0]
+        h, w = img.shape[:2]
+        best = None
+        for xyxy, conf in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy()):
+            box = [max(0.0, xyxy[0] / w), max(0.0, xyxy[1] / h), min(1.0, xyxy[2] / w), min(1.0, xyxy[3] / h)]
+            dist = math.hypot((box[0] + box[2]) / 2 - near[0], (box[1] + box[3]) / 2 - near[1])
+            if dist < REFIND_RADIUS and (best is None or dist - float(conf) * 0.2 < best[0]):
+                best = (dist - float(conf) * 0.2, box, float(conf))
+        if best:
+            hit = {"box": best[1], "quad": None, "confidence": round(best[2], 3), "inliers": None, "method": "yoloe",
+                   "evidence": f"YOLOE, re-found near the expected place, confidence {best[2]:.2f}"}
+    gray = decode_gray(jpeg, full=True)
+    if hit is None:
+        half = 0.2
+        hit = _detect_bank(gray, [near[0] - half, near[1] - half, near[0] + half, near[1] + half])
+    if hit is not None:
+        hit["frame_score"] = frame_score(hit, gray)
+        _vit_start(img, hit["box"])
+    return hit
+
+
+REFIND_CONF = 0.15         # re-finding near the expected place may accept a less confident YOLOE box
+REFIND_RADIUS = 0.3        # ...within this distance (picture fraction) of where the object should be
 
 
 def _detect_yolo(img: np.ndarray) -> dict | None:

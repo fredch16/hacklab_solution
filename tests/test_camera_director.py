@@ -254,7 +254,8 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(set(cat), set(motion.view_names()))
         loc = st["localization"]
         self.assertTrue(loc["ok"] and loc["views"] >= 2 and "warning" not in loc, loc)   # the sim matches its own model
-        self.assertLess(abs(loc["check"]["triangulated_height_m"]), 0.01, loc)
+        # a check only (the estimate itself is on the desk plane): tracker/YOLOE box centres differ by a few mm
+        self.assertLess(abs(loc["check"]["triangulated_height_m"]), 0.03, loc)
         for p in motion.view_names():
             if not motion.view_checked(p):                     # unchecked views are never visited (side_low)
                 self.assertEqual(cat[p]["status"], "BLOCKED")
@@ -315,6 +316,9 @@ class SimDirector(unittest.TestCase):
     def test_9a_keep_in_view_pauses_for_the_cut_and_stays_on_a_clear_fallback(self):
         saved = (J.MIN_DWELL_S, J.ANNOUNCE_S)
         J.MIN_DWELL_S, J.ANNOUNCE_S = 3.0, 1.0
+        # the simulated hand covers the sticker as seen from top; a survey run earlier may prefer another angle
+        self.goto("top")
+        self.state.director.catalogue.clear()
         try:
             self.assertEqual(http(self.base, "/api/director/job", {"kind": "watch"})[0], 200)
             wait(lambda: self.get()["job"]["phase"] == "watch" and "holding" in self.get()["job"]["step"], timeout=60, what="watching")

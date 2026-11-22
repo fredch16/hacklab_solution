@@ -677,6 +677,18 @@ class SimDirector(unittest.TestCase):
         self.assertTrue(all(done.get(k, {}).get("ok") for k in ("above the object", "down to the object", "lift")), done)
         self.assertLess(self.state.arm.joints()[motion.GRIPPER], 1400)                 # it really closed
 
+    def test_pick_rechecks_from_top_when_wide_is_uncertain(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        status, out = http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})
+        self.assertEqual(status, 200, out)
+        self.goto("wide")
+        before = len(self.state.history)
+        st = self.run_job({"kind": "pick", "brief": "pick up the sticker"})
+        moved = [h["view"] for h in list(self.state.history)[before:] if h.get("ok")]
+        self.assertEqual(moved[:2], ["top", "above the object"], st["job"])
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

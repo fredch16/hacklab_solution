@@ -99,6 +99,7 @@ PICK_ABOVE_M = 0.10       # pick: the jaw tips first go this far above the objec
 # ...then down to the lowest height (orbit.grasp_low, from 2.2 cm) at which the open jaws stay 8 mm off the desk
 PICK_FLOOR_M = 0.002      # the descent may bring a part of the arm this close to the desk (pick only)
 PICK_STALL_STEPS = 60     # jaws that stop this far from fully closed are holding something
+PICK_MAX_UNCERTAINTY_M = 0.03  # reject shallow desk projections before planning a grasp
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
@@ -536,7 +537,8 @@ class Director:
 
     # ------------------------------------------------------------ moving
 
-    async def move(self, view: str, along: tuple[str, float] | None = None, sample: bool = False) -> bool:
+    async def move(self, view: str, along: tuple[str, float] | None = None, sample: bool = False,
+                   *, direct_only: bool = False) -> bool:
         """One deliberate move through the capture server's command owner. True when it arrived, False when
         the motion layer refused before commanding anything; Hold when a move failed part-way. With `sample`,
         frames seen on the way are scored (self.samples) so a better view passed en route can be pulled back to."""
@@ -550,7 +552,7 @@ class Director:
                 await self._joints()          # a fresh reading first: a momentary gap would refuse the move ('no arm data')
                 self.state.note_data()
                 await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along, load_guard=True,
-                                            direct_only=self.job["kind"] == "selfcal" and not self.state.sim)
+                                            direct_only=direct_only or (self.job["kind"] == "selfcal" and not self.state.sim))
             except asyncio.CancelledError:
                 raise
             except Exception as e:     # refused by the command owner (STOP since the job began, busy, no data)
@@ -713,15 +715,20 @@ class Director:
         wh = framing.jpeg_size(f[2]) if f else None
         return wh[0] / wh[1] if wh else 4 / 3
 
-    async def localize(self, look: bool = True) -> dict:
-        """Add a settled sighting from the current pose (if `look`) and localize the target from all of them."""
+    async def localize(self, look: bool = True, *, current_only: bool = False) -> dict:
+        """Localize from a new settled sighting alone, or from accumulated sightings for camera jobs."""
+        sightings = self.sightings
         if look:
             joints, t = await self.settle()
             obs = await self.observe("locate", joints, t)
             if not obs["valid"]:
                 raise Hold(f"the target is not visible from the current pose ({obs['reason']}); point the camera at it first")
-            self._add_sighting(joints, obs["box"])
-        self.loc = await asyncio.to_thread(predict.localize, self.sightings, self.state.arm.ranges(), self._aspect())
+            if current_only:
+                sightings = [(joints, obs["box"], predict.bias_for(self.where(), self.calibration))]
+            else:
+                self._add_sighting(joints, obs["box"])
+                sightings = self.sightings
+        self.loc = await asyncio.to_thread(predict.localize, sightings, self.state.arm.ranges(), self._aspect())
         if not self.loc["ok"]:
             raise Hold(f"cannot localize the target: {self.loc['reason']}")
         self.note(f"target at {self.loc['point_m']} m, {self.loc['size_m'] * 100:.1f} cm wide ({self.loc['method']}, "
@@ -1865,12 +1872,21 @@ class Director:
             raise Hold("picking up starts from a saved view")
         self.job["phase"] = "estimate"
         self.step("locating the object")
-        st = self.obj.state()
-        if st and st["sigma_m"] < 0.04:
-            x, y, z = (float(v) for v in self.obj.x)
-        else:
-            await self.localize()
-            x, y, z = (float(v) for v in self.loc["point_m"])
+        loc = await self.localize(current_only=True)
+        if loc["uncertainty_m"] > PICK_MAX_UNCERTAINTY_M:
+            line = "-".join(sorted((view, "top")))
+            if (view != "top" and all(motion.view_checked(n) for n in (view, "top"))
+                    and (gate["lines"] is None or line in gate["lines"])):
+                self.job["phase"] = "reposition"
+                self.step("getting a clearer view from above")
+                if not await self.move("top", direct_only=True):
+                    raise Hold("the route to top was refused; use Arm controls to position the camera above the object")
+                self.job["phase"] = "estimate"
+                loc = await self.localize(current_only=True)
+            if loc["uncertainty_m"] > PICK_MAX_UNCERTAINTY_M:
+                raise Hold(f"the marked object's position is uncertain by {loc['uncertainty_m'] * 100:.1f} cm; "
+                           "use a view looking down at the object and mark it again")
+        x, y, z = loc["point_m"]
         z = max(0.0, z)
         ranges = self.state.arm.ranges()
         lo, hi = ranges[motion.GRIPPER]
@@ -1880,7 +1896,9 @@ class Director:
         above = await self.vision(orbit.grasp_pose, {**start, motion.GRIPPER: jaw_open}, ranges, (x, y, z + PICK_ABOVE_M))
         low = await self.vision(orbit.grasp_low, {**above["pose"], motion.GRIPPER: jaw_open}, ranges, x, y, z, jaw_open)
         if not above["ok"] or not low["ok"]:
-            raise Hold(f"the jaws cannot reach the object from above (off by {max(above['error_m'], low['error_m']) * 100:.0f} cm)")
+            raise Hold(f"the jaws cannot reach the marked object from above "
+                       f"(estimated position {loc['point_m']} m; grasp error "
+                       f"{max(above['error_m'], low['error_m']) * 100:.1f} cm)")
         approach = self._bridge(start, above["pose"], step=100)
         down = await self.vision(orbit.grasp_descent, {**above["pose"], motion.GRIPPER: jaw_open}, ranges, x, y, z,
                                  PICK_ABOVE_M, low["height_m"])

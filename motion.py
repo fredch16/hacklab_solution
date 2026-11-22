@@ -675,8 +675,10 @@ def path_curve(path: list[dict[int, int]]):
         i = max(0, min(n - 2, next((j for j in range(n - 1) if cum[j + 1] >= x), n - 2)))
         h = cum[i + 1] - cum[i]
         u = (x - cum[i]) / h
-        h00, h10, h01, h11 = 2 * u ** 3 - 3 * u ** 2 + 1, u ** 3 - 2 * u ** 2 + u, -2 * u ** 3 + 3 * u ** 2, u ** 3 - u ** 2
-        return {m: h00 * path[i][m] + h10 * h * tangents[m][i] + h01 * path[i + 1][m] + h11 * h * tangents[m][i + 1]
+        h10, h01, h11 = u ** 3 - 2 * u ** 2 + u, u ** 2 * (3 - 2 * u), u ** 3 - u ** 2
+        # Use offsets from the first waypoint so a stationary joint stays exactly at its limit.
+        return {m: path[i][m] + (h01 * (path[i + 1][m] - path[i][m]) + h10 * h * tangents[m][i]
+                                 + h11 * h * tangents[m][i + 1])
                 for m in ids}
     return f, cum[-1]
 

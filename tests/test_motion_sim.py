@@ -63,6 +63,10 @@ async def main():
     for name, notes in outside.items():
         print(f"  {name}: " + "; ".join(notes))
     check(all(ENV[m][0] <= VIEWS[n][m] <= ENV[m][1] for n in VIEWS for m in MOVABLE), "clamped views are inside")
+    wrist_at_limit = [{**VIEWS["wide"], 6: ENV[6][1], 1: VIEWS["wide"][1] + offset}
+                      for offset in (0, 100, 200, 250)]
+    check(motion.path_problem(wrist_at_limit, SIM_RANGES, ENV, 2600) is None,
+          "a stationary wrist at its limit stays inside the envelope throughout a sway")
 
     # --- where is the arm -------------------------------------------------------
     for n in NAMES:

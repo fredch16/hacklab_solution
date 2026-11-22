@@ -230,7 +230,8 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(job["status"], "DONE", job)
         self.assertEqual(set(cat), set(motion.view_names()))
         loc = st["localization"]
-        self.assertTrue(loc["ok"] and loc["method"].startswith("triangulated"), loc)
+        self.assertTrue(loc["ok"] and loc["views"] >= 2 and "warning" not in loc, loc)   # the sim matches its own model
+        self.assertLess(abs(loc["check"]["triangulated_height_m"]), 0.01, loc)
         for p in ("close", "side_low"):
             self.assertEqual(cat[p]["status"], "BLOCKED")
         valid = [p for p in cat.values() if p["status"] == "VALID"]
@@ -377,11 +378,18 @@ class Prediction(unittest.TestCase):
         joints = motion.load_views()[view]
         return joints, predict.predict_view(joints, self.target, self.ranges, 4 / 3)["box"]
 
-    def test_triangulates_from_two_views_and_cuts_the_desk_from_one(self):
+    def test_combines_views_on_the_desk_and_checks_them_against_each_other(self):
         two = predict.localize([self.sighting("top"), self.sighting("wide")], self.ranges, 4 / 3)
-        self.assertTrue(two["method"].startswith("triangulated"), two)
+        self.assertEqual(two["method"], "desk plane, 2 views weighted by viewing angle")
         self.assertLess(np.linalg.norm(np.array(two["point_m"]) - self.target["point_m"]), 0.005)
-        self.assertLess(two["residual_m"], 0.005)
+        self.assertLess(abs(two["check"]["triangulated_height_m"]), 0.005)
+        self.assertNotIn("warning", two)
+        # a view whose camera model is off (box shifted as by a tilt error) is flagged, and the vertical view wins
+        joints, box = self.sighting("wide")
+        bad = (joints, [box[0], box[1] - 0.15, box[2], box[3] - 0.15])
+        off = predict.localize([self.sighting("top"), bad], self.ranges, 4 / 3)
+        self.assertIn("disagree", off["warning"])
+        self.assertLess(np.linalg.norm(np.array(off["point_m"]) - self.target["point_m"]), 0.03)
         one = predict.localize([self.sighting("top")], self.ranges, 4 / 3)
         self.assertEqual(one["method"], "desk plane, one view")
         self.assertLess(np.linalg.norm(np.array(one["point_m"]) - self.target["point_m"]), 0.005)

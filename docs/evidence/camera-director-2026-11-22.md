@@ -31,3 +31,16 @@ See the slice reports in the commit history; `tests/test_camera_director.py` (22
 - The live gripper camera queue id on this laptop, and that the camera director sees real frames through Station.
 - Localization accuracy on the real arm (the residual shown after two or more views is the first check), and whether predicted best views match what the camera sees.
 - Any physical director move. These need the operator's `director_safety.json` after watching each listed line run with the demo desk layout.
+
+## Real arm, dry run (22 Nov, ~02:40–03:10, operator present)
+
+Station v0.1.0-beta.10 on the lab Linux laptop (started with `sg dialout` because the agent's session lacked the group), arm server with `--director`, MCP, voice bridge, laptop dashboard. Gripper camera queue `usbvideo/dc84eab2…` at 1280×720, confirmed by eye (jaws in frame). No `director_safety.json`: DRY RUN throughout. The director moved nothing; joints before and after each survey were identical. The operator moved the arm home → top with the arm controls.
+
+- Box selection on the real feed failed with "that picture is too old" (frame cache ~12 s); fixed by pinning the frozen frame.
+- The operator marked the real Hack Lab sticker once (saved crop). Tracking at `home`: confidence 0.93–0.98, 39–45 inliers; at `top`: 18–20 inliers. Auto-find from the saved crop worked after every restart.
+- Localization from `home` alone: 62.9 cm ahead, uncertainty ±14 cm (camera 69° from straight down). From `top` alone: 35.0–35.3 cm ahead, 0.9–1.0 cm left, ±1.7 cm, about 4.5 cm wide.
+- The two views disagree by 28 cm; free triangulation puts the desk point 11 cm above the desk. The model's camera pose is off at the folded `home` pose (the sticker was predicted near the top edge of the `home` image; the camera saw it in the lower middle). The estimate now leans on the near-vertical view and the disagreement is reported as a warning.
+- Dry-run predictions from the `top` estimate: top 0.97 (preset), wide 0.80 (32% toward top), right 0.45, left 0.43, home 0.29. Not verified: verification needs physical moves.
+- The predictor's 55° obliqueness limit contradicted the real camera (tracked at 69°); now 75°.
+
+Still to check: a tape-measured sticker position against 35 cm / 1 cm; verification moves after the operator's approval.

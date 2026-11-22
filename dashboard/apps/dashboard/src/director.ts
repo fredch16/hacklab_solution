@@ -72,7 +72,8 @@ type View = { valid: boolean; score: number | null; reason?: string; thumb?: str
 type Predicted = { score: number; toward: string | null; s: number; route: string; components: Record<string, number> };
 type Preset = { preset: string; status: string; reason: string | null; baseline: View | null; best: (View & { predicted_score?: number | null }) | null;
   candidates: View[]; predicted: Predicted | null };
-type Localization = { ok: boolean; point_m: number[]; size_m: number; method: string; residual_m: number; warning?: string };
+type Localization = { ok: boolean; point_m: number[]; size_m: number; method: string; uncertainty_m: number; warning?: string;
+  check?: { view_disagreement_m?: number; triangulated_height_m?: number } };
 type Job = { id: string; kind: string; mode: string; status: string; phase: string | null; step: string; reason: string | null; moving_to: string | null;
   progress: Record<string, number | string>; result: Record<string, unknown> | null };
 export type DirectorState = {
@@ -309,7 +310,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   }
   function renderGallery(s: DirectorState) {
     const l = s.localization;
-    locLine.textContent = l?.ok ? `Target localized at (${l.point_m.map((v) => (v * 100).toFixed(1)).join(", ")}) cm, ${(l.size_m * 100).toFixed(1)} cm wide · ${l.method} · residual ${(l.residual_m * 100).toFixed(1)} cm${l.warning ? ` · ${l.warning}` : ""}` : "";
+    locLine.textContent = l?.ok ? `Target localized at (${l.point_m.map((v) => (v * 100).toFixed(1)).join(", ")}) cm, ${(l.size_m * 100).toFixed(1)} cm wide ± ${(l.uncertainty_m * 100).toFixed(1)} cm · ${l.method}${l.check?.view_disagreement_m != null ? ` · views agree within ${(l.check.view_disagreement_m * 100).toFixed(1)} cm` : ""}${l.warning ? ` · ${l.warning}` : ""}` : "";
     gallery.replaceChildren(...s.catalogue.map((p) => {
       const c = el("article", `preset-card ${p.status.toLowerCase()}`);
       const h = el("div", "director-head");

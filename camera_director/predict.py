@@ -2,10 +2,11 @@
 
 Localization uses what the arm really reports: measured servo positions (Station, raw steps) and the
 live calibration ranges, mapped through fk.py's ElRobot model to the camera pose (framing.camera_pose).
-Each settled sighting gives a ray through the target's box centre. Two or more sightings from views at
-least MIN_BASELINE_DEG apart are triangulated (least squares: no assumption about the desk height),
-and the rays' miss distance is reported as the localization residual. One sighting is cut with the
-desk plane (framing.TABLE_Z).
+Each settled sighting gives a ray through the target's box centre, cut with the desk plane
+(framing.TABLE_Z); views are combined weighted by how much a camera tilt error would move their point
+(near-vertical views count most). Free triangulation of the rays is reported as a calibration check:
+on the real arm (22 Nov) home and top disagreed by 28 cm, the triangulated "desk" point floating 11 cm
+up, so the model's camera pose is off at the folded home pose.
 
 The prediction projects a disc of the estimated size at that point into each candidate pose and scores
 centring, edge clearance, size and viewing angle. It inherits fk.py's and framing.py's estimates
@@ -40,8 +41,26 @@ def _centre(box) -> tuple[float, float]:
     return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
 
 
+def _desk_hit(c, d) -> tuple[np.ndarray, float] | None:
+    """Where a ray meets the desk, and how far that point moves if the camera tilt is off by
+    TILT_UNCERTAINTY_DEG (small looking straight down, large for grazing views)."""
+    if d[2] >= -0.05:
+        return None
+    theta = math.acos(min(1.0, -d[2]))
+    height = max(0.0, c[2] - framing.TABLE_Z)
+    lo = height * math.tan(max(0.0, theta - math.radians(TILT_UNCERTAINTY_DEG)))
+    hi = height * math.tan(min(math.radians(89), theta + math.radians(TILT_UNCERTAINTY_DEG)))
+    return c + d * (framing.TABLE_Z - c[2]) / d[2], max(0.005, (hi - lo) / 2)
+
+
 def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
-    """sightings: [(measured joints, box)] from settled views. -> {ok, point_m, size_m, method, residual_m, ...}"""
+    """sightings: [(measured joints, box)] from settled views of an object lying on the desk.
+    -> {ok, point_m, size_m, method, uncertainty_m, views, check: {...}, warning?}
+
+    Each view's ray is cut with the desk plane and the points are averaged with weights 1/uncertainty^2,
+    so a near-vertical view outweighs a grazing one. With views from different directions the rays are
+    also triangulated freely, as a calibration check only: for an object on the desk the triangulated
+    height should be ~0, and the per-view desk points should agree within their uncertainties."""
     rays = []
     for joints, box in sightings:
         cam, axis, right, down = _pose(joints, ranges)
@@ -49,44 +68,42 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
         rays.append((cam, d, axis, box))
     if not rays:
         return {"ok": False, "reason": "no sightings"}
-    dirs = [r[1] for r in rays]
-    spread = max((math.degrees(math.acos(np.clip(a @ b, -1, 1))) for a in dirs for b in dirs), default=0.0)
-    if len(rays) >= 2 and spread >= MIN_BASELINE_DEG:
-        A, b = np.zeros((3, 3)), np.zeros(3)
-        for c, d, *_ in rays:
-            P = np.eye(3) - np.outer(d, d)
-            A += P
-            b += P @ c
-        point = np.linalg.solve(A, b)
-        method = f"triangulated from {len(rays)} views ({spread:.0f} deg apart)"
-    else:
-        hits = [c + d * (framing.TABLE_Z - c[2]) / d[2] for c, d, *_ in rays if d[2] < -0.05]
-        if not hits:
-            return {"ok": False, "reason": "the sighting does not look down onto the desk"}
-        point = np.mean(hits, axis=0)
-        method = "desk plane, one view" if len(rays) == 1 else f"desk plane, {len(rays)} similar views"
-        # how far the desk point moves if the camera tilt is off by TILT_UNCERTAINTY_DEG: large for grazing views
-        c, d = rays[0][0], rays[0][1]
-        theta = math.acos(min(1.0, -d[2]))
-        height = max(0.0, c[2] - framing.TABLE_Z)
-        lo = height * math.tan(max(0.0, theta - math.radians(TILT_UNCERTAINTY_DEG)))
-        hi = height * math.tan(min(math.radians(89), theta + math.radians(TILT_UNCERTAINTY_DEG)))
-        uncertainty = round((hi - lo) / 2, 3)
-    miss = [float(np.linalg.norm((np.eye(3) - np.outer(d, d)) @ (point - c))) for c, d, *_ in rays]
+    hits = [h for h in (_desk_hit(c, d) for c, d, *_ in rays) if h]
+    if not hits:
+        return {"ok": False, "reason": "no sighting looks down onto the desk"}
+    w = np.array([1 / u ** 2 for _, u in hits])
+    point = sum(wi * p for wi, (p, _) in zip(w, hits)) / w.sum()
+    uncertainty = float(1 / math.sqrt(w.sum()))
     th, tv = framing._tans(aspect)
-    sizes = []
-    for c, d, axis, box in rays:
-        depth = float((point - c) @ axis)
-        sizes.append(max((box[2] - box[0]) * 2 * th * depth, (box[3] - box[1]) * 2 * tv * depth))
-    out = {"ok": True, "point_m": [round(float(v), 4) for v in point], "size_m": round(float(np.median(sizes)), 4),
-           "method": method, "views": len(rays), "residual_m": round(max(miss), 4)}
-    if not method.startswith("triangulated"):
-        out["uncertainty_m"] = uncertainty
-        if uncertainty > 0.05:
-            out["warning"] = (f"one grazing view: distance uncertain by about {uncertainty * 100:.0f} cm; "
-                              "a second view from another direction (e.g. top) triangulates it")
-    if not -0.05 <= point[2] <= 0.25:
-        out["warning"] = f"estimated height {point[2] * 100:.0f} cm above the desk plane: check the calibration"
+    c, d, axis, box = min(rays, key=lambda r: (_desk_hit(r[0], r[1]) or (None, 9.9))[1])   # the most vertical view
+    depth = float((point - c) @ axis)
+    size = max((box[2] - box[0]) * 2 * th * depth, (box[3] - box[1]) * 2 * tv * depth)
+    out = {"ok": True, "point_m": [round(float(v), 4) for v in point], "size_m": round(size, 4),
+           "views": len(rays), "uncertainty_m": round(uncertainty, 3),
+           "method": "desk plane, one view" if len(hits) == 1 else f"desk plane, {len(hits)} views weighted by viewing angle"}
+    check = {}
+    if len(hits) >= 2:
+        far = max(float(np.linalg.norm(p - q)) for p, _ in hits for q, _ in hits)
+        check["view_disagreement_m"] = round(far, 3)
+        dirs = [r[1] for r in rays]
+        spread = max(math.degrees(math.acos(np.clip(a @ b, -1, 1))) for a in dirs for b in dirs)
+        if spread >= MIN_BASELINE_DEG:
+            A, b = np.zeros((3, 3)), np.zeros(3)
+            for c, d, *_ in rays:
+                P = np.eye(3) - np.outer(d, d)
+                A += P
+                b += P @ c
+            tri = np.linalg.solve(A, b)
+            check.update(triangulated_m=[round(float(v), 4) for v in tri], triangulated_height_m=round(float(tri[2] - framing.TABLE_Z), 3))
+        allowed = 2 * math.sqrt(sum(u ** 2 for _, u in hits[:2]))
+        if far > allowed or abs(check.get("triangulated_height_m", 0.0)) > 0.04:
+            out["warning"] = (f"the views disagree by {far * 100:.0f} cm (triangulated height "
+                              f"{check.get('triangulated_height_m', 0) * 100:.0f} cm): the camera model is off at some poses; "
+                              "the estimate leans on the most vertical view")
+    elif uncertainty > 0.05:
+        out["warning"] = (f"one grazing view: distance uncertain by about {uncertainty * 100:.0f} cm; "
+                          "a second view from above (e.g. top) pins it down")
+    out["check"] = check
     return out
 
 

@@ -488,7 +488,7 @@ class Director:
         if not self.loc["ok"]:
             raise Hold(f"cannot localize the target: {self.loc['reason']}")
         self.note(f"target at {self.loc['point_m']} m, {self.loc['size_m'] * 100:.1f} cm wide ({self.loc['method']}, "
-                  f"residual {self.loc['residual_m'] * 100:.1f} cm)")
+                  f"±{self.loc['uncertainty_m'] * 100:.1f} cm)" + (f"; {self.loc['warning']}" if self.loc.get('warning') else ""))
         return self.loc
 
     def _add_sighting(self, joints: dict, box: list):
@@ -501,7 +501,9 @@ class Director:
         ranges = self.state.arm.ranges()
         grip = self.state.arm.joints()[motion.GRIPPER]
         aspect, out = self._aspect(), {}
-        for p, cands in predict.candidate_poses(ranges, grip, gate).items():
+        # A dry run plans over every checked line; only physical moves are limited to the approved ones.
+        plan_gate = gate if gate["moves"] else {"lines": None, "max_fraction": motion.ALONG_MAX}
+        for p, cands in predict.candidate_poses(ranges, grip, plan_gate).items():
             preds = []
             f = self.frame()
             wh = framing.jpeg_size(f[2]) if f else None

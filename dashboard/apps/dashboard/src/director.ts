@@ -141,7 +141,8 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const buttons = el("div", "controls");
   const b = (text: string, cls = "btn") => { const x = el("button", cls, text); buttons.append(x); return x; };
   const select = b("Select object", "btn primary"), autofind = b("Auto-find sticker"), keep = b("Keep in frame"),
-    watch = b("Keep in view"), optimize = b("Optimize all views"), scene = b("Scene", "btn primary"), back = b("Return"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
+    watch = b("Keep in view"), optimize = b("Optimize all views"), show = b("Director Show", "btn primary"),
+    gimbal = b("Gimbal take"), scene = b("Scene"), back = b("Return"), snap = b("Snap to view"), selfcal = b("Self-calibrate"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
   const recLabel = el("label", "small");
   const rec = el("input");
   rec.type = "checkbox";
@@ -298,6 +299,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   cinema.onclick = () => job("cinematic", useClaude.checked ? { planner: "claude" } : {})();
   scene.onclick = () => job("scene", useClaude.checked ? { planner: "claude" } : {})();
   back.onclick = job("return");
+  show.onclick = job("show");
+  gimbal.onclick = job("gimbal");
+  snap.onclick = job("snap");
+  selfcal.onclick = job("selfcal");
   tour.onclick = job("tour");
   stop.onclick = async () => {
     try {
@@ -344,6 +349,11 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     const board = (s.job?.result as any)?.storyboard as { preset: string; score: number; thumb: string }[] | undefined;
     const moves = (s.job?.result as any)?.moves as { name: string; done: boolean; complete?: boolean; in_frame?: number | null; why?: string | null }[] | undefined;
     story.replaceChildren();
+    const showShots = (s.job?.result as any)?.shots as { shot: string; steady?: boolean; in_frame?: number | null; skipped?: string }[] | undefined;
+    if (s.job?.kind === "show" && showShots?.length) {
+      story.append(el("h4", "", "Director Show"));
+      for (const x of showShots) story.append(el("p", "small", `${x.shot}${x.skipped ? ` · skipped: ${x.skipped}` : x.in_frame != null ? ` · object in frame ${Math.round(x.in_frame * 100)}%` : x.steady === false ? " · object left the picture" : ""}`));
+    }
     if (s.job?.kind === "scene" && moves?.length) {
       story.append(el("h4", "", `Scene (${(s.job.result as any).planner} plan)`));
       for (const m of moves) story.append(el("p", "small", `${m.name}: ${m.done ? `${m.complete ? "full move" : "shortened"} · object in frame ${m.in_frame == null ? "–" : Math.round(m.in_frame * 100) + "%"}` : "not possible"}${m.why ? ` · ${m.why}` : ""}`));
@@ -383,7 +393,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       (s.arm.joints ? ` · measured ${Object.entries(s.arm.joints).map(([m, v]) => `${m}:${v}`).join(" ")}` : "") +
       (s.gate.moves ? "" : ` · ${s.gate.reasons[0] ?? ""}`);
     const running = s.job?.status === "RUNNING";
-    for (const x of [autofind, select, keep, watch, optimize, cinema, scene, back, tour]) x.disabled = running || !!picking;
+    for (const x of [autofind, select, keep, watch, optimize, cinema, scene, back, tour, show, gimbal, snap, selfcal]) x.disabled = running || !!picking;
     autofind.hidden = !s.sticker_reference;
     renderGallery(s);
     // Record only deliberate shots: the cinematic phase and keep-in-view holds, never estimating or verifying.

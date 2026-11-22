@@ -546,7 +546,7 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal}
+                   "selfcal": self._selfcal, "show": self._show}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
@@ -1125,6 +1125,11 @@ class Director:
         self.job["phase"] = "estimate"
         if self.loc is None:
             await self.localize()
+        self.job["result"] = await self._gimbal_take(w["view"], int(req.get("yaw", 500)), float(req.get("roll", 0.0)))
+
+    async def _gimbal_take(self, view: str, yaw: int, roll: float = 0.0) -> dict:
+        """Plan and shoot one gimbal take from `view` (the arm is on it), then put it exactly back on the view."""
+        w = {"where": "view", "view": view}
         joints, t = await self.settle()
         bias = predict.bias_for(w, self.calibration)
         look = await self.observe(f"{w['view']}/gimbal-start", joints, t)
@@ -1136,7 +1141,7 @@ class Director:
         self.step("planning the gimbal take")
         shot = await self.vision(orbit.gimbal_shot, self.loc["point_m"], {**motion.load_views()[w["view"]],
                                  motion.GRIPPER: joints[motion.GRIPPER]}, self.state.arm.ranges(),
-                                 int(req.get("yaw", 500)), float(req.get("roll", 0.0)), bias, self._aspect())
+                                 yaw, roll, bias, self._aspect())
         if not shot["ok"]:
             raise Hold(f"no gimbal take from {w['view']}: {shot['reason']}")
         self.job["phase"] = "cinematic"
@@ -1146,15 +1151,72 @@ class Director:
             await self.move_path(self._bridge(joints, shot["path"][0], step=100) + shot["path"][1:], "gimbal take", sample=True)
         except TooHeavy as e:
             self.trail = [{m: joints[m] for m in motion.MOVABLE}] + shot["path"]
+            self.job["result"] = self.job["result"] or {"moves": []}
             moved = await self._lock_at_limit(shot["path"], {"name": "gimbal take"}, str(e))
-            self.job["result"] = {"view": w["view"], "stopped": "shoulder limit", "driven_poses": len(moved)}
-            return
+            return {"view": w["view"], "stopped": "shoulder limit", "driven_poses": len(moved)}
         seen = len(self.samples) / self.looks if self.looks else None
-        self.job["result"] = {"view": w["view"], "yaw_range": shot["yaw_range"], "poses": shot["poses"],
-                              "complete": shot["complete"], "why": shot["reason"],
-                              "in_frame": None if seen is None else round(seen, 2), "moves": []}
         self.job["phase"] = "reposition"
         await self.snap_home(w["view"])
+        return {"view": w["view"], "yaw_range": shot["yaw_range"], "poses": shot["poses"],
+                "complete": shot["complete"], "why": shot["reason"],
+                "in_frame": None if seen is None else round(seen, 2), "moves": []}
+
+    async def _hold_shot(self, seconds: float, label: str):
+        """A steady held shot: the editor's clean in/out point. Watches that the object stays in the picture."""
+        self.step(f"holding: {label}")
+        end, misses = time.monotonic() + seconds, 0
+        while time.monotonic() < end:
+            await asyncio.sleep(0.5)
+            f = (await self.fresh_frames(1))[0]
+            hit = await self.vision(V.look, self.ref, f[2], True, self._hint())
+            misses = 0 if hit else misses + 1
+            if misses >= 3:
+                self.note(f"the object left the picture while holding {label}")
+                return False
+        return True
+
+    async def _show(self, req: dict, gate: dict):
+        """Director Show: film grammar with the moves this arm does within its shoulder limit.
+        Establish wide (hold) -> push in along the checked wide-top line (hold) -> gimbal arc around the
+        object with the shoulder parked (hold) -> pull back out to wide (hold). One deliberate move at a
+        time, slow and eased, steady holds between them; recording follows the cinematic phase."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        views = motion.load_views()
+        wide, close = req.get("wide", "wide"), req.get("close", "top")
+        if wide not in views or close not in views:
+            raise Hold(f"needs the views {wide} and {close}")
+        if self.where().get("where") not in ("view", "between"):
+            raise Hold("start from a saved view")
+        hold = float(req.get("hold", 3.0))
+        shots = []
+        if not (self.where().get("where") == "view" and self.where().get("view") == wide):
+            self.job["phase"] = "reposition"
+            self.step(f"getting to the establishing view ({wide})")
+            if not await self.move(wide):
+                raise Hold(f"the route to {wide} was refused")
+        self.job["phase"] = "cinematic"
+        shots.append({"shot": f"establishing ({wide})", "steady": await self._hold_shot(hold, f"establishing, {wide}")})
+        self.step(f"push in: {wide} -> {close}")
+        if not await self.move(close):
+            raise Hold(f"the push-in to {close} was refused")
+        shots.append({"shot": f"push in to {close}", "steady": await self._hold_shot(hold * 0.7, f"{close}")})
+        if self.loc is None:
+            self.job["phase"] = "estimate"
+            await self.localize()
+            self.job["phase"] = "cinematic"
+        try:
+            take = await self._gimbal_take(close, int(req.get("yaw", 500)))
+            shots.append({"shot": f"arc around the object at {close}", **take})
+        except (Hold, TooHeavy) as e:
+            shots.append({"shot": "arc", "skipped": str(e)})
+        self.job["phase"] = "cinematic"
+        shots.append({"shot": f"after the arc ({close})", "steady": await self._hold_shot(hold * 0.7, close)})
+        self.step(f"pull out: {close} -> {wide}")
+        if not await self.move(wide):
+            raise Hold(f"the pull-out to {wide} was refused")
+        shots.append({"shot": f"closing wide ({wide})", "steady": await self._hold_shot(hold, f"closing, {wide}")})
+        self.job["result"] = {"shots": shots}
 
     async def snap_home(self, view: str):
         """After a take that ended next to its view, put the arm exactly back on it."""

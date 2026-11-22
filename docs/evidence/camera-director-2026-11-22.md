@@ -44,3 +44,16 @@ Station v0.1.0-beta.10 on the lab Linux laptop (started with `sg dialout` becaus
 - The predictor's 55° obliqueness limit contradicted the real camera (tracked at 69°); now 75°.
 
 Still to check: a tape-measured sticker position against 35 cm / 1 cm; verification moves after the operator's approval.
+
+## Real arm, physical runs (22 Nov, ~03:20–05:00, owner present, PHYSICAL approval)
+
+| Run | Result |
+|---|---|
+| Calibration tour top → wide → right → left | top and wide offsets recorded; right → left arc: **motor 2 overload (0x20)**, hold confirmed |
+| Survey (top, wide, right, home) | top 0.94, wide 0.79 (32 % toward top), home 0.78 verified; right not worth a move; sticker 30.3–30.5 cm ahead (tape: 31) |
+| Cinematic top → wide → home | first attempt: Station did not accept a command in time, hold unconfirmed then confirmed by STOP; cause: arm server at 100–127 % CPU from full-size SIFT; fixed (vision worker process, downscaled frames); second attempt: all three shots held, no faults |
+| Scene approaches (computed poses), gripper open and later closed, slow and first-run speed | **motor 2 overload** four more times at load 28–32 %; servo protection is norma-core's 25 %/2 s for every motor (read from the servo registers) |
+| Shoulder-load guard + lock | caught a build-up at 22 %, eased back one waypoint to 9 % holding, no fault; a later lock at 24 % then tripped on the return move |
+| Snap | 144 steps back onto top in 2 s, load ≤ 8 % |
+| **Gimbal take from top** | shoulder and elbow fixed, base yaw −200..+200 steps, one 13 s move, sticker in frame 77 % of sampled frames, shoulder peak 14 %, no faults, back on top |
+| Moved sticker (away from the base) | localized closer (31 → 25.9 cm): the model's up/down is inverted at top; self-calibration (not yet run on the real arm) addresses this |

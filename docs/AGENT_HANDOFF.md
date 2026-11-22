@@ -1,6 +1,6 @@
 # HackLab handoff — 22 November 2026
 
-This is the current operating guide for the next agent. The laptop hosts the HackLab dashboard, the Pixel provides its camera and offline speech recognition, and Station owns the robot’s USB camera and serial bus. Earlier designs and proposed autonomous framing are reference material. [Architecture](ARCHITECTURE.md) · [Camera director research plan](../ai_camera_director_beta_research_plan.md)
+This is the current operating guide for the next agent. **Camera director work (branch `beta/ai-camera-director`) has its own handoff: [CAMERA_DIRECTOR_HANDOFF.md](CAMERA_DIRECTOR_HANDOFF.md).** The laptop hosts the HackLab dashboard, the Pixel provides its camera and offline speech recognition, and Station owns the robot’s USB camera and serial bus. Earlier designs and proposed autonomous framing are reference material. [Architecture](ARCHITECTURE.md) · [Camera director research plan](../ai_camera_director_beta_research_plan.md)
 
 ## Where to work
 

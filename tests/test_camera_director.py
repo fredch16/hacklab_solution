@@ -394,6 +394,17 @@ class SimDirector(unittest.TestCase):
         import framing as _f
         _f.CAMERA_CAL = None
 
+    def test_9h_director_show_follows_film_grammar(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        st = self.run_job({"kind": "show", "hold": 1.0, "yaw": 300}, timeout=400)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        names = [x["shot"] for x in st["job"]["result"]["shots"]]
+        self.assertEqual(names[0], "establishing (wide)")
+        self.assertTrue(any(n.startswith("arc around the object") for n in names), names)
+        self.assertEqual(names[-1], "closing wide (wide)")
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "wide"}, timeout=10, what="ends wide")
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

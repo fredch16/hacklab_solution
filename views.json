@@ -152,7 +152,10 @@
           2833
         ]
       },
-      "checked": true
+      "checked": true,
+      "no_arc": [
+        "top"
+      ]
     },
     "top": {
       "joints": {

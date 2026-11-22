@@ -91,6 +91,8 @@ async def capture(arm: Arm, data: dict, name: str, cam=None, description: str = 
             logger.warning("no snapshot for %s: %s", name, e)
     if data["views"].get(name, {}).get("direct") is False:
         view["direct"] = False      # an explicit "never go direct to or from this view" survives a re-capture
+    if data["views"].get(name, {}).get("no_arc"):
+        view["no_arc"] = data["views"][name]["no_arc"]      # so does "never take the lifted path to these views"
     data["views"][name] = view
     if name == "transit":       # every route passes through it: re-teaching it un-checks all views
         for other in data["views"].values():

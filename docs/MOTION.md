@@ -37,6 +37,7 @@ status                           # dict polled by UIs: moving, view, phase, phas
                    "captured_at": "...", "snapshot": "views/top.jpg", "checked": false}}}
 ```
 `"direct": false` on a view (set on `home`) sends every move from or to it through the hub.
+`"no_arc": ["top"]` on a view (set on `right`) sends moves between those two views through the hub instead of over a lifted path; other pairs keep their arcs.
 Joint values are raw encoder steps (0–4095, 4096 per turn) keyed by motor id. `ranges` is the calibration at capture time: after a recalibration the saved steps no longer mean the same pose, and moves to that view are refused until it is re-captured. `transit` is a normal entry but is not offered as a camera view.
 
 ## What a move does

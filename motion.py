@@ -87,6 +87,7 @@ ABOVE_SLACK_M = 0.02   # a stopped blended move counts as "above the clear heigh
 # A line that fails may still pass when it is lifted towards the hub in the middle: an "arc".
 DIRECT = True                      # False: every move goes through the hub, as before
 ARC = True                          # Try a model-checked lift before the hub route
+NO_ARC = True                      # honour "no_arc": [names] on a view in views.json: that pair never takes an arc
 DIRECT_SPEED_CAP = SPEED_FAST      # a streamed direct move or arc never runs faster than this
 DIRECT_TURBO_PROFILE = False        # turbo: a straight direct move that does not end lower than it starts
                                    # runs on the servos' own profile, like a rise (False: streamed at fast)
@@ -204,6 +205,14 @@ def view_direct(name: str) -> bool:
     through the hub, whatever the geometry model thinks (`home`: its folded pose risks the arm
     hitting itself, which the model does not check)."""
     return _read_views_file().get(name, {}).get("direct") is not False
+
+
+def view_no_arc(name: str) -> frozenset[str]:
+    """Views this one never takes a lifted path ("arc") to or from: "no_arc": [names] in views.json,
+    read in either direction. Such a pair goes through the hub even when the geometry model passes
+    the arc. For pairs whose arc has failed on the real arm (`right` and `top`: the shoulder
+    overloaded on every run)."""
+    return frozenset(_read_views_file().get(name, {}).get("no_arc") or ())
 
 
 def mark_checked(name: str, checked: bool = True):
@@ -465,6 +474,7 @@ class _Links:
         self.views, self.ranges = views, ranges
         self.grip = int(round(grip / 50.0)) * 50     # the limp gripper wobbles; do not re-plan for a step
         self._flags: dict[str, tuple[bool, bool]] = {}
+        self._no_arc: dict[str, frozenset[str]] = {}
 
     def height(self, present: dict) -> float:
         """Clear-point height of a measured pose by the geometry model (see _height)."""
@@ -474,6 +484,12 @@ class _Links:
         if name not in self._flags:
             self._flags[name] = (name == TRANSIT or view_checked(name), view_direct(name))
         return self._flags[name]
+
+    def _arc_off(self, a: str, b: str) -> bool:        # views.json switches this pair's arc off
+        for name in (a, b):
+            if name not in self._no_arc:
+                self._no_arc[name] = view_no_arc(name)
+        return b in self._no_arc[a] or a in self._no_arc[b]
 
     def plan(self, a: str, b: str) -> dict:
         """{"ok", "lift", "reason"} for the pair, in either order."""
@@ -491,6 +507,8 @@ class _Links:
         plan = direct_plan(self.views[a], self.views[b], self.views[TRANSIT], self.ranges, self.grip)
         if plan["ok"] and plan["lift"] and not ARC:
             return {**no, "reason": plan["reason"].split(": ", 1)[-1]}
+        if plan["ok"] and plan["lift"] and NO_ARC and self._arc_off(a, b):
+            return {**no, "reason": f"the lifted path between '{a}' and '{b}' is switched off in views.json (no_arc)"}
         return plan
 
     def pairs(self):

@@ -24,6 +24,7 @@ import motion
 # Exercise turbo direct as well as the default lift-over mode.
 motion.ARC = True
 motion.DIRECT_TURBO_PROFILE = True
+motion.NO_ARC = False       # every arc the model passes, also the pairs views.json switches off for the real arm
 import virtual_time
 from motion import MOVABLE, PITCH, TRANSIT, clamp_pose, envelope, go_to_view, locate
 from sim_arm import SIM_RANGES, SimArm
@@ -195,6 +196,15 @@ async def main():
           "route_kind follows the checked flags")
     motion.view_checked = lambda name: True
     check(motion.route_kind("top", "wide") == ("direct", "straight line"), "route_kind: direct")
+    motion.NO_ARC = True        # the shipped default: "no_arc" on a view in views.json
+    off = [motion.route_kind(a, b) for a, b in (("right", "top"), ("top", "right"))]
+    check(all(k == "hub" and "no_arc" in why for k, why in off) and not links().plan("top", "right")["ok"],
+          f"views.json no_arc: right <-> top goes through the hub, in both directions ({off[0][1]})")
+    check(motion.route_kind("left", "right")[0] == "arc" and motion.route_kind("top", "left")[0] == "arc",
+          "no_arc switches off that pair only: left <-> right and top <-> left keep their arcs")
+    check(("right", "top") not in [(a, b) for a, b, _ in links().pairs()],
+          "a pair with its arc switched off is not a line the arm can be 'between' on")
+    motion.NO_ARC = False
     check(motion.route_kind("home", "top")[0] == "hub" and "transit" in motion.route_kind("home", "top")[1],
           "route_kind: home is opted out, with the reason")
     check(motion.route_kind("left", "right")[0] == "arc" and "dip" in motion.route_kind("left", "right")[1],

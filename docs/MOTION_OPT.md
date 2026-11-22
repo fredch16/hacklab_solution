@@ -156,6 +156,7 @@ Tested: Stop during a direct move, an arc, a turbo direct move and at seven mome
 | Arcs come too close to the desk | Turn off **Go straight from view to view** in Motion settings to route through transit |
 | Sideways sweeps close to the desk are not wanted | `DIRECT_TURN_TOL = 60`: direct only between views with the same heading |
 | One view misbehaves | `"direct": false` on that view in `views.json` |
+| One lifted path misbehaves | `"no_arc": ["other view"]` on either view in `views.json`: that pair goes through transit, in both directions |
 | Turbo direct leaves the line or overshoots | `DIRECT_TURBO_PROFILE = False` |
 | Overshoot coming down onto a view at fast | `FAST_DESCENT = False`, and `DIRECT_SPEED_CAP = SPEED_NORMAL` for direct moves |
 | A blended move aborts with "pushed off its position" or "something else is commanding" | `BLEND_IDLE_GUARD = False` |
@@ -186,6 +187,7 @@ I did not edit `capture_server.py`, `control_ui.html`, `capture_ui.html`, `tests
 - `where` can now be `"between"` (with `view`, `to`, `s`) or `"above"` (with `view`). `control_ui.html` shows both as "not at a known pose" without the warning, and moves stay enabled. It should say "between A and B" and "above the desk near V".
 - `status["phase"]` can contain `roll` (for example `rise+roll`), which is not a route segment. Routes can be `["direct"]`, `["arc"]`, or a line followed by more segments after a Stop.
 - A view's `"direct": false` survives a re-capture (`capture_view.py`). There is no button for it.
+- So does `"no_arc"`. It is set on `right` for `top`: on the real arm on 21 Nov the lifted path `right → top` failed on all six runs at normal and fast speed, five of them with a shoulder overload fault (status 0x20) that left the arm slow until it was power-cycled. `top → right` (3 of 4 clean) goes through transit as well; `left ↔ right` (3 of 3) and `top → left` (1 of 1) keep their arcs. `left → top` has not run on the real arm. Lift-over itself stays on.
 - `sim_arm.py` changed on main as well (`stop_mirroring`); my changes there are additions to `__init__`, `_advance` and `write_goals` and may need a manual merge.
 
 ## The benchmark and simulated time

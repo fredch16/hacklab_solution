@@ -38,12 +38,12 @@ MAX_W = 960               # every frame is downscaled to at most this width befo
 OVERLAY_W = 640           # ...and the live overlay works on this width
 
 
-def decode_gray(jpeg: bytes, reduced: bool = False) -> np.ndarray:
+def decode_gray(jpeg: bytes, reduced: bool = False, full: bool = False) -> np.ndarray:
     """Grayscale frame downscaled to MAX_W (OVERLAY_W with `reduced`). 720p is not needed for recognition;
     at 640 px the small far-away sticker (wide, home) lost too many features on the real arm, so scored looks keep 960."""
     import framing
     wh = framing.jpeg_size(jpeg)
-    limit = OVERLAY_W if reduced else MAX_W
+    limit = 10 ** 6 if full else OVERLAY_W if reduced else MAX_W
     flag = cv2.IMREAD_REDUCED_GRAYSCALE_2 if wh and wh[0] >= 2 * limit else cv2.IMREAD_GRAYSCALE
     img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), flag)
     if img is not None and img.shape[1] > limit:
@@ -289,6 +289,11 @@ def look(ref: Reference, jpeg: bytes, reduced: bool = False, hint: list | None =
     """Detect in one JPEG (near `hint` first); also attach a single-frame score."""
     gray = decode_gray(jpeg, reduced)
     hit = detect(ref, gray, hint)
+    if hit is None:            # small / far away: try again at the camera's full resolution
+        gray = decode_gray(jpeg, full=True)
+        hit = detect(ref, gray, hint)
+        if hit is not None:
+            hit["evidence"] += " (full resolution)"
     if hit is not None:
         hit["frame_score"] = frame_score(hit, gray)
     return hit
@@ -298,4 +303,7 @@ def look_many(ref: Reference, jpegs: list[bytes]) -> tuple[list, dict]:
     """Settled frames at full size: the detections and the view score."""
     grays = [decode_gray(j) for j in jpegs]
     hits = [detect(ref, g) for g in grays]
+    if sum(h is not None for h in hits) < MIN_VALID_FRAMES:      # small / far away: full resolution
+        grays = [decode_gray(j, full=True) for j in jpegs]
+        hits = [detect(ref, g) for g in grays]
     return hits, score_view(hits, grays)

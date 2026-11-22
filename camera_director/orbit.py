@@ -504,6 +504,7 @@ def gimbal_shot(point, start: dict, ranges, yaw: int = 500, roll: float = 0.0, b
 FOLLOW_JOINTS = (1, 4, 5, 6, 7)   # base yaw and the wrist; shoulder and elbow stay where the view holds them
 FOLLOW_YAW_MAX = 1000             # steps of base yaw the camera may turn away from its view while following
 FOLLOW_SATURATED_DEG = 3.0        # turning alone leaves the object this far off: the whole arm helps aim
+FOLLOW_GAIN = 0.7                 # proportional gain below 1 (visual servoing): converge without overshooting
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
@@ -573,8 +574,9 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
             joints, err = motion.MOVABLE, err2
     problem = None
     for share in (1.0, 0.5, 0.25):          # refused? the same correction smaller: always get somewhat closer
-        goal = {m: now[m] + int(share * np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in joints
-                else now[m] for m in motion.MOVABLE}
+        gain = FOLLOW_GAIN if joints is FOLLOW_JOINTS else 1.0   # turning: part of the way, no overshoot
+        goal = {m: now[m] + int(share * gain * np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX))
+                if m in joints else now[m] for m in motion.MOVABLE}
         goal = motion.clamp_pose(goal, env)
         if goal == now:
             break

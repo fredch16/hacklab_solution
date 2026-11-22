@@ -87,9 +87,12 @@ FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> th
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
 WATCH_FRAME_S = 1.5       # keep in view re-frames on the object at most this often
-CENTER_DEAD = 0.06        # ...until its centre is this close to the picture's centre
+CENTER_DEAD = 0.04        # ...until its centre is this close to the picture's centre
 FOLLOW_SPEED = motion.SPEED_NORMAL   # follow's corrections: <= 150 steps of base yaw and wrist, shoulder parked
-FOLLOW_DEAD = 0.06        # follow: the object's centre may be this far from the picture's centre before turning
+FOLLOW_START = 0.10       # follow corrects once the object's centre is this far off (fraction of the picture)...
+FOLLOW_STOP = 0.04        # ...and stops once it is this close: centred enough, no micro-movements
+FOLLOW_SMOOTH = 0.5       # low-pass on the measured centre (box jitter)
+FOLLOW_JUMP = 0.15        # a centre shift this big is a real move: no smoothing
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 
 
@@ -1266,7 +1269,9 @@ class Director:
             if not ready["valid"]:
                 raise Hold("marked subject is not visible in the opening position")
             self.job["phase"] = "cinematic"
-            if not await self._hold_shot(2.0, f"opening {name}", center=False):
+            composed = any(abs(k.get("u", 0.5) - 0.5) > 0.15 or abs(k.get("v", 0.5) - 0.5) > 0.15
+                           for k in shot["keyframes"])    # the brief asked for an off-centre composition
+            if not await self._hold_shot(2.0, f"opening {name}", center=not composed):
                 raise Hold("marked subject left the opening shot")
             self.step(name)
             try:
@@ -1274,7 +1279,7 @@ class Director:
             except TooHeavy as e:
                 self._lock_at_limit(trail + path["stage"] + path["path"][1:], name, str(e))
             seen = round(len(self.samples) / self.looks, 2) if self.looks else None
-            steady = await self._hold_shot(shot["hold"], name, center=False)
+            steady = await self._hold_shot(shot["hold"], name, center=not composed)
             self.job["result"]["moves"].append({"name": name, "done": True, "complete": steady, "in_frame": seen})
             if not steady:
                 raise Hold("marked subject left the closing shot")
@@ -1935,6 +1940,7 @@ class Director:
         commanded = dict(vpose)
         size0 = depth0 = anchor = offset = None
         far_count = moved_count = 0
+        smooth, correcting = None, False
         self._save_trail(self.trail)
         end, corrections, since = time.monotonic() + float(req.get("seconds", 300)), 0, -1
         self.job["phase"] = "cinematic"
@@ -1948,7 +1954,16 @@ class Director:
                 if obs.get("method") == "vit" and obs["confidence"] < V.VIT_MIN:
                     continue                  # a weak box may have slid onto something else: never steer by it
                 b = obs["box"]
-                centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+                raw = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+                # low-pass the measured centre (box jitter), but jump straight to a real move
+                if smooth is None or max(abs(raw[0] - smooth[0]), abs(raw[1] - smooth[1])) > FOLLOW_JUMP:
+                    smooth = raw
+                else:
+                    smooth = tuple(s + FOLLOW_SMOOTH * (r - s) for s, r in zip(smooth, raw))
+                centre = smooth
+                off = max(abs(centre[0] - 0.5), abs(centre[1] - 0.5))
+                # dead band with hysteresis: start correcting past FOLLOW_START, stop once inside FOLLOW_STOP
+                correcting = off > FOLLOW_START or (correcting and off > FOLLOW_STOP)
                 size = (b[2] - b[0] + b[3] - b[1]) / 2
                 cam = np.array(framing.camera_pose({**commanded, motion.GRIPPER: 1279}, ranges)[0])
                 fused = self.obj.x is not None and self.obj.state()["sigma_m"] < 0.08
@@ -1981,9 +1996,8 @@ class Director:
                     moved = moved_count >= 3          # a real move holds; one odd fused reading does not
                     if moved:
                         self.note(f"follow: object moved {np.round(shift, 3).tolist()} m (sigma {self.obj.state()['sigma_m']})")
-                if (not moved and abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD
-                        and abs(ratio - 1) <= orbit.FOLLOW_DIST_DEAD):
-                    continue
+                if not moved and not correcting and abs(ratio - 1) <= orbit.FOLLOW_DIST_DEAD:
+                    continue                  # centred well enough: hold still, no micro-corrections
                 # from the last commanded pose, not the measured one (that sags under load, step after step)
                 now = {**commanded, motion.GRIPPER: (await self._joints())[motion.GRIPPER]}
                 step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect(),

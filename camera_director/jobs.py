@@ -469,6 +469,7 @@ class Director:
                 if sample and not task.done():
                     await self._sample()
             out = self.state.move_outcome or {}
+            await self._fresh_where()
         finally:
             self._own_move = False
             self.job["moving_to"] = None
@@ -510,6 +511,13 @@ class Director:
         if than is not None and best["score"] < than + PULLBACK_MARGIN:
             return None
         return {"toward": start, "s": s, "route": kind, "seen_score": best["score"]}
+
+    async def _fresh_where(self):
+        """Wait for the server's new answer on where the arm is: right after a move the cached one is empty."""
+        self.state.refresh_where()
+        task = getattr(self.state, "where_task", None)
+        if task is not None:
+            await asyncio.wait({task}, timeout=3)
 
     def where(self) -> dict:
         w = (self.state.where or {}).get("where") or {}
@@ -921,6 +929,7 @@ class Director:
                         self.job["phase"] = "occluded"
                         await self.state.stop("subject lost during the take")
             out = self.state.move_outcome or {}
+            await self._fresh_where()
         finally:
             self._own_move = False
             self.job["moving_to"] = None

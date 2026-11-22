@@ -242,8 +242,9 @@ class SimDirector(unittest.TestCase):
         loc = st["localization"]
         self.assertTrue(loc["ok"] and loc["views"] >= 2 and "warning" not in loc, loc)   # the sim matches its own model
         self.assertLess(abs(loc["check"]["triangulated_height_m"]), 0.01, loc)
-        for p in ("close", "side_low"):
-            self.assertEqual(cat[p]["status"], "BLOCKED")
+        for p in motion.view_names():
+            if not motion.view_checked(p):                     # unchecked views are never visited (side_low)
+                self.assertEqual(cat[p]["status"], "BLOCKED")
         valid = [p for p in cat.values() if p["status"] == "VALID"]
         self.assertGreaterEqual(len(valid), 2)
         self.assertTrue(all(p["status"] in ("VALID", "BLOCKED", "SKIPPED", "PREDICTED", "NOT_CONFIRMED") for p in cat.values()))

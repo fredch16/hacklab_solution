@@ -898,7 +898,7 @@ class State:
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
 
-    async def start_path(self, poses: list, label: str, gen: int | None = None) -> dict:
+    async def start_path(self, poses: list, label: str, gen: int | None = None, load_guard: bool = True) -> dict:
         """Start motion.go_through (a computed, model-checked path from the camera director) like start_move."""
         gen = self.gen if gen is None else gen
 
@@ -912,16 +912,17 @@ class State:
             # servo's overload protection tripped twice on the real arm at slow speed)
             self.move_started, self.move_speed = time.time(), ("first-run", motion.SPEED_FIRST)
             self._forget_where()
-            self.move_task = asyncio.create_task(self._run_move(label, motion.SPEED_FIRST, False, path=poses))
+            self.move_task = asyncio.create_task(self._run_move(label, motion.SPEED_FIRST, False, path=poses,
+                                                                load_guard=load_guard))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": label, "generation": gen}
         return await self.command(body, gen=gen)
 
     async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None,
-                        path: list | None = None):
+                        path: list | None = None, load_guard: bool = True):
         try:
             if path is not None:
-                result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view)
+                result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view, load_guard=load_guard)
             else:
                 result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
                                                  along=along)

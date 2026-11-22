@@ -191,7 +191,18 @@ def reach_map(point, start: dict, ranges, seeds: tuple = (), elevs=(30, 45, 60, 
     return {"thetas": list(thetas), "elevs": list(elevs), "dists": list(dists), "ok": ok}
 
 
-ADJUST = ((0, 0.0), (5, 0.0), (0, 0.02), (5, 0.02), (10, 0.0), (10, 0.02), (15, 0.03), (20, 0.04))
+ADJUST = ((0, 0.0), (5, 0.0), (0, 0.02), (5, 0.02), (10, 0.0), (10, 0.02), (15, 0.03), (20, 0.04),
+          (5, -0.02), (10, -0.02), (15, -0.02), (10, -0.03))
+REACH_LIMIT_VIEW = "top"   # no computed pose may hold the wrist further from the shoulder than this view does:
+                           # the ElRobot shoulder holds `top` at ~8 % load, its servo trips above 25 % (2 s)
+
+
+def shoulder_reach(q: dict, ranges, grip: int = 1279) -> float:
+    """Horizontal distance (m) of the wrist and camera from the shoulder axis: what the shoulder must hold up."""
+    import fk
+    pts, _, _ = fk._key_points(fk.steps_to_angles({**{int(m): int(v) for m, v in q.items()}, motion.GRIPPER: grip}, ranges))
+    sh = np.array(pts["j2_shoulder"])
+    return max(float(np.hypot(*(np.array(pts[n])[:2] - sh[:2]))) for n in ("j6_wrist_pitch", "camera"))
 
 
 def _bridge(a: dict, b: dict, step: int = 200) -> list[dict]:
@@ -207,9 +218,13 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
     env = motion.envelope(ranges)
     first_reason = None
+    raw = motion._read_views_file()
+    limit = shoulder_reach({int(k): v for k, v in raw[REACH_LIMIT_VIEW]["joints"].items()}, ranges) \
+        if REACH_LIMIT_VIEW in raw else None
     for si, start in enumerate(starts):
         start = {int(m): int(v) for m, v in start.items()}
         grip = start.get(motion.GRIPPER, 1279)
+        best = None
         for de, dd in ADJUST:
             frames = [{"theta": k["theta"], "elev": min(80.0, k["elev"] + de), "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
             plan = plan_path(point, start, ranges, frames, bias, aspect, seeds)
@@ -223,5 +238,16 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
             if problem:
                 first_reason = first_reason or problem
                 continue
-            return {**plan, "start_index": si, "adjusted": {"elev": de, "dist": dd}, "approach": approach, "keyframes": frames}
+            reach = max(shoulder_reach(q, ranges, grip) for q in plan["poses"])
+            if limit is not None and reach > limit:
+                first_reason = first_reason or (f"the arm would reach {reach * 100:.0f} cm from the shoulder, further than "
+                                                f"at {REACH_LIMIT_VIEW} ({limit * 100:.0f} cm)")
+                continue
+            span = abs(plan["samples"][-1][0] - plan["samples"][0][0]) + abs(plan["samples"][-1][1] - plan["samples"][0][1])
+            key = (plan["complete"], round(span), -reach)          # the full move first, then the lightest version
+            if best is None or key > best[0]:
+                best = (key, {**plan, "start_index": si, "adjusted": {"elev": de, "dist": dd}, "approach": approach,
+                              "keyframes": frames, "shoulder_reach_m": round(reach, 3)})
+        if best:
+            return best[1]
     return {"ok": False, "poses": [], "reason": first_reason or "no safe version of this move"}

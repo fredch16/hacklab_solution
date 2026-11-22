@@ -607,6 +607,17 @@ ALONG_MAX = 0.35   # a stop part-way along a line (go_to_view along=) is at most
 PATH_FLOOR_M = 0.04       # no part of the arm below this in the geometry model (or no lower than it is now)
 PATH_STEP_MAX = 400       # steps any joint may change between two consecutive poses of a path
 PATH_CHECKS = 8           # poses checked between two consecutive waypoints
+# Station sets every ST3215 to trip its own overload protection when its load stays above 25 % for 2 s
+# (norma-core presets.rs: DEFAULT_OVERLOAD_TORQUE = 25; protection time 2 s). On the ElRobot the shoulder
+# reached that during computed moves. During computed paths we stop well before: load above this, this long.
+PATH_TRIP_GUARD = {2: (200, 0.6)}   # motor: (load 0-1000, seconds)
+
+
+class LoadGuardError(MotionError):
+    """A computed path stopped because a joint's load stayed near the servo's own overload threshold."""
+
+
+_trip_guard: dict = {}             # active only while go_through runs (one move at a time: _move_lock)
 
 
 def plan_along(present: dict[int, int], view: str, toward: str, s: float, views: dict, links) -> list:
@@ -711,7 +722,8 @@ class _PolyGoal(dict):
     poly: list = []
 
 
-async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_SLOW, label: str = "path") -> dict:
+async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_SLOW, label: str = "path",
+                     load_guard: bool = True) -> dict:
     """Follow computed poses in one continuous guarded move (the camera director's arcs). The path
     starts where the arm is; every pose is checked by path_problem() before anything is written.
     Same result keys and the same guards, Stop and holds as go_to_view."""
@@ -752,7 +764,12 @@ async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_
                 goal.poly = path
                 status.update(phase="path", phase_index=1)
                 ctx["moving"] = _last["driving"] = MOVABLE
-                result["duration"] += await _run_segment(arm, "path", goal, max_speed, env, stats, ctx, {})
+                if load_guard:     # not for retracing a path just driven: that leads back to lighter poses
+                    _trip_guard.update(PATH_TRIP_GUARD)
+                try:
+                    result["duration"] += await _run_segment(arm, "path", goal, max_speed, env, stats, ctx, {})
+                finally:
+                    _trip_guard.clear()
                 ctx["moving"] = _last["driving"] = ()
                 result["ok"] = True
             except asyncio.CancelledError:
@@ -766,6 +783,7 @@ async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_
                     result["hold"] = _last["hold"] = await _abort_hold(arm, RELAX_TOL, ctx["moving"])
             except (MotionError, RuntimeError) as e:
                 result["error"] = str(e)
+                result["load_guard"] = isinstance(e, LoadGuardError)
                 if ctx["wrote"]:
                     result["hold"] = _last["hold"] = await _abort_hold(arm, FREEZE_TOL, ctx["moving"])
             finally:
@@ -1025,6 +1043,13 @@ def _guard(tel, watch: _Watch, now: float, stats: dict, held_pos: dict, held_goa
                     f"motor {m} is drawing too much current ({t['current']}); it may be blocked", BlockedError)
         watch.check(("load", m), m not in hard and t["load"] > LOAD_LIMIT, now,
                     f"motor {m} is pushing at full effort (load {t['load']}); it may be blocked", BlockedError)
+    for m, (limit, hold_s) in _trip_guard.items():
+        if tel[m]["load"] > limit:
+            if now - watch.since.setdefault(("trip", m), now) > hold_s:
+                raise LoadGuardError(f"motor {m} load stayed above {limit / 10:.0f}% for {hold_s} s: stopped before "
+                                     "its overload protection trips (the shoulder is carrying too much here)")
+        else:
+            watch.since.pop(("trip", m), None)
     for m, g in held_goal.items():      # a joint we are not moving must keep the goal it had
         if abs(tel[m]["goal"] - g) > GOAL_MATCH:
             raise MotionError(OTHER_WRITER.format(m))

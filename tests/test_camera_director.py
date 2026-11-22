@@ -348,6 +348,25 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
 
+    def test_9e_shoulder_load_guard_backs_off_instead_of_faulting(self):
+        self.goto("top")
+        saved = dict(motion.PATH_TRIP_GUARD)
+        motion.PATH_TRIP_GUARD.clear()
+        motion.PATH_TRIP_GUARD[2] = (-1, 0.1)             # any load counts: the guard must fire on the first move
+        try:
+            moves = [{"name": "arc", "keyframes": [{"theta": -60, "elev": 50, "dist": 0.18},
+                                                   {"theta": -20, "elev": 55, "dist": 0.18}]}]
+            st = self.run_job({"kind": "scene", "moves": moves}, timeout=300)
+        finally:
+            motion.PATH_TRIP_GUARD.clear()
+            motion.PATH_TRIP_GUARD.update(saved)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        mv = st["job"]["result"]["moves"][0]
+        self.assertFalse(mv["done"])
+        self.assertIn("too heavy for the shoulder", mv["why"])
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
+        self.assertEqual(http(self.base, "/api/state")[1]["blockers"], [])
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

@@ -81,6 +81,10 @@ class Hold(Exception):
     """The job stops here; the arm is left holding wherever the last move left it."""
 
 
+class TooHeavy(Hold):
+    """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): retreat, then skip the shot."""
+
+
 class Director:
     def __init__(self, state, data_dir: Path = DATA_DIR, safety_path: Path = SAFETY_PATH):
         self.state, self.data, self.safety_path = state, Path(data_dir), Path(safety_path)
@@ -868,13 +872,13 @@ class Director:
 
     # ---- free camera scenes: moves generated around the object (arcs, cranes, push-ins, mixes)
 
-    async def move_path(self, poses: list[dict], label: str, sample: bool = False) -> None:
+    async def move_path(self, poses: list[dict], label: str, sample: bool = False, load_guard: bool = True) -> None:
         """One continuous computed move (motion.go_through) through the command owner, frames scored if `sample`."""
         self.job["moving_to"] = label
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
-                await self.state.start_path(poses, label, gen=self.job_gen)
+                await self.state.start_path(poses, label, gen=self.job_gen, load_guard=load_guard)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -889,6 +893,8 @@ class Director:
             self._own_move = False
             self.job["moving_to"] = None
         if not out.get("ok"):
+            if out.get("load_guard"):
+                raise TooHeavy(f"{label}: {out.get('error')}")
             raise Hold(f"{label} did not finish: {out.get('error')}")
 
     @staticmethod
@@ -1038,6 +1044,17 @@ class Director:
         except OSError:
             pass
 
+    async def _retreat(self, path: list[dict], mv: dict, why: str):
+        """The shoulder-load guard stopped a move: go straight back the way it came (lighter poses), at once,
+        before the servo's own 2 s overload timer runs out at this pose. The rest of the scene goes on from there."""
+        self.job["phase"] = "reposition"
+        self.step(f"{mv['name']}: too heavy for the shoulder here, backing off")
+        self.note(why)
+        self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": "too heavy for the shoulder: " + why})
+        await self._return(path)
+        self.trail = path[:1]
+        self._save_trail(self.trail)
+
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
         now = self.state.arm.joints(max_age_s=motion.STALE_S)
@@ -1048,7 +1065,7 @@ class Director:
         back = list(reversed(trail[:i + 1]))
         if len(back) > 1 or gap > motion.SKIP_TOL:
             self.step("returning to the start pose along the path it came")
-            await self.move_path(back, "return")
+            await self.move_path(back, "return", load_guard=False)
         self.trail = []
         self._save_trail([])
 
@@ -1082,7 +1099,12 @@ class Director:
             self.step(f"move {i} of {len(moves)}: getting into position for {mv['name']}")
             approach = self._bridge(now, plan["poses"][0])
             self._save_trail(trail + approach)        # saved before moving: a Stop midway still knows the way back
-            await self.move_path(approach, f"approach {mv['name']}")
+            try:
+                await self.move_path(approach, f"approach {mv['name']}")
+            except TooHeavy as e:
+                await self._retreat(trail + approach, mv, str(e))
+                del trail[1:]
+                continue
             trail.extend(approach)
             joints, t = await self.settle()
             look = await self.observe(f"scene/{i}-start", joints, t)
@@ -1098,7 +1120,12 @@ class Director:
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
             path = self._bridge(now, plan["poses"][0]) + plan["poses"][1:]
             self._save_trail(trail + path)
-            await self.move_path(path, mv["name"], sample=True)
+            try:
+                await self.move_path(path, mv["name"], sample=True)
+            except TooHeavy as e:
+                await self._retreat(trail + path, mv, str(e))
+                del trail[1:]
+                continue
             trail.extend(path)
             await asyncio.sleep(1.0)            # a beat at the end of the move
             seen = len(self.samples) / self.looks if self.looks else None

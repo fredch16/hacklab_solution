@@ -51,7 +51,7 @@ GRIPPER_CAMERA = "usbvideo/74e4d17bc903e40ebc78117539fca31f"   # docs/HARDWARE.m
 GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4")
 
 TICK_S = 0.2              # frame sampling period
-TRACK_S = 0.5             # live tracking period (the overlay); jobs take their own settled looks
+TRACK_S = 0.25            # live tracking period (learned tracker, a few ms per frame; also while the arm moves)
 FRAME_CACHE = 60          # frames kept for selection by id (~12 s)
 SELECT_MAX_AGE_S = 600.0  # a box drawn on a frozen frame older than this is refused (the frame is pinned meanwhile)
 FRAME_FRESH_S = 1.0       # a frame older than this is not used for decisions
@@ -130,6 +130,8 @@ class Director:
             self.note("vision worker restarted")
             self.pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
                                                                initializer=V._worker_init)
+            if getattr(self, "_init_args", None):
+                await asyncio.get_running_loop().run_in_executor(self.pool, selfcal.call, cal, V.target_init, *self._init_args)
             return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
 
     def _hint(self):
@@ -144,12 +146,13 @@ class Director:
         while True:
             try:
                 f = await self._grab()
-                # no live tracking while the arm moves: the frames are blurred and the motion loop needs the CPU
-                if (f and self.tracker is not None and not self.state.moving
-                        and time.monotonic() - self._tracked_at >= TRACK_S):
+                # live tracking, also while the arm moves (the learned tracker follows the motion); the slow
+                # SIFT re-find only while the arm stands still
+                if f and self.tracker is not None and time.monotonic() - self._tracked_at >= TRACK_S:
                     self._tracked_at = time.monotonic()
                     tracker = self.tracker
-                    hit = tracker.record(await self.vision(V.look, tracker.ref, f[2], True, tracker.hint()), f[0], f[1])
+                    hit = tracker.record(await self.vision(V.track, tracker.ref, f[2], tracker.hint(),
+                                                           not self.state.moving), f[0], f[1])
                     if tracker is self.tracker:
                         self.obs = hit
             except asyncio.CancelledError:
@@ -318,8 +321,12 @@ class Director:
 
     # ------------------------------------------------------------ target
 
-    def _set_target(self, ref: V.Reference, frame_id: int, how: str):
+    def _set_target(self, ref: V.Reference, frame_id: int, how: str, box: list | None = None):
         self.ref, self.tracker, self.obs = ref, V.Tracker(ref), None
+        f = self.frame(frame_id)
+        if f is not None and box is not None:     # start the learned tracker on this exact frame and box
+            self._init_args = (ref, f[2], list(box))
+            asyncio.ensure_future(self.vision(V.target_init, *self._init_args))
         self.target = {"id": uuid.uuid4().hex[:8], "label": ref.label, "kind": ref.kind, "frame_id": frame_id,
                        "how": how, "set_at": round(time.time(), 2)}
         self.catalogue.clear()   # results for another target say nothing about this one
@@ -355,7 +362,7 @@ class Director:
         if as_sticker:
             await asyncio.to_thread(ref.save, self.data / "sticker")
             self.note("saved the Hack Lab sticker reference from a confirmed crop")
-        self._set_target(ref, f[0], "saved sticker crop" if as_sticker else "drawn box")
+        self._set_target(ref, f[0], "saved sticker crop" if as_sticker else "drawn box", [x1, y1, x2, y2])
         return 200, {"ok": True, "target": self.target, "features": len(ref.pts)}
 
     async def fresh_frames(self, n: int, after: float | None = None, timeout_s: float | None = None) -> list:
@@ -391,7 +398,7 @@ class Director:
             return 404, {"ok": False, "error": "not_found",
                          "detail": f"The sticker was recognised in {len(found)} of 3 fresh frames; not enough to be sure. "
                                    "Go to the top view, or draw a box around it with Select object."}
-        self._set_target(ref, frames[-1][0], "auto-found sticker")
+        self._set_target(ref, frames[-1][0], "auto-found sticker", found[-1]["box"])
         self.obs = {**found[-1], "frame_id": frames[-1][0], "stamp": frames[-1][1], "stable": True}
         return 200, {"ok": True, "target": self.target, "observation": found[-1]}
 
@@ -480,7 +487,7 @@ class Director:
         if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
             return False
         self.looks += 1
-        hit = await self.vision(V.look, self.ref, f[2], True, self._hint())
+        hit = await self.vision(V.track, self.ref, f[2], self._hint(), False)
         if hit:
             self.samples.append({"joints": joints, "score": hit["frame_score"], "box": hit["box"]})
         return hit is not None
@@ -883,7 +890,7 @@ class Director:
             while time.monotonic() < end:
                 await asyncio.sleep(0.5)
                 f = (await self.fresh_frames(1))[0]
-                hit = await self.vision(V.look, self.ref, f[2], False, self._hint())
+                hit = await self.vision(V.track, self.ref, f[2], self._hint())
                 misses = 0 if hit else misses + 1
                 if misses >= 2:
                     raise Hold(f"target lost while holding shot {i} ({p['preset']})")
@@ -1360,7 +1367,7 @@ class Director:
         while time.monotonic() < end:
             await asyncio.sleep(0.5)
             f = (await self.fresh_frames(1))[0]
-            hit = await self.vision(V.look, self.ref, f[2], True, self._hint())
+            hit = await self.vision(V.track, self.ref, f[2], self._hint())
             misses = 0 if hit else misses + 1
             if misses >= 3:
                 self.note(f"the object left the picture while holding {label}")
@@ -1593,7 +1600,7 @@ class Director:
 
     async def _look(self) -> dict | None:
         f = (await self.fresh_frames(1))[0]
-        return await self.vision(V.look, self.ref, f[2], False, self._hint())
+        return await self.vision(V.track, self.ref, f[2], self._hint())
 
     def _shot_of(self, p: str) -> dict | None:
         r = self.catalogue.get(p) or {}

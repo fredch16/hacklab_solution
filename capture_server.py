@@ -405,18 +405,17 @@ class State:
 
     async def watch(self):
         """Keeps the freshness times right while no page is polling (local data only, no Station traffic).
-        Also puts the owner's servo overload threshold back after a calibration reset it (servo_limits.py)."""
+        Also puts the owner's servo settings back after a calibration reset them (servo_limits.py)."""
         checked = 0.0
         while not self.closing:
             self.note_data()
             if not self.sim and not self.moving and time.monotonic() - checked > SERVO_CHECK_S:
                 checked = time.monotonic()
                 try:
-                    ids = servo_limits.needs_apply(self.arm)
-                    if ids:
-                        await servo_limits.apply(self.arm, ids=ids)
-                        logger.info("servo overload threshold set to %d%% on motors %s (Station had reset it)",
-                                 servo_limits.OVERLOAD_PERCENT, ids)
+                    todo = servo_limits.needs_apply(self.arm)
+                    if todo:
+                        await servo_limits.apply(self.arm, todo)
+                        logger.info("servo settings put back (Station had reset them): %s", todo)
                 except Exception as e:      # stale data, Station busy: try again next time
                     logger.debug("servo threshold check: %s", e)
             await asyncio.sleep(WATCH_S)

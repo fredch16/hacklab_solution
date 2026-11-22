@@ -121,6 +121,12 @@ class Director:
         saved = None if state.sim else V.Reference.load(self.data / "target")
         if saved is not None:                # the object marked before a restart (the tracker re-finds it)
             self._set_target(saved, -1, "restored after restart")
+            try:
+                self._init_args = (saved, (self.data / "target_frame.jpg").read_bytes(),
+                                   json.loads((self.data / "target_box.json").read_text()))
+                state.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.vision(V.target_init, *self._init_args)))
+            except (OSError, ValueError):
+                pass
         state.loop.call_soon_threadsafe(lambda: setattr(self, "_task", asyncio.ensure_future(self._run())))
 
     # ------------------------------------------------------------ frames and live tracking
@@ -337,6 +343,11 @@ class Director:
         if f is not None and box is not None:     # start the learned tracker on this exact frame and box
             self._init_args = (ref, f[2], list(box))
             asyncio.ensure_future(self.vision(V.target_init, *self._init_args))
+            try:                                  # ...and again from them after a restart
+                (self.data / "target_frame.jpg").write_bytes(f[2])
+                (self.data / "target_box.json").write_text(json.dumps(list(box)))
+            except OSError:
+                pass
         self.target = {"id": uuid.uuid4().hex[:8], "label": ref.label, "kind": ref.kind, "frame_id": frame_id,
                        "how": how, "set_at": round(time.time(), 2)}
         self.catalogue.clear()   # results for another target say nothing about this one

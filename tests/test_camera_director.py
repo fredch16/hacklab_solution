@@ -596,12 +596,15 @@ class RealArmGate(unittest.TestCase):
     def test_marked_object_survives_a_restart(self):
         data = Path(tempfile.mkdtemp())
         V.Reference(np.tile(np.arange(64, dtype=np.uint8), (64, 1)) * 3, "Marker", "manual").save(data / "target")
+        (data / "target_frame.jpg").write_bytes(cv2.imencode(".jpg", np.zeros((90, 160, 3), np.uint8))[1].tobytes())
+        (data / "target_box.json").write_text("[0.1, 0.1, 0.4, 0.4]")
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
         arm = type("Arm", (), {"bus_serial": "5B79016329"})()
         state = type("S", (), {"sim": False, "loop": loop, "arm": arm, "cam_queue": J.GRIPPER_CAMERA, "gen": 0, "cams": {}})()
         d = J.Director(state, data_dir=data, safety_path=data / "none.json")
         self.assertEqual((d.ref.label, d.target["how"]), ("Marker", "restored after restart"))
+        self.assertEqual(d._init_args[2], [0.1, 0.1, 0.4, 0.4])      # the tracker restarts from the drawn box
 
     def test_no_approval_means_dry_run(self):
         g = self.director(None).gate()

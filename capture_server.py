@@ -908,9 +908,11 @@ class State:
             if self.note_data()[1]:
                 raise Refused("no arm data: check the arm's USB cable and power. Nothing moves until it is back", 503)
             self.move_view, self.move_outcome = label, None
-            self.move_started, self.move_speed = time.time(), (DEFAULT_SPEED, SPEEDS[DEFAULT_SPEED])
+            # computed poses are new territory: first-run speed, like any view nobody has checked (and the shoulder
+            # servo's overload protection tripped twice on the real arm at slow speed)
+            self.move_started, self.move_speed = time.time(), ("first-run", motion.SPEED_FIRST)
             self._forget_where()
-            self.move_task = asyncio.create_task(self._run_move(label, SPEEDS[DEFAULT_SPEED], False, path=poses))
+            self.move_task = asyncio.create_task(self._run_move(label, motion.SPEED_FIRST, False, path=poses))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": label, "generation": gen}
         return await self.command(body, gen=gen)

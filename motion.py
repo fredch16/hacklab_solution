@@ -633,32 +633,49 @@ def plan_along(present: dict[int, int], view: str, toward: str, s: float, views:
 
 
 def path_curve(path: list[dict[int, int]]):
-    """(f(k) -> pose for k in 0..1, total joint distance): a Catmull-Rom spline through every waypoint, so the
-    joints change direction smoothly instead of kinking at each one; k is spread by joint distance."""
+    """(f(k) -> pose for k in 0..1, total joint distance): a monotone cubic (Fritsch-Carlson / PCHIP) through
+    every waypoint, per joint: velocity is continuous through each waypoint, and between two waypoints a joint
+    never goes beyond either of them, so the curve cannot overshoot a limit. k is spread by joint distance."""
     ids = list(MOVABLE)
     cum = [0.0]
     for a, b in zip(path, path[1:]):
-        cum.append(cum[-1] + max(abs(b[m] - a[m]) for m in ids))
+        cum.append(cum[-1] + max(max(abs(b[m] - a[m]) for m in ids), 1e-9))
+    n = len(path)
+    tangents = {}
+    for m in ids:
+        h = [cum[k + 1] - cum[k] for k in range(n - 1)]
+        d = [(path[k + 1][m] - path[k][m]) / h[k] for k in range(n - 1)]
+        t = [0.0] * n
+        t[0], t[-1] = (d[0] if n > 1 else 0.0), (d[-1] if n > 1 else 0.0)
+        for k in range(1, n - 1):
+            if d[k - 1] * d[k] <= 0:
+                t[k] = 0.0                      # a turning point: stop there, never swing past it
+            else:
+                w1, w2 = 2 * h[k] + h[k - 1], h[k] + 2 * h[k - 1]
+                t[k] = (w1 + w2) / (w1 / d[k - 1] + w2 / d[k])
+        tangents[m] = t
     total = cum[-1] or 1.0
-    ext = [path[0]] + list(path) + [path[-1]]
 
     def f(k: float) -> dict[int, float]:
-        d = min(max(k, 0.0), 1.0) * total
-        i = max(0, min(len(path) - 2, next((j for j in range(len(cum) - 1) if cum[j + 1] >= d), len(path) - 2)))
-        t = 0.0 if cum[i + 1] == cum[i] else (d - cum[i]) / (cum[i + 1] - cum[i])
-        p0, p1, p2, p3 = ext[i], ext[i + 1], ext[i + 2], ext[i + 3]
-        t2, t3 = t * t, t * t * t
-        return {m: 0.5 * (2 * p1[m] + (p2[m] - p0[m]) * t + (2 * p0[m] - 5 * p1[m] + 4 * p2[m] - p3[m]) * t2
-                          + (3 * p1[m] - p0[m] - 3 * p2[m] + p3[m]) * t3) for m in ids}
+        if n == 1:
+            return {m: float(path[0][m]) for m in ids}
+        x = min(max(k, 0.0), 1.0) * total
+        i = max(0, min(n - 2, next((j for j in range(n - 1) if cum[j + 1] >= x), n - 2)))
+        h = cum[i + 1] - cum[i]
+        u = (x - cum[i]) / h
+        h00, h10, h01, h11 = 2 * u ** 3 - 3 * u ** 2 + 1, u ** 3 - 2 * u ** 2 + u, -2 * u ** 3 + 3 * u ** 2, u ** 3 - u ** 2
+        return {m: h00 * path[i][m] + h10 * h * tangents[m][i] + h01 * path[i + 1][m] + h11 * h * tangents[m][i + 1]
+                for m in ids}
     return f, cum[-1]
 
 
-def path_problem(path: list[dict[int, int]], ranges, env, grip: int) -> str | None:
+def path_problem(path: list[dict[int, int]], ranges, env, grip: int, absolute: bool = False) -> str | None:
     """Why the geometry model does not vouch for a computed path, or None. Every waypoint inside the
     envelope; neighbouring waypoints at most PATH_STEP_MAX apart; along the smooth curve the arm will follow
     (path_curve), at PATH_CHECKS poses per waypoint pair and in both of fk's mappings: inside the envelope, no part of the arm below PATH_FLOOR_M (or below where it is at the start)
     and the arm never closer to itself than DIRECT_SELF_CLEAR_M. Advisory like every fk check: it knows
-    the desk plane, not what lies on it, and not the camera stalk or cables."""
+    the desk plane, not what lies on it, and not the camera stalk or cables.
+    `absolute`: no allowance for a low first pose (for planned poses the arm is not standing at yet)."""
     import fk
     for i, q in enumerate(path):
         for m in MOVABLE:
@@ -670,7 +687,8 @@ def path_problem(path: list[dict[int, int]], ranges, env, grip: int) -> str | No
         if jump > PATH_STEP_MAX:
             return f"waypoints {i}-{i + 1}: a joint would jump {jump} steps"
     start = {**path[0], GRIPPER: grip}
-    floors = {mp: min(PATH_FLOOR_M, fk.min_height(start, ranges, mapping=mp)[0] - 0.005) for mp in ("viewer", "true_scale")}
+    floors = {mp: PATH_FLOOR_M if absolute else min(PATH_FLOOR_M, fk.min_height(start, ranges, mapping=mp)[0] - 0.005)
+              for mp in ("viewer", "true_scale")}
     curve, _ = path_curve(path)
     n = PATH_CHECKS * (len(path) - 1)
     for j in range(n + 1):                      # the curve the arm will follow, not just its waypoints

@@ -1007,9 +1007,13 @@ class Director:
         self.job["result"] = {"planner": planner, "plan_reason": reason, "moves": [], "reach": reach and reach["ok"]}
         here = home_pose
         trail = self.trail = [{m: home_pose[m] for m in motion.MOVABLE}]   # every pose driven, to retrace later
+        self._lifted_from = None
         await self._scene_moves(moves, here, trail, bias, seeds)
         self.job["phase"] = "reposition"
         await self._return(trail)
+        if self._lifted_from:                    # came up through transit: back down by the normal route
+            self.step(f"back to {self._lifted_from}")
+            await self.move(self._lifted_from)
 
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
@@ -1032,28 +1036,38 @@ class Director:
         await self._return(self.trail)
 
     async def _scene_moves(self, moves, here, trail, bias, seeds):
+        views = motion.load_views()
+        transit = {**views[motion.TRANSIT], motion.GRIPPER: here[motion.GRIPPER]}
         for i, mv in enumerate(moves, 1):
             self.step(f"move {i} of {len(moves)}: planning {mv['name']}", shot_index=i, shot_count=len(moves))
-            plan = await self.vision(orbit.plan_path, self.loc["point_m"], here, self.state.arm.ranges(),
+            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            starts = [now] + ([transit] if len(trail) == 1 and self.where().get("where") == "view" else [])
+            plan = await self.vision(orbit.plan_shot, self.loc["point_m"], starts, self.state.arm.ranges(),
                                      mv["keyframes"], bias, self._aspect(), seeds)
             if not plan["ok"]:
                 self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": plan["reason"]})
                 continue
             self.job["phase"] = "reposition"
+            if plan["start_index"] == 1:          # the direct approach would dip: up to transit by the normal route
+                self._lifted_from = self.where()["view"]
+                self.step(f"move {i} of {len(moves)}: rising to transit first")
+                if not await self.move(motion.TRANSIT):
+                    raise Hold("the route up to the transit pose was refused")
+                now = self.state.arm.joints(max_age_s=motion.STALE_S)
+                trail[:] = [{m: now[m] for m in motion.MOVABLE}]
             self.step(f"move {i} of {len(moves)}: getting into position for {mv['name']}")
-            now = self.state.arm.joints(max_age_s=motion.STALE_S)
             approach = self._bridge(now, plan["poses"][0])
             await self.move_path(approach, f"approach {mv['name']}")
             trail.extend(approach)
             joints, t = await self.settle()
             look = await self.observe(f"scene/{i}-start", joints, t)
-            if look["valid"]:          # measure the aim from the real camera and replan with it
+            if look["valid"]:          # measure the aim from the real camera and replan the move with it
                 c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
-                bias = (bias[0] + c[0] - 0.5, bias[1] + c[1] - 0.5)
-                plan2 = await self.vision(orbit.plan_path, self.loc["point_m"], joints, self.state.arm.ranges(),
-                                          mv["keyframes"], bias, self._aspect(), seeds)
-                if plan2["ok"]:
-                    plan = plan2
+                aim = (bias[0] + c[0] - 0.5, bias[1] + c[1] - 0.5)
+                plan2 = await self.vision(orbit.plan_shot, self.loc["point_m"], [joints], self.state.arm.ranges(),
+                                          plan["keyframes"], aim, self._aspect(), seeds)
+                if plan2["ok"] and len(plan2["poses"]) >= len(plan["poses"]) - 1:
+                    plan, bias = plan2, aim
             self.job["phase"] = "cinematic"
             self.step(f"move {i} of {len(moves)}: {mv['name']}")
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
@@ -1062,9 +1076,10 @@ class Director:
             trail.extend(path)
             await asyncio.sleep(1.0)            # a beat at the end of the move
             seen = len(self.samples) / self.looks if self.looks else None
-            here = self.state.arm.joints(max_age_s=motion.STALE_S)
             self.job["result"]["moves"].append({"name": mv["name"], "done": True, "complete": plan["complete"],
-                                                "why": plan["reason"], "poses": len(plan["poses"]),
+                                                "why": plan["reason"], "adjusted": plan["adjusted"],
+                                                "covered": [plan["samples"][0], plan["samples"][-1]],
+                                                "poses": len(plan["poses"]),
                                                 "in_frame": None if seen is None else round(seen, 2),
                                                 "aim_bias": [round(v, 3) for v in bias]})
 

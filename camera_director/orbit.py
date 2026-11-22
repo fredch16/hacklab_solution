@@ -42,6 +42,13 @@ def camera_goal(point, theta: float, elev: float, dist: float, bias=(0.0, 0.0), 
     return tuple(c), tuple(axis), tuple(right)
 
 
+LIMIT_MARGIN = 40   # steps the solver keeps inside each envelope, so the smooth curve through the poses has room
+
+
+def _limits(ranges) -> dict:
+    return {m: (lo + LIMIT_MARGIN, hi - LIMIT_MARGIN) for m, (lo, hi) in motion.envelope(ranges).items()}
+
+
 def _solve(guess: dict, goal, ranges, limits) -> tuple[dict, bool]:
     q, pe, ae = framing.solve_pose(guess, *goal, ranges, iterations=200, limits=limits)
     return q, pe <= POS_TOL and ae <= AXIS_TOL
@@ -52,7 +59,7 @@ def plan_arc(point, start: dict, ranges, *, elev: float, dist: float, theta_from
     """Solve an arc of camera poses from theta_from to theta_to. Stops early at the first azimuth the model
     cannot reach. -> {ok, poses: [{motor: steps}], thetas, span_deg, reason}"""
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
-    limits = motion.envelope(ranges)
+    limits = _limits(ranges)
     start = {int(m): int(v) for m, v in start.items()}
     grip = start.get(motion.GRIPPER, 1279)
     n = max(1, int(round(abs(theta_to - theta_from) / STEP_DEG)))
@@ -131,7 +138,7 @@ def plan_path(point, start: dict, ranges, keyframes: list[dict], bias=(0.0, 0.0)
     if len(keyframes) < 2:
         return {"ok": False, "poses": [], "samples": [], "reason": "a move needs at least two keyframes"}
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
-    limits = motion.envelope(ranges)
+    limits = _limits(ranges)
     start = {int(m): int(v) for m, v in start.items()}
     grip = start.get(motion.GRIPPER, 1279)
     samples = _interpolate(keyframes)
@@ -162,7 +169,7 @@ def reach_map(point, start: dict, ranges, seeds: tuple = (), elevs=(30, 45, 60, 
     """Which (theta, elev, dist) the camera can reach, chained along theta from the front at each elev/dist.
     -> {"thetas", "elevs", "dists", "ok": {"elev|dist": [theta, ...]}}"""
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
-    limits = motion.envelope(ranges)
+    limits = _limits(ranges)
     start = {int(m): int(v) for m, v in start.items()}
     grip = start.get(motion.GRIPPER, 1279)
     seeds = [start, *[{**{int(m): int(v) for m, v in s.items()}, motion.GRIPPER: grip} for s in seeds]]
@@ -182,3 +189,39 @@ def reach_map(point, start: dict, ranges, seeds: tuple = (), elevs=(30, 45, 60, 
                         break
             ok[f"{e}|{d}"] = sorted(reach)
     return {"thetas": list(thetas), "elevs": list(elevs), "dists": list(dists), "ok": ok}
+
+
+ADJUST = ((0, 0.0), (5, 0.0), (0, 0.02), (5, 0.02), (10, 0.0), (10, 0.02), (15, 0.03), (20, 0.04))
+
+
+def _bridge(a: dict, b: dict, step: int = 200) -> list[dict]:
+    n = max(1, int(math.ceil(max(abs(b[m] - a[m]) for m in motion.MOVABLE) / step)))
+    return [{m: int(round(a[m] + (b[m] - a[m]) * k / n)) for m in motion.MOVABLE} for k in range(1, n + 1)]
+
+
+def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.0, 0.0), aspect: float = 16 / 9,
+              seeds: tuple = ()) -> dict:
+    """plan_path, made safe: the approach from a start pose and the move itself must pass motion.path_problem.
+    If not, the whole move is raised and pulled back in small steps (keeping its shape). Starts are tried in
+    order (where the arm is, then transit). -> plan_path result + {start_index, adjusted, approach}"""
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    env = motion.envelope(ranges)
+    first_reason = None
+    for si, start in enumerate(starts):
+        start = {int(m): int(v) for m, v in start.items()}
+        grip = start.get(motion.GRIPPER, 1279)
+        for de, dd in ADJUST:
+            frames = [{"theta": k["theta"], "elev": min(80.0, k["elev"] + de), "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
+            plan = plan_path(point, start, ranges, frames, bias, aspect, seeds)
+            if not plan["ok"]:
+                first_reason = first_reason or plan["reason"]
+                continue
+            here = {m: start[m] for m in motion.MOVABLE}
+            approach = _bridge(here, plan["poses"][0])
+            problem = (motion.path_problem([here] + approach, ranges, env, grip)
+                       or motion.path_problem([plan["poses"][0]] + plan["poses"][1:], ranges, env, grip, absolute=True))
+            if problem:
+                first_reason = first_reason or problem
+                continue
+            return {**plan, "start_index": si, "adjusted": {"elev": de, "dist": dd}, "approach": approach, "keyframes": frames}
+    return {"ok": False, "poses": [], "reason": first_reason or "no safe version of this move"}

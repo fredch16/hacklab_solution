@@ -423,6 +423,23 @@ class ComputedPaths(unittest.TestCase):
         why = motion.path_problem(steps, self.ranges, env, 1279)
         self.assertTrue(why and ("desk" in why or "itself" in why or "envelope" in why), why)
 
+    def test_path_curve_never_overshoots_its_waypoints(self):
+        import random
+        rnd = random.Random(1)
+        for _ in range(100):
+            path = [{m: rnd.randint(1000, 3000) for m in motion.MOVABLE} for _ in range(rnd.randint(2, 8))]
+            f, _total = motion.path_curve(path)
+            cum = [0.0]
+            for a, b in zip(path, path[1:]):
+                cum.append(cum[-1] + max(abs(b[m] - a[m]) for m in motion.MOVABLE))
+            for j in range(201):
+                x = j / 200 * cum[-1]
+                i = max(0, min(len(path) - 2, next((q for q in range(len(cum) - 1) if cum[q + 1] >= x), len(path) - 2)))
+                q = f(j / 200)
+                for m in motion.MOVABLE:
+                    lo, hi = sorted((path[i][m], path[i + 1][m]))
+                    self.assertTrue(lo - 1e-6 <= q[m] <= hi + 1e-6)
+
     def test_arc_poses_look_at_the_object(self):
         from camera_director import orbit
         top = motion.load_views()["top"]

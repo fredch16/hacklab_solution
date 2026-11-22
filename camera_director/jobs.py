@@ -39,7 +39,7 @@ import framing
 import motion
 from station_arm import logger
 
-from . import brief, fuse, orbit, predict, selfcal
+from . import brief, fuse, orbit, predict, selfcal, twin
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1767,9 +1767,14 @@ class Director:
     # ---- keep in view: hold the shot, change view only when the target stays covered
 
     async def _look(self) -> dict | None:
-        """Keep in view's look: matched features (inliers), so a hand covering part of the object shows."""
+        """Keep in view's look: the tracker decides whether the object is there (plain objects have too few features
+        to judge); matched features, when there are some, add the inlier count that shows a hand covering part of it."""
         f = (await self.fresh_frames(1))[0]
-        return await self.vision(V.look, self.ref, f[2], False, self._hint())
+        hit = await self.vision(V.track, self.ref, f[2], self._hint())
+        if hit is not None and hit.get("inliers") is None:
+            sift = await self.vision(V.look, self.ref, f[2], False, self._hint())
+            hit = {**hit, "inliers": sift["inliers"] if sift else 0}   # 0 only matters once features were counted
+        return hit
 
     def _shot_of(self, p: str) -> dict | None:
         r = self.catalogue.get(p) or {}
@@ -2050,6 +2055,20 @@ class Director:
         st = self.state
         if method == "GET" and name == "state":
             return 200, st.call(self._on_loop(self.snapshot)), "application/json"
+        if method == "GET" and name == "twin":             # the dashboard's 3-D view
+            try:
+                joints, ranges = st.arm.joints(max_age_s=1.0), st.arm.ranges()
+            except RuntimeError as e:
+                return 503, {"ok": False, "error": str(e)}, "application/json"
+            obs = self.obs
+            return 200, {"ok": True, "links": twin.links(joints, ranges), "camera": twin.camera(joints, ranges),
+                         "object": self.obj.state(), "target": self.target and self.target["label"],
+                         "tracking": obs is not None and self.tracker is not None and not self.tracker.lost(),
+                         "job": self.job and {k: self.job.get(k) for k in ("kind", "status", "step")},
+                         "moving": bool(st.moving)}, "application/json"
+        if method == "GET" and name.startswith("mesh/"):
+            data = twin.mesh_bytes(name[len("mesh/"):])
+            return (200, data, "model/stl") if data else (404, {"ok": False, "error": "no such mesh"}, "application/json")
         if method == "GET" and name == "frame.jpg":
             fid = q.get("id", [None])[0]
             f = self.frame() if fid is None else (self.frame(int(fid)) if fid.isdigit() else None)

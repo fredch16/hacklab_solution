@@ -23,6 +23,8 @@ AXIS_TOL = 4.0      # deg: and its viewing direction this close
 STEP_DEG = 10.0     # azimuth between solved poses
 MAX_JUMP = 250      # steps: neighbouring poses further apart get a pose solved half-way between
 MIN_FILM_ELEV = 45.0
+MIN_CAMERA_HEIGHT_M = 0.12   # safety guideline (owner): the camera stays well above the table; "closer" means the
+                             # object larger in frame, never the camera lowered toward the desk
 
 
 def viewing_elevation(point, pose):
@@ -272,6 +274,11 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
             if any(viewing_elevation(point, framing.camera_pose({**q, motion.GRIPPER: grip}, ranges)) < MIN_FILM_ELEV
                    for q in plan["poses"]):
                 first_reason = first_reason or "the planned viewing angle is too low"
+                continue
+            low = min(framing.camera_pose({**q, motion.GRIPPER: grip}, ranges)[0][2] for q in plan["poses"])
+            if low - framing.TABLE_Z < MIN_CAMERA_HEIGHT_M:
+                first_reason = first_reason or (f"the camera would come down to {(low - framing.TABLE_Z) * 100:.0f} cm above "
+                                                f"the table; it must stay above {MIN_CAMERA_HEIGHT_M * 100:.0f} cm")
                 continue
             reach = max(shoulder_reach(q, ranges, grip) for q in (approach if target is not None else []) + plan["poses"])
             if limit is not None and reach > limit:

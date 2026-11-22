@@ -735,3 +735,29 @@ class Prediction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TableClearance(unittest.TestCase):
+    """Safety guideline: the camera stays well above the table; closer means bigger in frame, not lower."""
+
+    def frames(self, *pairs):
+        return {"action": "custom", "hold": 3, "reason": "r", "shots": [{"name": "take", "hold": 3, "keyframes": [
+            {"theta": 0, "elev": e, "dist": d, "u": 0.5, "v": 0.5, "roll": 0} for e, d in pairs]}]}
+
+    def test_claude_keyframes_must_keep_the_camera_high(self):
+        from camera_director import brief
+        brief.validate(self.frames((70, 0.22), (75, 0.16)), brief.FREE)          # closer, from above
+        with self.assertRaises(ValueError):
+            brief.validate(self.frames((46, 0.22), (46, 0.14)), brief.FREE)      # dropping toward the table
+
+    def test_planner_refuses_paths_that_bring_the_camera_down(self):
+        from camera_director import orbit
+        ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
+        saved = orbit.MIN_CAMERA_HEIGHT_M
+        orbit.MIN_CAMERA_HEIGHT_M = 0.5                                          # no path can stay this high
+        try:
+            plan = orbit.plan_shot([0.0, 0.31, 0.0], [motion.load_views()["top"]], ranges,
+                                   [{"theta": -60, "elev": 50, "dist": 0.18}, {"theta": -30, "elev": 50, "dist": 0.18}])
+        finally:
+            orbit.MIN_CAMERA_HEIGHT_M = saved
+        self.assertFalse(plan["ok"])

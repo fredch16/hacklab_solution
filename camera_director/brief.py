@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 from claude_config import claude_api_key, load_env
-from .orbit import MIN_FILM_ELEV
+from .orbit import MIN_CAMERA_HEIGHT_M, MIN_FILM_ELEV
 
 
 FRAMING = {"u": (0.15, 0.85), "v": (0.15, 0.85), "roll": (-18, 18)}
@@ -32,6 +32,8 @@ def validate(plan: dict, bounds: dict, actions: dict | None = None) -> dict:
         if any(not isinstance(frame, dict) or frame.keys() != bounds.keys()
                or not all(number(frame[k], *limits) for k, limits in bounds.items()) for frame in frames):
             raise ValueError("camera keyframe outside the allowed envelope")
+        if any("elev" in f and f["dist"] * math.sin(math.radians(f["elev"])) < MIN_CAMERA_HEIGHT_M for f in frames):
+            raise ValueError(f"a keyframe would bring the camera below {MIN_CAMERA_HEIGHT_M * 100:.0f} cm above the table")
     return plan
 
 
@@ -73,6 +75,10 @@ def plan(text: str, context: dict, computed: bool) -> dict:
                 "increasing right/down. Roll is degrees from level for a free camera, or from the current "
                 "framing with the shoulder parked. " + coords + " Stay within the supplied bounds. "
                 "If the local planner rejected a move, use its reason to try a smaller version of the same shot. "
+                f"Safety: keep the camera well above the table at all times (dist x sin(elev) at least "
+                f"{MIN_CAMERA_HEIGHT_M:.2f} m); never lower it toward the desk. For a closer shot make the subject "
+                "larger in frame by coming in from above (shorter dist at the same or a higher elev, or tighter u/v "
+                "framing), not by dropping the camera. "
                 "For requests that cannot be filmed with these capabilities, return an empty shots list "
                 "and explain the camera interface limitation without assuming which hardware is attached. "
                 "You have no control tools."),

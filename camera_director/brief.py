@@ -81,6 +81,9 @@ def plan(text: str, context: dict, computed: bool) -> dict:
                 "framing), not by dropping the camera. Come only as close as keeps the whole subject comfortably "
                 "inside the frame (at most about 60 percent of the frame's width or height) so it is never cut off "
                 "or lost; if in doubt, stay a little wider. "
+                "This arm (NormaCore ElRobot) overloads its shoulder servo when it reaches out with the elbow "
+                "extended: prefer upright, retracted camera positions and small moves over long forward reaches. "
+                "For a gimbal take, following the subject, or a cinematic show, choose that existing action. "
                 "For requests that cannot be filmed with these capabilities, return an empty shots list "
                 "and explain the camera interface limitation without assuming which hardware is attached. "
                 "You have no control tools."),

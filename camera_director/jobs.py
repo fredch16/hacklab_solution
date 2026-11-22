@@ -1130,7 +1130,9 @@ class Director:
         if where.get("where") in ("view", "between"):
             actions.update({f"view:{v['name']}": v["description"] for v in self.state.snapshot()["guided"]
                             if motion.view_checked(v["name"])})
-            actions["show"] = "Establish wide, push in to top, arc, pull out, and hold wide"
+            actions["show"] = "Cinematic show: establish wide, push in to top, arc, pull out, and hold wide"
+            actions["gimbal"] = "Gimbal take: the base swings the camera around the object, the wrist keeps it centred"
+            actions["follow"] = "Follow the object: keep turning the camera so it stays centred, until STOP"
             if self._shots({}):
                 actions["cinematic"] = "Play this object's verified shots using checked glides or cuts"
         context.update(actions=actions, current_pose=where)
@@ -1151,9 +1153,9 @@ class Director:
                 raise Hold("the selected camera command is unavailable")
             summary = {"planner": "Claude", "plan_reason": plan["reason"][:400], "action": action}
             try:
-                if action in ("watch", "show", "cinematic"):
-                    await {"watch": self._watch, "show": self._show, "cinematic": self._cinematic}[action](
-                        {"hold": plan["hold"]}, gate)
+                if action in ("watch", "show", "cinematic", "gimbal", "follow"):
+                    await {"watch": self._watch, "show": self._show, "cinematic": self._cinematic,
+                           "gimbal": self._gimbal, "follow": self._follow}[action]({"hold": plan["hold"]}, gate)
                 else:
                     if action.startswith("view:"):
                         self.job["phase"] = "reposition"

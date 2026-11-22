@@ -435,6 +435,16 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["arm"]["where"]["view"], "wide")
         self.assertNotEqual(self.state.move_outcome["kind"], "path")
 
+    def test_9y2_filming_brief_can_choose_the_gimbal_take(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        plan = {"action": "gimbal", "hold": 2, "shots": [], "reason": "Use the gimbal take."}
+        with patch.object(J.brief, "plan", side_effect=lambda text, context, computed: (
+                self.assertIn("gimbal", context["actions"]), self.assertIn("follow", context["actions"]), plan)[-1]):
+            st = self.run_job({"kind": "film", "brief": "do a gimbal take"}, timeout=300)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertEqual(st["job"]["result"]["action"], "gimbal")
+
     def test_9z_filming_brief_uses_the_measured_view_and_parks_the_shoulder(self):
         self.goto("top")
         fid = self.get()["camera"]["frame_id"]

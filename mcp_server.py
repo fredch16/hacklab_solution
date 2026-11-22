@@ -360,6 +360,40 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
             raise _tool_error(e)
         return {k: r.get(k) for k in ("ok", "hold", "was_moving", "view", "error") if k in r}
 
+    def director_summary(st: dict) -> dict[str, Any]:
+        """High-level only: no joint values, no motion paths."""
+        job = st.get("job") or {}
+        return {"mode": (st.get("gate") or {}).get("mode"), "target": (st.get("target") or {}).get("label"),
+                "target_status": (st.get("target") or {}).get("status"),
+                "job": {k: job.get(k) for k in ("id", "kind", "status", "phase", "step", "reason")} if job else None,
+                "views": [{"preset": c["preset"], "status": c["status"], "reason": c.get("reason"),
+                           "score": (c.get("best") or {}).get("score"), "predicted": (c.get("predicted") or {}).get("score")}
+                          for c in st.get("catalogue") or []]}
+
+    @mcp.tool(description="Camera director (local vision on the arm server): start one high-level job for the "
+                          "object the user marked in the dashboard. survey = localize it and verify the best view "
+                          "near every approved preset; cinematic = play the verified best views; tour = survey then "
+                          "cinematic; watch = keep it in view, cutting away when a hand covers it; recall = return "
+                          "to one preset's verified best view (give preset). Returns at once; poll director_status. "
+                          "Use stop to end any job.")
+    async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall"],
+                           preset: Optional[str] = None) -> dict[str, Any]:
+        body = {"kind": kind, **({"preset": preset} if preset else {})}
+        try:
+            r = await control.call("POST", "/api/director/job", body)
+        except ControlError as e:
+            raise _tool_error(e)
+        job = r.get("job") or {}
+        return {"started": True, "job_id": job.get("id"), "kind": kind, "mode": job.get("mode")}
+
+    @mcp.tool(description="Camera director status: mode (SIMULATED / DRY RUN / PHYSICAL), the marked object and "
+                          "whether it is tracked, the running job's step, and each preset's outcome and score.")
+    async def director_status() -> dict[str, Any]:
+        try:
+            return director_summary(await control.call("GET", "/api/director/state"))
+        except ControlError as e:
+            raise _tool_error(e)
+
     @mcp.tool(description="Start or stop one recording. Phone is the default camera for unqualified "
                           "requests. Robot recording requires an actively viewed robot feed in the laptop dashboard.")
     async def record_camera(camera: Literal["phone", "robot"], action: Literal["start", "stop"],

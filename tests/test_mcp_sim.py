@@ -75,7 +75,7 @@ async def main():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert set(tools) == {"list_views", "go_to_view", "get_status", "stop", "get_camera_image",
                               "get_scene", "update_scene", "remove_scene_object", "best_view",
-                              "preview_frame", "record_camera"}, set(tools)
+                              "preview_frame", "record_camera", "director_job", "director_status"}, set(tools)
         schema = json.dumps(tools["go_to_view"].input_schema)
         assert "enum" in schema and all(n in schema for n in names) and "transit" not in names, schema
         print("ok  11 tools; go_to_view only accepts the saved views:", names)
@@ -216,5 +216,36 @@ async def main():
         print("ok  web server down -> tool error arm_server_unreachable")
 
 
+async def director():
+    """Director tools: off -> a clear tool error; on -> the same local job the dashboard starts, stop ends it."""
+    state, httpd, base = start_arm_server()
+    control = Control(base)
+    mcp = build_server(control, SceneStore(tmp / "scene2.json"), await fetch_views(control, 5))
+    async with Client(mcp) as client:
+        off = data(await client.call_tool("director_status", {}))
+        assert "--director" in off["_error"], off
+        from camera_director.jobs import Director
+        state.director = Director(state)
+        st = data(await client.call_tool("director_status", {}))
+        assert st["mode"] == "SIMULATED" and st["job"] is None and st["target"] is None, st
+        refused = data(await client.call_tool("director_job", {"kind": "survey"}))
+        assert "no target" in refused["_error"], refused        # nothing marked in the dashboard yet
+        state.director.ref = object()                            # a marked object, as the dashboard would set
+        state.director.target = {"id": "t", "label": "mug"}
+        state.director.localize = None                           # keeps the job from moving; STOP (or the HOLD) ends it
+        started = data(await client.call_tool("director_job", {"kind": "watch"}))
+        assert started["started"] and started["mode"] == "SIMULATED", started
+        await client.call_tool("stop", {})
+        for _ in range(50):
+            st = data(await client.call_tool("director_status", {}))
+            if st["job"]["status"] != "RUNNING":
+                break
+            await asyncio.sleep(0.1)
+        assert st["job"]["status"] in ("STOPPED", "HOLD") and "joints" not in json.dumps(st), st
+    httpd.shutdown()
+    print("ok  director tools: off -> error, job start/status, stop ends it, no joint values")
+
+
 asyncio.run(main())
+asyncio.run(director())
 print("ALL OK")

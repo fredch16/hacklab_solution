@@ -200,8 +200,11 @@ RECORD_ACTIONS = {
     "start_phone_recording": ("phone", "start"), "stop_phone_recording": ("phone", "stop"),
     "start_robot_recording": ("robot", "start"), "stop_robot_recording": ("robot", "stop"),
 }
-ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "director_film", "director_gesture", "director_watch", "none",
-           *RECORD_ACTIONS)
+# every director job Claude may choose for a spoken request (the grammar is only a fast path, never the limit)
+DIRECTOR_JOBS = {"director_show": "show", "director_gimbal": "gimbal", "director_follow": "follow", "director_wave": "wave",
+                 "director_tour": "tour", "director_snap": "snap", "director_survey": "survey", "director_pick": "pick"}
+ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "director_film", "director_gesture", "director_watch",
+           *DIRECTOR_JOBS, "none", *RECORD_ACTIONS)
 RECORD_WORDS = re.compile(r"\b(?:record(?:s|ed|ing)?|film(?:s|ed|ing)?|rolling|roll (?:the|video))\b")
 RECORD_NEGATION = re.compile(r"\b(?:don't|do not|never|without|not|cancel)\b")
 CLEAR_RECORDING = re.compile(r"\b(?:start|begin|stop|end|finish|record|film|rolling|roll)\b")
@@ -255,7 +258,17 @@ table" mean the widest view).
 - get_status: the speaker asks where the camera is or what it is doing.
 - list_views: the speaker asks which views exist or what the camera can show.
 - director_gesture: a motion of the arm itself, like a character, that is not about filming the object:
-  dance, nod, shake your head, bow, wiggle, celebrate, look around, say yes / no.
+  dance, nod, shake your head, bow, wiggle, celebrate, look around, say yes / no, stretch, point, any other
+  single motion of the arm. When a request is a motion of the arm and nothing below fits better, choose this:
+  Claude choreographs it and the robot checks it, so do not refuse a motion because it is unusual.
+- director_show: a cinematic show / cinematic view / director show of the object.
+- director_gimbal: a gimbal take or gimbal shot around the object.
+- director_follow: follow / track the object, keep it in frame or centred while it moves.
+- director_wave: wave, say hi or hello.
+- director_tour: a director tour (find the best view and play its shots).
+- director_survey: find or optimise the best view of the object.
+- director_snap: snap back onto the nearest view.
+- director_pick: pick up, grab, take or lift the marked object (the robot grips it with its jaws).
 - director_film: any other request to move, aim or position the camera, or to film something in a
   particular way, that no saved view or other action covers: a reveal, a pan, a roll, a closer or lower
   look, "look at me", "show it from the side", a little dance or gesture, artistic framing. Claude's shot
@@ -265,8 +278,7 @@ table" mean the widest view).
 - start_phone_recording / stop_phone_recording: explicitly asks to start/stop recording with the phone, or asks for a recording without naming a camera.
 - start_robot_recording / stop_robot_recording: explicitly asks to start/stop recording with the robot USB camera. Use these only when the robot is named as the camera.
 Do not interpret questions, hypotheticals, negation, prior events, or ambiguous/multiple requests as recording actions. A request to stop the arm is distinct from stopping a recording.
-- none: everything else. Small talk, questions that are not about the camera, things it cannot do \
-(physical manipulation: picking things up, gripping, pushing), a \
+- none: small talk, questions that are not about the camera or the arm, a \
 request not to move ("don't go to the top"), or speech that was clearly not meant for the camera.
 
 go_to_view makes a real arm move near people, so use it only when the speaker clearly asks for a \
@@ -347,6 +359,13 @@ def plan_from_answer(answer: dict | None, views: list[dict], text: str = "") -> 
     None when it gave nothing to act on."""
     if not answer or answer["action"] == "none":
         return None
+    if answer["action"] in DIRECTOR_JOBS:
+        args = {"kind": DIRECTOR_JOBS[answer["action"]]}
+        if args["kind"] == "pick":
+            args["brief"] = text.strip()
+        if speed := speed_of(text):
+            args["speed"] = speed
+        return {"tool": "director_job", "args": args}
     if answer["action"] == "director_gesture":
         args = {"kind": "gesture", "brief": text.strip()}
         if speed := speed_of(text):

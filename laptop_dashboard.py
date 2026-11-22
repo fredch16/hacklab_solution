@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "dashboard/apps/dashboard/dist"
 LOG = logging.getLogger("laptop_dashboard")
 TAB_ID = re.compile(r"[a-f0-9]{32}")
+PAIR_SHARE_S = 45            # a pending pairing QR is reused by other tabs for this long
 CLIP = re.compile(r"robot-\d{8}T\d{6}-[a-f0-9]{8}\.mkv")
 PHONE_ROUTES = {
     "/api/v1/session": "GET", "/api/v1/pair": "POST", "/api/v1/pair/request": "POST",
@@ -78,6 +79,7 @@ class Dashboard:
         self.phone = None
         self.phone_automatic = False
         self.pair_proof = None
+        self.pair_qr = None              # (QR response, created) of the pending pairing, shared by every tab
         self.pair_lock = asyncio.Lock()
         self.discovery = PhoneDiscovery()
         self.phone_cookies = {}
@@ -201,6 +203,11 @@ class Dashboard:
                 if path not in ("/api/v1/pair/request", "/api/v1/pair/request/status"):
                     return web.json_response({"error": "PAIRING_REQUIRED"}, status=401)
             if path == "/api/v1/pair/request":
+                # One pending pairing at a time on the phone: a second tab (or a re-render) must not replace the QR
+                # someone may be scanning; it gets the same one until that request ends or goes stale.
+                shared = self.pair_qr
+                if self.pair_proof is not None and shared and time.monotonic() - shared[1] < PAIR_SHARE_S:
+                    return web.json_response(shared[0])
                 proof = secrets.token_urlsafe(32)
                 data = json.dumps({"challenge": hashlib.sha256(proof.encode()).hexdigest()}).encode()
             if path == "/api/v1/pair/request/status" and self.pair_proof is None:
@@ -220,6 +227,7 @@ class Dashboard:
                         raise ValueError
                     self.pair_proof = proof
                     result["qr"] = f"lvc-pair:2:{request_id}:{proof}"
+                    self.pair_qr = (dict(result), time.monotonic())
                 if self.phone_automatic and path == "/api/v1/pair/request/status":
                     stamp = result.pop("proof", None)
                     if result.get("state") == "approved":
@@ -232,6 +240,7 @@ class Dashboard:
                             return web.json_response({"state": "denied", "error": "QR_PROOF_INVALID"})
                     if result.get("state") in ("approved", "denied", "expired"):
                         self.pair_proof = None
+                        self.pair_qr = None
                 for name, cookie in response.cookies.items():
                     if name == "lvc_session" and not session_cookie_allowed:
                         continue

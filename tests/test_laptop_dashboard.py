@@ -175,7 +175,13 @@ class DashboardIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(observed, {"challenge": hashlib.sha256(secret.encode()).hexdigest()})
             return secret
 
-        await request_qr()
+        first = await request_qr()
+        calls = dict(observed)
+        observed.clear()
+        async with self.client.post(base + "/api/v1/pair/request", json={}) as r:   # a second tab asks too
+            self.assertEqual((await r.json())["qr"].split(":")[-1], first)          # ...and gets the same QR
+        self.assertEqual(observed, {})                                              # without a new phone request
+        observed.update(calls)
         self.assertNotIn("lvc_session", dashboard.phone_cookies)
         async with self.client.get(base + "/api/v1/pair/request/status") as r:
             self.assertEqual((await r.json())["error"], "QR_PROOF_INVALID")

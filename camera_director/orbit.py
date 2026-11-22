@@ -253,3 +253,137 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
         if best:
             return best[1]
     return {"ok": False, "poses": [], "reason": first_reason or "no safe version of this move"}
+
+
+# ---------------------------------------------------------------- gimbal moves: heavy joints parked
+#
+# The ElRobot shoulder (motor 2) trips Station's servo protection when the arm reaches out. In gimbal mode
+# the shoulder and elbow (2, 3) stay exactly where a preset holds them comfortably; base yaw swings the
+# camera around and the light joints (forearm roll 5, wrist pitch 6, wrist roll 7, a little pitch 4)
+# re-aim at the object every step: a parallax arc with the object centred, plus dutch roll and reveals.
+
+GIMBAL_JOINTS = (4, 5, 6, 7)
+GIMBAL_PITCH_MAX = 400     # steps motor 4 may move away from the preset (it shifts the shoulder lever a little)
+GIMBAL_AIM_TOL = 6.0       # deg: the object stays well inside the frame (about a tenth of the width from centre)
+
+
+def _aim_residual(q, ranges, target, roll_deg, aspect, bias):
+    cam, axis, right, down = (np.array(v) for v in framing.camera_pose(q, ranges))
+    th, tv = framing._tans(aspect)
+    d = np.array(target) - cam
+    dist = np.linalg.norm(d)
+    want = d / dist
+    # aim so the real camera (image offset `bias` = real minus model) centres the target: the model must see the
+    # target at 0.5 - bias, i.e. the axis points past it by +bias (the same convention as camera_goal)
+    want = want + right * bias[0] * 2 * th + down * bias[1] * 2 * tv
+    want /= np.linalg.norm(want)
+    roll_err = float(right @ np.array([0.0, 0.0, 1.0])) - math.sin(math.radians(roll_deg))
+    return np.concatenate([(axis - want), [0.3 * roll_err]])
+
+
+def aim(q0: dict, ranges, target, *, roll_deg: float = 0.0, aspect: float = 16 / 9, bias=(0.0, 0.0),
+        joints=GIMBAL_JOINTS, limits: dict | None = None, pitch_ref: int | None = None, iterations: int = 60):
+    """Point the camera at `target` by moving only `joints` (damped least squares, numeric Jacobian)."""
+    q = {m: float(v) for m, v in q0.items()}
+    lam, h = 1e-4, 3.0
+    err = _aim_residual(q, ranges, target, roll_deg, aspect, bias)
+    for _ in range(iterations):
+        J = []
+        for m in joints:
+            qq = dict(q)
+            qq[m] += h
+            J.append((_aim_residual(qq, ranges, target, roll_deg, aspect, bias) - err) / h)
+        J = np.array(J).T
+        dq = np.linalg.solve(J.T @ J + lam * np.eye(len(joints)), -J.T @ err)
+        trial = dict(q)
+        for k, m in enumerate(joints):
+            trial[m] += float(np.clip(dq[k], -80, 80))
+            if limits and m in limits:
+                trial[m] = min(max(trial[m], limits[m][0]), limits[m][1])
+            if m == 4 and pitch_ref is not None:
+                trial[m] = min(max(trial[m], pitch_ref - GIMBAL_PITCH_MAX), pitch_ref + GIMBAL_PITCH_MAX)
+        e2 = _aim_residual(trial, ranges, target, roll_deg, aspect, bias)
+        if e2 @ e2 < err @ err:
+            q, err, lam = trial, e2, lam * 0.3
+            if err @ err < 1e-7:
+                break
+        else:
+            lam *= 10
+            if lam > 1e2:
+                break
+    ang = math.degrees(float(np.linalg.norm(err[:3])))
+    return {m: int(round(v)) for m, v in q.items()}, ang
+
+
+def plan_gimbal(point, start: dict, ranges, *, yaw_from: int, yaw_to: int, roll_from: float = 0.0,
+                roll_to: float = 0.0, bias=(0.0, 0.0), aspect: float = 16 / 9, step: int = 25) -> dict:
+    """Base yaw from start+yaw_from to start+yaw_to (steps of motor 1) while the light joints keep the camera on
+    the object; shoulder and elbow stay at the start pose. Solved outward from the start's own yaw (the wrist
+    finds its aim most easily there) and trimmed where the wrist can no longer keep the object centred."""
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    limits = _limits(ranges)
+    start = {int(m): int(v) for m, v in start.items()}
+    span = (yaw_to - yaw_from) or 1
+
+    def roll_at(yaw):
+        return roll_from + (roll_to - roll_from) * (yaw - yaw_from) / span
+
+    q0, err = aim(start, ranges, point, roll_deg=roll_at(0), aspect=aspect, bias=bias, limits=limits, pitch_ref=start[4])
+    if err > GIMBAL_AIM_TOL:
+        return {"ok": False, "poses": [], "yaws": [], "complete": False,
+                "reason": f"the wrist cannot centre the object from this view ({err:.1f} deg off)"}
+    sides, reasons = {}, []
+    for end in (yaw_from, yaw_to):
+        q, out, sgn = dict(q0), [], (1 if end > 0 else -1)
+        for yaw in range(sgn * step, end + sgn * step, sgn * step) if end != 0 else []:
+            yaw = max(min(yaw, max(end, 0)), min(end, 0))
+            q[1] = start[1] + yaw
+            if not limits[1][0] <= q[1] <= limits[1][1]:
+                reasons.append(f"base yaw beyond {out[-1][0] if out else 0:+d} steps is outside its range")
+                break
+            q, err = aim(q, ranges, point, roll_deg=roll_at(yaw), aspect=aspect, bias=bias, limits=limits, pitch_ref=start[4])
+            if err > GIMBAL_AIM_TOL:
+                reasons.append(f"the wrist cannot keep the object centred beyond {out[-1][0] if out else 0:+d} steps of yaw")
+                break
+            out.append((yaw, {m: q[m] for m in motion.MOVABLE}))
+            if yaw == end:
+                break
+        sides[end] = out
+    seq = list(reversed(sides[yaw_from])) + [(0, {m: q0[m] for m in motion.MOVABLE})] + sides[yaw_to]
+    if yaw_from > 0 or yaw_to < 0:            # a sweep that does not pass the start's own yaw: keep its part
+        seq = [s for s in seq if min(yaw_from, yaw_to) <= s[0] <= max(yaw_from, yaw_to)]
+    return {"ok": len(seq) >= 2, "poses": [q for _, q in seq], "yaws": [y for y, _ in seq],
+            "complete": not reasons, "reason": "; ".join(reasons) or None}
+
+
+def gimbal_shot(point, start: dict, ranges, yaw: int = 500, roll: float = 0.0, bias=(0.0, 0.0),
+                aspect: float = 16 / 9) -> dict:
+    """A gimbal take from a view: out to one side, across to the other, back to the start's yaw, as one path.
+    The sweep is trimmed from its wider end until every pose on the curve passes motion.path_problem."""
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    env = motion.envelope(ranges)
+    start = motion.clamp_pose({int(m): int(v) for m, v in start.items() if int(m) in motion.MOVABLE}, env) | \
+        {motion.GRIPPER: int(start.get(motion.GRIPPER, start.get(str(motion.GRIPPER), 1279)))}
+    grip = start[motion.GRIPPER]
+    p = plan_gimbal(point, start, ranges, yaw_from=-yaw, yaw_to=yaw, roll_from=-roll, roll_to=roll, bias=bias, aspect=aspect)
+    if not p["ok"]:
+        return {**p, "path": []}
+    seq = list(zip(p["yaws"], p["poses"]))
+    view = {m: start[m] for m in motion.MOVABLE}
+    while len(seq) >= 3:
+        # relative to the taught view the take starts from (the motion layer's own rule for taught poses: the
+        # model's absolute heights are 2-3 cm off, comparing a part with itself at a taught pose cancels that)
+        problem = motion.path_problem([view] + [q for _, q in seq], ranges, env, grip)
+        if problem is None:
+            break
+        seq = seq[1:] if abs(seq[0][0]) >= abs(seq[-1][0]) else seq[:-1]    # trim the wider end
+    else:
+        return {"ok": False, "path": [], "reason": "no safe stretch of this sweep"}
+    yaws = [y for y, _ in seq]
+    centre = min(range(len(seq)), key=lambda k: abs(yaws[k]))
+    left, right = list(reversed(seq[:centre + 1])), seq[centre:]
+    # centre -> one end -> across -> back to centre (the curve stops smoothly at each turn)
+    path = [q for _, q in left] + [q for _, q in reversed(left)][1:] + [q for _, q in right][1:] + \
+           [q for _, q in reversed(right)][1:]
+    return {"ok": True, "path": path, "yaw_range": [yaws[0], yaws[-1]], "complete": p["complete"],
+            "reason": p["reason"], "poses": len(seq)}

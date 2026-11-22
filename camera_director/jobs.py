@@ -537,7 +537,7 @@ class Director:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
-                   "scene": self._scene, "return": self._return_job, "snap": self._snap}
+                   "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
@@ -1104,6 +1104,56 @@ class Director:
             await self.move_path(back, "return", load_guard=False)
         self.trail = []
         self._save_trail([])
+
+    async def _gimbal(self, req: dict, gate: dict):
+        """Gimbal take: shoulder and elbow stay where the current view holds them; base yaw swings the camera
+        around and the wrist joints keep the marked object centred (a parallax arc), out, across and back."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        w = self.where()
+        if w.get("where") != "view":
+            raise Hold("start a gimbal take from a saved view")
+        self.job["phase"] = "estimate"
+        if self.loc is None:
+            await self.localize()
+        joints, t = await self.settle()
+        bias = predict.bias_for(w, self.calibration)
+        look = await self.observe(f"{w['view']}/gimbal-start", joints, t)
+        if look["valid"]:
+            # keep the framing the view already has (no lurch to recentre first): aim so the object stays where the
+            # camera sees it now. bias_eff = bias - (seen - centre), in the aim's real-minus-model convention.
+            c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
+            bias = (bias[0] - (c[0] - 0.5), bias[1] - (c[1] - 0.5))
+        self.step("planning the gimbal take")
+        shot = await self.vision(orbit.gimbal_shot, self.loc["point_m"], {**motion.load_views()[w["view"]],
+                                 motion.GRIPPER: joints[motion.GRIPPER]}, self.state.arm.ranges(),
+                                 int(req.get("yaw", 500)), float(req.get("roll", 0.0)), bias, self._aspect())
+        if not shot["ok"]:
+            raise Hold(f"no gimbal take from {w['view']}: {shot['reason']}")
+        self.job["phase"] = "cinematic"
+        self.step(f"gimbal take from {w['view']}: yaw {shot['yaw_range'][0]:+d}..{shot['yaw_range'][1]:+d} steps")
+        self._save_trail([{m: joints[m] for m in motion.MOVABLE}] + shot["path"])
+        try:
+            await self.move_path(self._bridge(joints, shot["path"][0], step=100) + shot["path"][1:], "gimbal take", sample=True)
+        except TooHeavy as e:
+            self.trail = [{m: joints[m] for m in motion.MOVABLE}] + shot["path"]
+            moved = await self._lock_at_limit(shot["path"], {"name": "gimbal take"}, str(e))
+            self.job["result"] = {"view": w["view"], "stopped": "shoulder limit", "driven_poses": len(moved)}
+            return
+        seen = len(self.samples) / self.looks if self.looks else None
+        self.job["result"] = {"view": w["view"], "yaw_range": shot["yaw_range"], "poses": shot["poses"],
+                              "complete": shot["complete"], "why": shot["reason"],
+                              "in_frame": None if seen is None else round(seen, 2), "moves": []}
+        self.job["phase"] = "reposition"
+        await self.snap_home(w["view"])
+
+    async def snap_home(self, view: str):
+        """After a take that ended next to its view, put the arm exactly back on it."""
+        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        v = motion.load_views()[view]
+        if max(abs(v[m] - now[m]) for m in motion.MOVABLE) > 15:
+            await self.move_path(self._bridge(now, {m: v[m] for m in motion.MOVABLE}, step=100), f"back onto {view}",
+                                 load_guard=False)
 
     async def _snap(self, req: dict, gate: dict):
         """Back onto the nearest saved view with one short checked move, when the arm stopped close to it

@@ -44,7 +44,7 @@ POS_TOL = 0.01           # m: model must reach the target camera position this c
 AXIS_TOL_DEG = 3.0       # and its viewing direction this closely
 MOVABLE = (1, 2, 3, 4, 5, 6, 7)   # the gripper (8) carries the camera and is never moved
 # Self-calibration (camera_director/selfcal.py) of this arm's camera model, or None for the hand-fitted model:
-# {"tilt_deg": extra tilt, "cam": [dx, dforward, dup] m on the gripper, "joint_offsets": {motor: steps}}
+# tilt_deg, cam offset, joint_offsets, and roll_180 for an upside-down camera mount.
 CAMERA_CAL: dict | None = None
 
 
@@ -57,6 +57,9 @@ class FramingError(Exception):
 
     def body(self) -> dict:
         return {"ok": False, "error": self.code, "detail": self.detail, **self.extra}
+
+    def __reduce__(self):
+        return type(self), (self.code, self.detail), self.__dict__
 
 
 # ---------------------------------------------------------------- small vector helpers
@@ -89,6 +92,8 @@ def camera_pose(joints: dict, ranges: dict | None = None) -> tuple[tuple, tuple,
     right = _cross(down, axis)                      # x = y cross z for (x right, y down, z ahead)
     if MIRRORED:
         right = _mul(right, -1.0)
+    if cal and cal.get("roll_180") is True:
+        right, down = _mul(right, -1.0), _mul(down, -1.0)
     cam = points["camera"]
     if cal and cal.get("cam"):
         dx, df, du = cal["cam"]

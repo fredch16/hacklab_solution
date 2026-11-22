@@ -55,13 +55,16 @@ def _residuals(x, obs, ranges, aspect, n_params):
     return np.array(r)
 
 
-def fit(observations: list[tuple[dict, tuple[float, float]]], ranges, aspect: float, point0, on_desk: bool = True) -> dict:
+def fit(observations: list[tuple[dict, tuple[float, float]]], ranges, aspect: float, point0, on_desk: bool = True,
+        roll_180: bool = False) -> dict:
     """observations: [(measured joints, observed image centre (u, v))] of ONE static object from different poses.
     -> {ok, cal, point_m, rms_before, rms_after (image fractions), views}"""
     if len(observations) < MIN_VIEWS:
         return {"ok": False, "reason": f"need at least {MIN_VIEWS} views, have {len(observations)}"}
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
     obs = [({int(m): int(v) for m, v in j.items()}, (float(uv[0]), float(uv[1]))) for j, uv in observations]
+    if roll_180:
+        obs = [(j, (1.0 - u, 1.0 - v)) for j, (u, v) in obs]
     n = len(NAMES)
     x = np.concatenate([np.zeros(n), np.array(point0, float)])
     r = _residuals(x, obs, ranges, aspect, n)
@@ -89,7 +92,10 @@ def fit(observations: list[tuple[dict, tuple[float, float]]], ranges, aspect: fl
             if lam > 1e6:
                 break
     rms_after = float(np.sqrt(np.mean(r[:2 * len(obs)] ** 2)))
-    return {"ok": rms_after < rms_before, "cal": as_cal(x[:n]), "point_m": [round(float(v), 4) for v in x[n:n + 3]],
+    cal = as_cal(x[:n])
+    if roll_180:
+        cal["roll_180"] = True
+    return {"ok": rms_after < rms_before, "cal": cal, "point_m": [round(float(v), 4) for v in x[n:n + 3]],
             "rms_before": round(rms_before, 4), "rms_after": round(rms_after, 4), "views": len(obs),
             "params": {k: round(float(v), 4) for k, v in zip(NAMES, x[:n])}}
 

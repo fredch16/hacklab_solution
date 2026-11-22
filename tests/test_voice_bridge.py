@@ -41,6 +41,14 @@ def part_a():
     assert p("go to side low") == {"tool": None, "reason": "unchecked_view", "view": "side_low"}
     assert p("go to the kitchen")["reason"] == "unknown_view"
     assert p("where are you")["tool"] == "get_status" and p("what's the status")["tool"] == "get_status"
+    for phrase, kind in vb.DIRECTOR_PHRASES.items():
+        assert p(phrase) == {"tool": "director_job", "args": {"kind": kind}}, phrase
+    assert p("Recall best overhead")["args"] == {"kind": "recall", "preset": "top"}
+    assert p("Director status")["tool"] == "director_status"
+    assert p("Motor status")["tool"] == "get_arm_telemetry"
+    assert p("Hey Claude, film a shot: Pan 2.5 degrees and hold.")["args"] == {
+        "kind": "film", "brief": "Pan 2.5 degrees and hold."}
+    assert vb.plan_from_answer({"action": "director_film", "view": ""}, VIEWS, "don't pan") is None
     assert p("list views")["tool"] == "list_views" and p("which views are there")["tool"] == "list_views"
     assert p("turn towards the window")["reason"] == "unknown_view"
     assert p("tell me a joke") == {"tool": None, "reason": "no_match"}
@@ -66,6 +74,7 @@ const assert = require("node:assert/strict");
 assert.ok(isStop("Stop!") && isStop("whoa stop it") && isStop("HALT") && !isStop("stop recording") && !isStop("go to top"));
 const w = (t) => afterWake(t, "Claude");
 assert.deepEqual(w("Hey Claude, show me the top"), { woke: true, request: "show me the top" });
+assert.deepEqual(w("Hey Claude, keep the object in view"), { woke: true, request: "keep the object in view" });
 assert.deepEqual(w("yo cloud show me the thing from da top"), { woke: true, request: "show me the thing from da top" });
 assert.deepEqual(w("show me the top, Claude"), { woke: true, request: "show me the top" });
 assert.deepEqual(w("Hey Claude."), { woke: true, request: "" });
@@ -353,6 +362,15 @@ def part_b():
     assert r == {"utterance_id": "u6", "ok": True, "command": "none", "error": None, "message": None}, r
     r = post(url, {"session_id": "s1", "utterance_id": "u7", "text": "list views"})[1]
     assert r["ok"] and all(n in r["message"] for n in checked), r
+    from camera_director.jobs import Director
+    state.director = Director(state, data_dir=Path(tempfile.mkdtemp()))
+    r = post(url, {"session_id": "s1", "utterance_id": "director-status", "text": "director status"})[1]
+    assert r["ok"] and r["message"] == "Camera director idle", r
+    r = post(url, {"session_id": "s1", "utterance_id": "motor-status", "text": "motor status"})[1]
+    assert r["ok"] and "8 motors reporting" in r["message"], r
+    r = post(url, {"session_id": "s1", "utterance_id": "director-film", "tab": "1" * 32,
+                   "text": "Film a shot: ease left then hold."})[1]
+    assert r["command"] == "arm.director_job" and "no target" in r["message"], r
     part_b_free_phrasing(mcp, checked, unchecked)
     # MCP server unreachable -> a clear failure, nothing crashes
     dead = vb.make_handler(vb.Bridge("http://127.0.0.1:9/mcp"), set())

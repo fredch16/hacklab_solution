@@ -97,11 +97,44 @@ def match_view(phrase: str, views: list[dict]) -> dict | None:
     return None
 
 
+DIRECTOR_PHRASES = {
+    "find the best view": "survey", "find best view": "survey", "optimize all views": "survey",
+    "keep in view": "watch", "keep it in view": "watch", "keep the object in view": "watch",
+    "automatic best view": "watch",
+    "keep in frame": "center", "preview framing": "center",
+    "director show": "show", "director tour": "tour",
+    "cinematic": "cinematic", "play the cinematic": "cinematic",
+    "gimbal take": "gimbal", "start a scene": "scene", "director scene": "scene",
+    "return along the last shot": "return", "snap to view": "snap",
+    "self calibrate the camera": "selfcal", "self calibrate": "selfcal",
+}
+FILM_BRIEF_RE = re.compile(r"^(?:(?:please|hey claude|claude|can you|could you)[\s,]+)*"
+                           r"(?:film a shot|plan a shot|director shot)\b[\s:,.–-]+(.+)$", re.IGNORECASE)
+
+
+def director_plan(text: str, views: list[dict]) -> dict | None:
+    request = normalize(text).removeprefix("claude ").removeprefix("start the ")
+    if request in ("director status", "camera director status"):
+        return {"tool": "director_status", "args": {}}
+    if request in ("motor status", "motor telemetry", "telemetry"):
+        return {"tool": "get_arm_telemetry", "args": {}}
+    if kind := DIRECTOR_PHRASES.get(request):
+        return {"tool": "director_job", "args": {"kind": kind}}
+    if request.startswith("recall best ") and (view := match_view(request.removeprefix("recall best "), views)):
+        if view.get("checked"):
+            return {"tool": "director_job", "args": {"kind": "recall", "preset": view["name"]}}
+    if brief := FILM_BRIEF_RE.fullmatch(text.strip()):
+        return {"tool": "director_job", "args": {"kind": "film", "brief": brief[1].strip()}}
+    return None
+
+
 def plan(text: str, views: list[dict]) -> dict:
     """Interpret one transcript. Returns {"tool": ..., "args": {...}} or {"tool": None, "reason": ...}."""
     t = normalize(text)
     if not t:
         return {"tool": None, "reason": "empty"}
+    if director := director_plan(text, views):
+        return director
     if "record" in t:
         return {"tool": None, "reason": "recording"}
     if STOP_RE.search(t):
@@ -133,7 +166,7 @@ RECORD_ACTIONS = {
     "start_phone_recording": ("phone", "start"), "stop_phone_recording": ("phone", "stop"),
     "start_robot_recording": ("robot", "start"), "stop_robot_recording": ("robot", "stop"),
 }
-ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "none", *RECORD_ACTIONS)
+ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "director_film", "director_watch", "none", *RECORD_ACTIONS)
 RECORD_WORDS = re.compile(r"\b(?:record(?:s|ed|ing)?|film(?:s|ed|ing)?|rolling|roll (?:the|video))\b")
 RECORD_NEGATION = re.compile(r"\b(?:don't|do not|never|without|not|cancel)\b")
 CLEAR_RECORDING = re.compile(r"\b(?:start|begin|stop|end|finish|record|film|rolling|roll)\b")
@@ -186,11 +219,15 @@ table" mean the widest view).
 "that's enough", "careful").
 - get_status: the speaker asks where the camera is or what it is doing.
 - list_views: the speaker asks which views exist or what the camera can show.
+- director_film: the speaker requests a distinct camera move, a reveal, a pan, a roll or artistic framing
+  of the marked object that is beyond a saved view. Use go_to_view when a saved angle fits.
+- director_watch: the speaker asks the director to keep the marked object visible or find another view
+  when it gets covered.
 - start_phone_recording / stop_phone_recording: explicitly asks to start/stop recording with the phone, or asks for a recording without naming a camera.
 - start_robot_recording / stop_robot_recording: explicitly asks to start/stop recording with the robot USB camera. Use these only when the robot is named as the camera.
 Do not interpret questions, hypotheticals, negation, prior events, or ambiguous/multiple requests as recording actions. A request to stop the arm is distinct from stopping a recording.
 - none: everything else. Small talk, questions that are not about the camera, things it cannot do \
-(zoom, nudge a little to the left, follow an object), a view that is not in the list, a \
+(physical manipulation), a view that is not in the list, a \
 request not to move ("don't go to the top"), or speech that was clearly not meant for the camera.
 
 go_to_view makes a real arm move near people, so use it only when the speaker clearly asks for a \
@@ -266,18 +303,25 @@ class Interpreter:
         return {"action": action, "view": view if action == "go_to_view" else ""}
 
 
-def plan_from_answer(answer: dict | None, views: list[dict]) -> dict | None:
+def plan_from_answer(answer: dict | None, views: list[dict], text: str = "") -> dict | None:
     """Turn the Claude step's answer into a plan, through the same view policy as the grammar.
     None when it gave nothing to act on."""
     if not answer or answer["action"] == "none":
         return None
+    if answer["action"] in ("director_film", "director_watch"):
+        if RECORD_NEGATION.search(normalize(text)) or STOP_RE.match(normalize(text)):
+            return None
+        args = {"kind": "watch"} if answer["action"] == "director_watch" else {"kind": "film", "brief": text.strip()}
+        return {"tool": "director_job", "args": args}
     if answer["action"] != "go_to_view":
         return {"tool": answer["action"], "args": {}}
     view = next((v for v in views if v["name"] == answer["view"]), None)
     return _goto(view) if view else None
 
 
-COMMAND = {"stop": "arm.stop", "go_to_view": "arm.go_to_view", "get_status": "arm.status", "list_views": "arm.list_views"}
+COMMAND = {"stop": "arm.stop", "go_to_view": "arm.go_to_view", "get_status": "arm.status", "list_views": "arm.list_views",
+           "director_job": "arm.director_job", "director_status": "arm.director_status",
+           "get_arm_telemetry": "arm.telemetry"}
 
 
 def _data(res) -> dict:
@@ -330,13 +374,14 @@ class Bridge:
     async def _run(self, text: str, tab: str | None = None, acoustic: str | None = None, session: str | None = None) -> dict:
         async with Client(self.target, read_timeout_seconds=10) as client:
             t = normalize(text)
-            camera, recording = recording_context(text, acoustic) if tab else (None, "unrelated")
+            explicit = director_plan(text, [])
+            camera, recording = recording_context(text, acoustic) if tab and not explicit else (None, "unrelated")
             if recording == "reject":
                 return self._refusal({"reason": "recording"}, [])
             if recording in ("start", "stop"):
                 return await self._record(client, camera, recording, tab, session)
             # stop needs no view list: skip that round trip so it reaches the arm sooner
-            listing = {} if STOP_RE.search(t) and "record" not in t else \
+            listing = {} if explicit or (STOP_RE.search(t) and "record" not in t) else \
                 _data(await client.call_tool("list_views", {}))
             views = listing.get("views", [])
             p = plan(text, views)
@@ -369,6 +414,27 @@ class Bridge:
                 return {"ok": True, "command": command, "error": None, "message": msg}
             if p["tool"] == "get_status":
                 return {"ok": True, "command": command, "error": None, "message": _status_line(res)}
+            if p["tool"] == "director_job":
+                label = p["args"]["kind"].replace("selfcal", "self-calibration")
+                return {"ok": bool(res.get("started")), "command": command, "error": None,
+                        "message": f"Director {label} started" if res.get("started") else f"Director {label} did not start"}
+            if p["tool"] == "director_status":
+                job = res.get("job") or {}
+                return {"ok": True, "command": command, "error": None,
+                        "message": job.get("reason") or job.get("step") or "Camera director idle"}
+            if p["tool"] == "get_arm_telemetry":
+                motors = res.get("motors") or {}
+                if not motors.get("ok"):
+                    return {"ok": False, "command": command, "error": "TELEMETRY_UNAVAILABLE",
+                            "message": motors.get("error") or "Motor telemetry is unavailable"}
+                rows = motors.get("joints", [])
+                faults = [str(m["id"]) for m in rows if m.get("status")]
+                shoulder = next((m.get("load") for m in rows if m["id"] == 2), None)
+                msg = f"{len(rows)} motors reporting. " + (
+                    f"Faults on motors {', '.join(faults)}." if faults else "No motor fault bits.")
+                if isinstance(shoulder, (int, float)):
+                    msg += f" Shoulder load {abs(shoulder) / 10:g}%."
+                return {"ok": True, "command": command, "error": None, "message": msg}
             names = [v["name"] for v in res.get("views", []) if v.get("checked")]
             return {"ok": True, "command": command, "error": None,
                     "message": "Views: " + (", ".join(names) if names else "none checked yet")}
@@ -382,7 +448,7 @@ class Bridge:
 
     def _ask(self, interpreter, text: str, views: list[dict], current_view) -> dict | None:
         try:
-            return plan_from_answer(interpreter.interpret(text, views, current_view), views)
+            return plan_from_answer(interpreter.interpret(text, views, current_view), views, text)
         except Exception as e:   # the grammar's answer stands, whatever went wrong here
             log.warning("Claude step failed: %r", e)
             return None

@@ -1,6 +1,6 @@
 # Voice control of the camera arm
 
-State on Sat 21 Nov, 22:00. You speak, and the camera moves to one of the saved views.
+The wake word opens a voice command window. The final transcript can select a saved view, run the camera director, read status or control a recorder.
 
 ```
 phone app (Android)  ──text──►  dashboard page  ──┐
@@ -9,9 +9,34 @@ PC voice page (Chrome/Safari) ──text─────────────�
                                                             └── Claude Haiku 5.5, only for loose phrasing
 ```
 
-The laptop dashboard handles exact recording phrases locally. Other eligible requests go through `voice_bridge.py` on the PC running the arm. Its arm tools are stop, go to a view, status, and list views. The laptop recording path can also call `record_camera`. [Routing and acceptance](AGENT_HANDOFF.md#recording-voice-routing-and-lift-over)
+The laptop dashboard handles exact recording phrases locally. Other completed live transcripts go through `voice_bridge.py` to the arm tools and camera director. Exact director phrases route directly to MCP. Claude interprets eligible loose phrasing and plans custom camera shots. [Routing and acceptance](AGENT_HANDOFF.md#recording-voice-routing-and-lift-over)
 
 The laptop dashboard also routes [phone and robot recording requests](LAPTOP_DASHBOARD.md#recording-and-speech) via the local gateway and MCP. This path requires a paired phone for speech and phone recording. For robot recording it additionally requires a visible dashboard tab and live robot feed.
+
+## Wake-word demo
+
+Pair the phone, leave the app in the foreground with microphone permission, and open the robot camera card on the laptop. Mark the object or use **Auto-find sticker**. Say the configured wake phrase, usually **Hey Claude**, then one command. Check the final transcript and its result on the laptop.
+
+| Say after the wake word | Result |
+|---|---|
+| “Director status”, “Motor status”, “List views”, or “Where are you?” | Reads job, motor or view state. |
+| “Keep in frame” or “Preview framing” | Calculates a framing correction in place. |
+| “Go to top” or “Go to wide” | Uses the checked saved view. “Recall best wide” uses a previously verified shot. |
+| “Find the best view” or “Optimize all views” | Estimates candidates and verifies selected views. |
+| “Keep the object in view” or “Automatic best view” | Watches continuously and handles sustained occlusion. |
+| “Cinematic”, “Director show”, “Director tour”, “Gimbal take”, or “Start a scene” | Starts the corresponding camera job. Scene uses Director Show when free paths are disabled. |
+| “Snap to view”, “Return along the last shot”, or “Self calibrate the camera” | Runs the corresponding recovery or calibration job if its gate and starting pose allow it. Use these with the operator present. |
+| “Start robot recording” or “Stop robot recording” | Controls the laptop robot recorder. “Start recording” and “Stop recording” target the phone. |
+| “Stop arm” | Halts arm motion. |
+
+For an unfamiliar shot, begin with “Film a shot”. Try “Film a shot, ease the object a little down from the top edge and hold”, “Film a shot, reveal the desk while leaving room on the right”, or “Film a shot, add a slight tilt and hold for four seconds”. With Claude enabled, also try “Could you ease left and reveal the desk while keeping the object at the upper third?”, “Show me the whole desk”, and “Keep the marked object visible even if my hand gets in the way”. Those three phrases classified as a custom take, the saved wide view and Keep in view in the live API test. The job status shows the chosen plan or why it could not run.
+
+### Occlusion demo
+
+1. Select a textured object and start with an unobstructed view. **Optimize all views** builds the verified shot list. Keep the camera card visible and enable **Record the shots** if you want clips.
+2. Say “Hey Claude, keep the object in view”. Wait for a clear hold. Obscure the camera's line of sight with a card held outside the arm's path, leaving the object itself in place.
+3. Watch the status for recording paused and one cut to an eligible angle. If the alternate sees the object, three clear looks resume recording. If it is still blocked, the arm holds and keeps checking the feed. A later clear hold can start a new occlusion episode.
+4. Say “Hey Claude, stop arm” or use the dashboard STOP. Completed clips are available in the robot camera card.
 
 ## Start it
 

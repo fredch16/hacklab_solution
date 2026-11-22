@@ -1398,14 +1398,14 @@ class Director:
                 obs.append(({int(m): v for m, v in look["measured_joints"].items()}, c))
             else:
                 skipped.append(f"{p}{'→' + toward if toward else ''}: object not seen")
-        if self.loc is None:
-            framing.CAMERA_CAL = None
-            self.calibration.pop("model", None)
-            await self.localize(look=False) if self.sightings else None
-        point0 = (self.loc or {}).get("point_m") or [0.0, 0.3, 0.0]
+        # Keep the current camera model active until a replacement fit is accepted.
+        estimate = self.loc or predict.localize([(j, [u, v, u, v]) for j, (u, v) in obs],
+                                                self.state.arm.ranges(), self._aspect())
+        point0 = estimate.get("point_m") or [0.0, 0.3, 0.0]
         self.step(f"fitting the camera model to {len(obs)} views")
         fit = await asyncio.get_running_loop().run_in_executor(self.pool, selfcal.fit, obs, self.state.arm.ranges(),
-                                                                self._aspect(), point0)
+                                                                self._aspect(), point0, True,
+                                                                (old or {}).get("roll_180") is True)
         self.job["result"] = {**{k: v for k, v in fit.items() if k != "cal"}, "skipped": skipped}
         if not fit["ok"] or fit["rms_after"] > 0.05:
             framing.CAMERA_CAL = old

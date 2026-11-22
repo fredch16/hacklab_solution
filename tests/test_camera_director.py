@@ -554,6 +554,26 @@ class RealArmGate(unittest.TestCase):
 class ComputedPaths(unittest.TestCase):
     ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
 
+    def test_upside_down_camera_rotates_image_without_changing_its_viewing_axis(self):
+        top = motion.load_views()["top"]
+        point = (0.0, 0.31, 0.0)
+        with patch.object(framing, "CAMERA_CAL", None):
+            original = framing.camera_pose(top, self.ranges)
+        with patch.object(framing, "CAMERA_CAL", {"roll_180": True}):
+            corrected = framing.camera_pose(top, self.ranges)
+            self.assertEqual(corrected[:2], original[:2])
+            before = framing.project(point, original, 16 / 9)
+            after = framing.project(point, corrected, 16 / 9)
+            for old, new in zip(before, after):
+                self.assertAlmostEqual(new, 1 - old)
+
+    def test_framing_refusal_preserves_details_across_the_worker_boundary(self):
+        import pickle
+
+        error = framing.FramingError("too_low", "camera is too low", height=0.03)
+        restored = pickle.loads(pickle.dumps(error))
+        self.assertEqual(restored.body(), error.body())
+
     def test_path_check_refuses_the_desk_jumps_and_ranges(self):
         env = motion.envelope(self.ranges)
         top = {m: motion.load_views()["top"][m] for m in motion.MOVABLE}

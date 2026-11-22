@@ -44,11 +44,14 @@ from . import vision as V
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "director_data"            # sticker reference, catalogue, thumbnails (ignored by git)
 SAFETY_PATH = ROOT / "director_safety.json"  # the operator's approval for physical moves (ignored by git)
-GRIPPER_CAMERA = "usbvideo/74e4d17bc903e40ebc78117539fca31f"   # docs/HARDWARE.md: the follower's gripper camera
+GRIPPER_CAMERA = "usbvideo/74e4d17bc903e40ebc78117539fca31f"   # docs/HARDWARE.md: the follower's gripper camera (Fred's Mac)
+# Station names a camera differently per computer. On the lab Linux laptop the gripper camera (jaws visible at
+# the bottom of the frame, checked by eye on 22 Nov) is this queue:
+GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4")
 
 TICK_S = 0.2              # frame sampling / live tracking period
 FRAME_CACHE = 60          # frames kept for selection by id (~12 s)
-SELECT_MAX_AGE_S = 30.0   # a box drawn on a frame older than this is refused
+SELECT_MAX_AGE_S = 600.0  # a box drawn on a frozen frame older than this is refused (the frame is pinned meanwhile)
 FRAME_FRESH_S = 1.0       # a frame older than this is not used for decisions
 SETTLE_S = 0.6            # wait after a move before checking that the joints stand still
 SETTLE_TOL = 4            # steps between two reads 0.15 s apart
@@ -81,6 +84,7 @@ class Director:
             self.data = self.data / "sim"
         self.frames: deque = deque(maxlen=FRAME_CACHE)   # (frame_id, monotonic stamp, jpeg)
         self.seq, self._last_jpeg, self.sim_camera = 0, None, None
+        self.pinned: dict[int, tuple] = {}             # frames opened for drawing a box: kept until selected
         self.target: dict | None = None
         self.ref: V.Reference | None = None
         self.tracker: V.Tracker | None = None
@@ -141,11 +145,9 @@ class Director:
 
     def frame(self, frame_id: int | None = None):
         frames = list(self.frames)
-        if not frames:
-            return None
         if frame_id is None:
-            return frames[-1]
-        return next((f for f in frames if f[0] == frame_id), None)
+            return frames[-1] if frames else None
+        return self.pinned.get(frame_id) or next((f for f in frames if f[0] == frame_id), None)
 
     def camera_state(self) -> dict:
         f = self.frame()
@@ -157,7 +159,7 @@ class Director:
         queue = "simulated" if self.state.sim else self.state.cam_queue
         return {"queue": queue, "simulated": self.state.sim, "frame_id": f[0] if f else None, "age_s": age,
                 "live": age is not None and age < FRAME_FRESH_S * 2, "size": size,
-                "gripper_camera": self.state.sim or queue == GRIPPER_CAMERA}
+                "gripper_camera": self.state.sim or any((queue or "").endswith(q) for q in GRIPPER_CAMERAS)}
 
     # ------------------------------------------------------------ safety gate
 
@@ -501,8 +503,10 @@ class Director:
         aspect, out = self._aspect(), {}
         for p, cands in predict.candidate_poses(ranges, grip, gate).items():
             preds = []
+            f = self.frame()
+            wh = framing.jpeg_size(f[2]) if f else None
             for c in cands:
-                pv = predict.predict_view(c["joints"], self.loc, ranges, aspect)
+                pv = predict.predict_view(c["joints"], self.loc, ranges, aspect, image_w=wh[0] if wh else predict.IMAGE_W)
                 preds.append({k: v for k, v in c.items() if k != "joints"} | pv)
             vis = [x for x in preds if x["visible"]]
             out[p] = {"best": max(vis, key=lambda x: x["score"]) if vis else None, "count": len(preds),
@@ -827,6 +831,8 @@ class Director:
         if method == "GET" and name == "frame.jpg":
             fid = q.get("id", [None])[0]
             f = self.frame() if fid is None else (self.frame(int(fid)) if fid.isdigit() else None)
+            if f is not None and fid is not None:   # the dashboard froze this frame to draw on: keep it until then
+                self.pinned = {k: v for k, v in list(self.pinned.items())[-4:]} | {f[0]: f}
             return (200, f[2], "image/jpeg") if f else (404, {"ok": False, "error": "no such frame"}, "")
         if method == "GET" and name.startswith("thumb/"):
             jpeg = self.thumbs.get(name[len("thumb/"):].removesuffix(".jpg"))

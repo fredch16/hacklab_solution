@@ -26,7 +26,7 @@ JAW_ZONE = (0.18, 0.88, 0.62)   # x1, x2, y1 of the gripper jaws in the real cam
 PREDICT_FRACTIONS = (0.08, 0.16, 0.24, 0.32)
 MAX_TILT_DEG = 55.0             # flatter than this from straight down, a flat target is too foreshortened to recognise
 MIN_BOX_PX = 40                 # smaller than this on its long side, too few features to recognise
-IMAGE_W = 960                   # pixels across the Station frames (for MIN_BOX_PX)
+IMAGE_W = 960                   # default pixels across a frame (for MIN_BOX_PX); callers pass the real width
 W_PRED = {"composition": 0.30, "edge_clearance": 0.25, "target_size": 0.20, "legibility": 0.15, "stability": 0.10}
 
 
@@ -76,7 +76,7 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
     return out
 
 
-def predict_view(joints: dict, target: dict, ranges, aspect: float) -> dict:
+def predict_view(joints: dict, target: dict, ranges, aspect: float, image_w: int = 960) -> dict:
     """How the localized target would appear from `joints`: box, components, score (0..1) or not visible."""
     cam, axis, right, down = pose = _pose(joints, ranges)
     p, r = np.array(target["point_m"]), target["size_m"] / 2
@@ -96,7 +96,7 @@ def predict_view(joints: dict, target: dict, ranges, aspect: float) -> dict:
     tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(-ray[2])))))
     if tilt > MAX_TILT_DEG:
         return {"visible": False, "score": None, "box": box, "reason": f"seen {tilt:.0f} deg from straight down: too oblique to recognise"}
-    if max(box[2] - box[0], box[3] - box[1]) * IMAGE_W < MIN_BOX_PX:
+    if max(box[2] - box[0], box[3] - box[1]) * image_w < MIN_BOX_PX:
         return {"visible": False, "score": None, "box": box, "reason": "the target would be too small in the picture"}
     comp = 1.0 - min(1.0, math.hypot(cx - 0.5, cy - 0.5) / 0.5)
     edge = max(0.0, min(1.0, min(box[0], box[1], 1 - box[2], 1 - box[3]) / 0.12))

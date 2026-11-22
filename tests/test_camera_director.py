@@ -196,6 +196,11 @@ class SimDirector(unittest.TestCase):
             self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": box})[0], code, box)
         self.assertEqual(http(self.base, "/api/director/select", {"frame_id": -5, "box": [0.1, 0.1, 0.5, 0.5]})[0], 409)
         self.assertEqual(http(self.base, "/api/director/frame.jpg?id=-5")[0], 404)
+        frozen = self.get()["camera"]["frame_id"]
+        self.assertEqual(http(self.base, f"/api/director/frame.jpg?id={frozen}")[0], 200)   # the dashboard freezes it
+        wait(lambda: self.get()["camera"]["frame_id"] > frozen + J.FRAME_CACHE + 5, timeout=30, what="cache turnover")
+        status, body = http(self.base, "/api/director/select", {"frame_id": frozen, "box": [0.3, 0.3, 0.7, 0.7]})
+        self.assertNotEqual(status, 409, body)          # drawing slowly must not lose the frozen frame
 
     def test_2_sticker_crop_then_autofind_and_tracking(self):
         self.goto("top")

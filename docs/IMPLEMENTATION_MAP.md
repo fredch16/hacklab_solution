@@ -23,9 +23,11 @@ New code lives in `camera_director/` (vision, scoring, jobs) and is wired into `
 
 External references (norma-core, Robotics_berlin_hack, norma-robot) were not copied. This repo already has its own calibration, URDF model and guarded motion layer; no joint values are taken from other projects.
 
-## Candidate viewpoints: what "approved local search" means here
+## Candidate viewpoints and how the director uses them
 
-A candidate near preset `P` is either `P` itself or the pose a fraction `s` of the way along a verified direct line or arc from `P` to another checked view `Q`. These poses are on paths that `motion.direct_plan()` already approves and that the arm sweeps whenever it moves `P → Q`; a STOP during that move leaves the arm at exactly such a pose, and `motion.locate()` / `plan_route()` already continue from there (`where: between`). No new joint arrays are invented, and every move to or from a candidate is a sub-segment of an approved route.
+A candidate near preset `P` is either `P` itself or the pose a fraction `s` (8–32%) of the way along a verified direct line or arc from `P` to another checked view `Q`. These poses are on paths that `motion.direct_plan()` already approves and that the arm sweeps whenever it moves `P → Q`; a STOP during that move leaves the arm at exactly such a pose, and `motion.locate()` / `plan_route()` already continue from there (`where: between`). No new joint arrays are invented.
+
+The director does not visit candidates to compare them. It localizes the marked object from settled sightings (measured servo steps + Station's live calibration → `fk.py` camera pose → ray; triangulated across views), predicts every candidate (`camera_director/predict.py`), and moves once per preset to the predicted best, where the camera verifies it. See [camera director](CAMERA_DIRECTOR.md).
 
 Lines among the checked views today (`motion.route_kind`, from `views.json` alone):
 

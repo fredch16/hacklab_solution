@@ -1023,9 +1023,9 @@ class Director:
             await self._show(req, gate)
             self.job["result"]["planner"] = "director show (shoulder-safe moves)"
             return
+        if self.where().get("where") not in ("view", "between"):
+            await self.ensure_view()
         w = self.where()
-        if w.get("where") not in ("view", "between"):
-            raise Hold("start the scene from a saved view (or a stop on a checked line)")
         self.job["phase"] = "estimate"
         if self.loc is None:
             await self.localize()
@@ -1241,18 +1241,84 @@ class Director:
         self.trail = []
         self._save_trail([])
 
+    async def ensure_view(self, best_for_object: bool = False) -> str:
+        """Get onto a saved view without bothering the operator: finish a line to its nearer end, snap onto a view
+        the arm stopped close to, and (best_for_object) move on to the checked view predicted to show the marked
+        object best. Only a pose far from every view and line needs the operator (Recover in Arm controls)."""
+        w = self.where()
+        if w.get("where") == "between":
+            near = w["view"] if w.get("s", 0.0) < 0.5 else w["to"]
+            self.step(f"finishing the line to {near}")
+            if not await self.move(near):
+                raise Hold(f"the route to {near} was refused")
+        elif w.get("where") != "view":
+            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            views = motion.load_views()
+            name, gap = min(((n, max(abs(v[m] - now[m]) for m in motion.MOVABLE)) for n, v in views.items()
+                             if n != motion.TRANSIT), key=lambda x: x[1])
+            if gap > SNAP_MAX:
+                if w.get("where") in ("hub", "spoke", "above"):
+                    target = "top" if "top" in views else name
+                    self.step(f"going to {target}")
+                    if not await self.move(target):
+                        raise Hold(f"the route to {target} was refused")
+                else:
+                    raise Hold(f"the arm is {gap} steps from the nearest view ({name}); use Recover in Arm controls")
+            else:
+                self.step(f"snapping onto {name}")
+                await self.move_path(self._bridge(now, {m: views[name][m] for m in motion.MOVABLE}, step=100),
+                                     f"snap to {name}")
+        view = self.where().get("view") or ""
+        if best_for_object and self.loc is not None:
+            gate = self.gate()
+            preds = self.predict_all(gate)
+            ranked = sorted(((p["best"]["score"], name) for name, p in preds.items()
+                             if p["best"] and not p["best"].get("toward") and motion.view_checked(name)), reverse=True)
+            if ranked and ranked[0][1] != view and ranked[0][0] > 0.5:
+                self.step(f"moving to {ranked[0][1]}, the view predicted best for the object")
+                if await self.move(ranked[0][1]):
+                    view = ranked[0][1]
+        return self.where().get("view") or view
+
     async def _gimbal(self, req: dict, gate: dict):
         """Gimbal take: shoulder and elbow stay where the current view holds them; base yaw swings the camera
         around and the wrist joints keep the marked object centred (a parallax arc), out, across and back."""
         if not gate["moves"]:
             raise Hold("physical moves not approved")
-        w = self.where()
-        if w.get("where") != "view":
-            raise Hold("start a gimbal take from a saved view")
+        self.job["phase"] = "reposition"
+        view = await self.ensure_view()
         self.job["phase"] = "estimate"
         if self.loc is None:
-            await self.localize()
-        self.job["result"] = await self._gimbal_take(w["view"], int(req.get("yaw", 500)), float(req.get("roll", 0.0)))
+            try:
+                await self.localize()
+            except Hold:                    # not visible from here: try the best-known view for it
+                view = await self.ensure_view(best_for_object=True)
+                await self.localize()
+        # start where a gimbal take actually works: the current view first, then the views predicted best for the
+        # object (never the folded home pose); plan each before moving anywhere
+        yaw, roll = int(req.get("yaw", 500)), float(req.get("roll", 0.0))
+        preds = self.predict_all(gate)
+        ranked = [n for _, n in sorted(((p["best"]["score"], n) for n, p in preds.items() if p["best"]), reverse=True)]
+        grip = self.state.arm.joints(max_age_s=motion.STALE_S)[motion.GRIPPER]
+        chosen = None
+        for cand in dict.fromkeys([view] + ranked):
+            if cand in ("home", motion.TRANSIT) or not motion.view_checked(cand):
+                continue
+            self.step(f"checking a gimbal take from {cand}")
+            bias = predict.bias_for({"where": "view", "view": cand}, self.calibration)
+            shot = await self.vision(orbit.gimbal_shot, self.loc["point_m"], {**motion.load_views()[cand],
+                                     motion.GRIPPER: grip}, self.state.arm.ranges(), yaw, roll, bias, self._aspect())
+            if shot["ok"]:
+                chosen = cand
+                break
+        if chosen is None:
+            raise Hold("no view gives a gimbal take that keeps the object in frame")
+        if chosen != self.where().get("view"):
+            self.job["phase"] = "reposition"
+            self.step(f"moving to {chosen} for the gimbal take")
+            if not await self.move(chosen):
+                raise Hold(f"the route to {chosen} was refused")
+        self.job["result"] = await self._gimbal_take(chosen, yaw, roll)
 
     async def _gimbal_take(self, view: str, yaw: int, roll: float = 0.0) -> dict:
         """Plan and shoot one gimbal take from `view` (the arm is on it), then put it exactly back on the view."""
@@ -1313,7 +1379,7 @@ class Director:
         if wide not in views or close not in views:
             raise Hold(f"needs the views {wide} and {close}")
         if self.where().get("where") not in ("view", "between"):
-            raise Hold("start from a saved view")
+            await self.ensure_view()
         hold = float(req.get("hold", 3.0))
         shots = []
         if not (self.where().get("where") == "view" and self.where().get("view") == wide):
@@ -1358,10 +1424,7 @@ class Director:
         (camera_director/selfcal.py). No measurements. Afterwards every object is localized from images alone."""
         if not gate["moves"]:
             raise Hold("physical moves not approved")
-        w = self.where()
-        start_view = w.get("view") if w.get("where") == "view" else None
-        if not start_view:
-            raise Hold("start self-calibration from a saved view")
+        start_view = await self.ensure_view()
         views = motion.load_views()
         plan = [(start_view, None, 0.0)]
         if gate["mode"] == "PHYSICAL":

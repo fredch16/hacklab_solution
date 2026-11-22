@@ -104,7 +104,7 @@ DIRECTOR_PHRASES = {
     "keep in frame": "center", "preview framing": "center",
     "director show": "show", "director tour": "tour",
     "cinematic": "show", "play the cinematic": "show", "cinematic view": "show", "cinematic shot": "show",
-    "cinematic take": "show",
+    "cinematic take": "show", "cinematic show": "show", "gimbal shot": "gimbal", "gimbal": "gimbal",
     "gimbal take": "gimbal", "start a scene": "scene", "director scene": "scene",
     "return along the last shot": "return", "snap to view": "snap",
     "self calibrate the camera": "selfcal", "self calibrate": "selfcal",
@@ -121,6 +121,12 @@ def director_plan(text: str, views: list[dict]) -> dict | None:
         return {"tool": "get_arm_telemetry", "args": {}}
     if kind := DIRECTOR_PHRASES.get(request):
         return {"tool": "director_job", "args": {"kind": kind}}
+    # Natural phrasing ("do a gimbal take", "start the cinematic show please"): a director phrase anywhere in
+    # the sentence, as whole words. The longest match wins; a film brief ("film a shot ...") is handled below.
+    if not FILM_BRIEF_RE.fullmatch(text.strip()):
+        found = [p for p in DIRECTOR_PHRASES if re.search(rf"\b{re.escape(p)}\b", request)]
+        if found:
+            return {"tool": "director_job", "args": {"kind": DIRECTOR_PHRASES[max(found, key=len)]}}
     if request.startswith("recall best ") and (view := match_view(request.removeprefix("recall best "), views)):
         if view.get("checked"):
             return {"tool": "director_job", "args": {"kind": "recall", "preset": view["name"]}}

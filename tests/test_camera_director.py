@@ -483,6 +483,17 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         self.assertIn("director show", st["job"]["result"]["planner"])
 
+    def test_9j_gimbal_finds_its_own_start_view(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        top = motion.load_views()["top"]
+        self.state.call(self.state.start_path([{**{m: top[m] for m in motion.MOVABLE}, 3: top[3] + 90}], "nudge"))
+        wait(lambda: not self.state.moving, what="nudge")
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("where"), "unknown")
+        st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=300)          # no saved view: it finds one itself
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

@@ -68,7 +68,7 @@ class LocalVisionApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Local Vision',
+    title: 'P.E.T.E.R.',
     debugShowCheckedModeBanner: false,
     theme: buildTheme(),
     home: HomeShell(controller: controller),

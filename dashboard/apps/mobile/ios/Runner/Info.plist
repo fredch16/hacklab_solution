@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Local Vision uses the camera to capture video on this phone. Video stays on your local network.</string>
+	<string>P.E.T.E.R. uses the camera to capture video on this phone. Video stays on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Local Vision uses the microphone for on-device voice features. Audio is processed on this phone only.</string>
+	<string>P.E.T.E.R. uses the microphone for on-device voice features. Audio is processed on this phone only.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Local Vision serves a dashboard to a browser on your local network.</string>
+	<string>P.E.T.E.R. serves a dashboard to a browser on your local network.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Local Vision</string>
+	<string>P.E.T.E.R.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

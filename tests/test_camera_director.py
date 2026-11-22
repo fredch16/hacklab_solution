@@ -348,7 +348,7 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
 
-    def test_9e_shoulder_load_guard_backs_off_instead_of_faulting(self):
+    def test_9e_shoulder_load_guard_locks_at_the_limit_instead_of_faulting(self):
         self.goto("top")
         saved = dict(motion.PATH_TRIP_GUARD)
         motion.PATH_TRIP_GUARD.clear()
@@ -361,10 +361,12 @@ class SimDirector(unittest.TestCase):
             motion.PATH_TRIP_GUARD.clear()
             motion.PATH_TRIP_GUARD.update(saved)
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
-        mv = st["job"]["result"]["moves"][0]
-        self.assertFalse(mv["done"])
-        self.assertIn("too heavy for the shoulder", mv["why"])
-        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
+        mv = next(m for m in st["job"]["result"]["moves"] if "shoulder" in (m.get("why") or ""))
+        self.assertEqual((mv["done"], mv["complete"]), (True, False), mv)      # locked where it stopped
+        self.assertIn("stopped at the shoulder's limit", mv["why"])
+        limit = self.state.director.calibration.pop("shoulder_reach_limit_m")  # learned (and reset for later tests)
+        self.assertGreater(limit, 0.05)
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="home at the end")
         self.assertEqual(http(self.base, "/api/state")[1]["blockers"], [])
 
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):

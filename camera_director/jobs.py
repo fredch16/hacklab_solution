@@ -82,7 +82,11 @@ class Hold(Exception):
 
 
 class TooHeavy(Hold):
-    """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): retreat, then skip the shot."""
+    """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
+
+
+HOLD_LOAD_OK = 180        # a locked pose must hold motor 2 below this (0-1000; the servo trips above 250 for 2 s)
+HOLD_LOAD_LOOK_S = 0.8    # ...measured over this long at rest
 
 
 class Director:
@@ -1044,16 +1048,46 @@ class Director:
         except OSError:
             pass
 
-    async def _retreat(self, path: list[dict], mv: dict, why: str):
-        """The shoulder-load guard stopped a move: go straight back the way it came (lighter poses), at once,
-        before the servo's own 2 s overload timer runs out at this pose. The rest of the scene goes on from there."""
-        self.job["phase"] = "reposition"
-        self.step(f"{mv['name']}: too heavy for the shoulder here, backing off")
-        self.note(why)
-        self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": "too heavy for the shoulder: " + why})
-        await self._return(path)
-        self.trail = path[:1]
-        self._save_trail(self.trail)
+    async def _hold_load(self) -> float:
+        """Motor 2's mean load over HOLD_LOAD_LOOK_S with the arm at rest."""
+        vals, end = [], time.monotonic() + HOLD_LOAD_LOOK_S
+        while time.monotonic() < end:
+            try:
+                vals.append(self.state.arm.telemetry(max_age_s=motion.STALE_S)[2]["load"])
+            except (RuntimeError, KeyError):
+                pass
+            await asyncio.sleep(0.1)
+        return sum(vals) / len(vals) if vals else 1000.0
+
+    async def _lock_at_limit(self, path: list[dict], mv: dict, why: str) -> list[dict]:
+        """The shoulder-load guard stopped a move: stay where it stopped, as the boundary of what this shoulder
+        can do. If the shoulder still carries too much there at rest (the servo would trip in 2 s), ease back
+        only one waypoint at a time along the path just driven until it holds comfortably. Learns that reach as
+        the shoulder's limit. Returns the part of the path that was driven (the trail goes on from there)."""
+        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        i = min(range(len(path)), key=lambda k: max(abs(path[k][m] - now[m]) for m in motion.MOVABLE))
+        self.step(f"{mv['name']}: at the shoulder's limit, holding here")
+        load = await self._hold_load()
+        while load > HOLD_LOAD_OK and i > 0:
+            i -= 1
+            self.step(f"{mv['name']}: easing back one step (shoulder load {load / 10:.0f}%)")
+            await self.move_path([path[i]], "ease back", load_guard=False)
+            load = await self._hold_load()
+        here = self.state.arm.joints(max_age_s=motion.STALE_S)
+        reach = orbit.shoulder_reach(here, self.state.arm.ranges(), here[motion.GRIPPER])
+        old = self.calibration.get("shoulder_reach_limit_m")
+        limit = round(reach - 0.005, 3) if old is None else round(min(old, reach - 0.005), 3)
+        self.calibration["shoulder_reach_limit_m"] = limit
+        try:
+            self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
+        except OSError:
+            pass
+        self.note(f"shoulder limit: {why}; holding at {reach * 100:.1f} cm reach (load {load / 10:.0f}%), "
+                  f"limit now {limit * 100:.1f} cm")
+        self.job["result"]["moves"].append({"name": mv["name"], "done": True, "complete": False,
+                                            "why": f"stopped at the shoulder's limit (load {load / 10:.0f}% holding)",
+                                            "shoulder_reach_limit_m": limit})
+        return path[:i + 1]
 
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
@@ -1084,7 +1118,8 @@ class Director:
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
             starts = [now] + ([transit] if len(trail) == 1 and self.where().get("where") == "view" else [])
             plan = await self.vision(orbit.plan_shot, self.loc["point_m"], starts, self.state.arm.ranges(),
-                                     mv["keyframes"], bias, self._aspect(), seeds)
+                                     mv["keyframes"], bias, self._aspect(), seeds,
+                                     self.calibration.get("shoulder_reach_limit_m"))
             if not plan["ok"]:
                 self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": plan["reason"]})
                 continue
@@ -1102,9 +1137,8 @@ class Director:
             try:
                 await self.move_path(approach, f"approach {mv['name']}")
             except TooHeavy as e:
-                await self._retreat(trail + approach, mv, str(e))
-                del trail[1:]
-                continue
+                trail.extend(await self._lock_at_limit(approach, mv, str(e)))
+                continue                       # the shot's start is beyond the shoulder's limit: next shot
             trail.extend(approach)
             joints, t = await self.settle()
             look = await self.observe(f"scene/{i}-start", joints, t)
@@ -1112,7 +1146,8 @@ class Director:
                 c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
                 aim = (bias[0] + c[0] - 0.5, bias[1] + c[1] - 0.5)
                 plan2 = await self.vision(orbit.plan_shot, self.loc["point_m"], [joints], self.state.arm.ranges(),
-                                          plan["keyframes"], aim, self._aspect(), seeds)
+                                          plan["keyframes"], aim, self._aspect(), seeds,
+                                          self.calibration.get("shoulder_reach_limit_m"))
                 if plan2["ok"] and len(plan2["poses"]) >= len(plan["poses"]) - 1:
                     plan, bias = plan2, aim
             self.job["phase"] = "cinematic"
@@ -1123,9 +1158,8 @@ class Director:
             try:
                 await self.move_path(path, mv["name"], sample=True)
             except TooHeavy as e:
-                await self._retreat(trail + path, mv, str(e))
-                del trail[1:]
-                continue
+                trail.extend(await self._lock_at_limit(path, mv, str(e)))
+                continue                       # the shot ends at the shoulder's limit: footage up to here stands
             trail.extend(path)
             await asyncio.sleep(1.0)            # a beat at the end of the move
             seen = len(self.samples) / self.looks if self.looks else None

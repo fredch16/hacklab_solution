@@ -211,7 +211,7 @@ def _bridge(a: dict, b: dict, step: int = 200) -> list[dict]:
 
 
 def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.0, 0.0), aspect: float = 16 / 9,
-              seeds: tuple = ()) -> dict:
+              seeds: tuple = (), learned_limit: float | None = None) -> dict:
     """plan_path, made safe: the approach from a start pose and the move itself must pass motion.path_problem.
     If not, the whole move is raised and pulled back in small steps (keeping its shape). Starts are tried in
     order (where the arm is, then transit). -> plan_path result + {start_index, adjusted, approach}"""
@@ -221,6 +221,8 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
     raw = motion._read_views_file()
     limit = shoulder_reach({int(k): v for k, v in raw[REACH_LIMIT_VIEW]["joints"].items()}, ranges) \
         if REACH_LIMIT_VIEW in raw else None
+    if learned_limit is not None:      # where the shoulder's load guard stopped a real move: never beyond it
+        limit = learned_limit if limit is None else min(limit, learned_limit)
     for si, start in enumerate(starts):
         start = {int(m): int(v) for m, v in start.items()}
         grip = start.get(motion.GRIPPER, 1279)

@@ -228,23 +228,48 @@ class Director:
         if not obs["valid"]:
             self.job.update(status="HOLD", reason=obs["reason"], ended_at=round(time.time(), 2))
             return 409, {"ok": False, "error": f"the object is not visible here: {obs['reason']}"}
-        point = [float(pt[0]), float(pt[1]), framing.TABLE_Z]
         try:
-            bias = predict.measured_bias(joints, obs["box"], point, self.state.arm.ranges(), self._aspect())
+            bias = self._record_bias(w["view"], joints, obs["box"], pt)
         except ValueError as e:
             return 409, {"ok": False, "error": str(e)}
-        self.calibration.setdefault("bias", {})[w["view"]] = list(bias)
-        self.calibration.setdefault("records", {})[w["view"]] = {
-            "point_m": point, "box": obs["box"], "measured_joints": {str(m): v for m, v in joints.items()},
-            "at": round(time.time(), 1)}
-        self.data.mkdir(parents=True, exist_ok=True)
-        self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
-        self.sightings = []          # earlier sightings were cast without this correction
-        self.loc = None
         self.job.update(status="DONE", step="done", result={"preset": w["view"], "bias": bias}, ended_at=round(time.time(), 2))
         self.note(f"camera correction for {w['view']}: {bias} (image fractions) from the point {point[:2]} m")
         return 200, {"ok": True, "preset": w["view"], "bias": bias,
                      "bias_px": [round(bias[0] * 1280), round(bias[1] * 720)]}
+
+    def _record_bias(self, view: str, joints: dict, box: list, pt: list) -> tuple:
+        point = [float(pt[0]), float(pt[1]), framing.TABLE_Z]
+        bias = predict.measured_bias(joints, box, point, self.state.arm.ranges(), self._aspect())
+        bias = (float(bias[0]), float(bias[1]))
+        self.calibration.setdefault("bias", {})[view] = list(bias)
+        self.calibration["reference_point_m"] = point[:2]
+        self.calibration.setdefault("records", {})[view] = {
+            "point_m": point, "box": box, "measured_joints": {str(m): v for m, v in joints.items()}, "at": round(time.time(), 1)}
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
+        self.sightings, self.loc = [], None      # earlier sightings were cast without this correction
+        self.note(f"camera correction for {view}: {bias} from the point {point[:2]} m")
+        return bias
+
+    async def _calibrate_tour(self, req: dict, gate: dict):
+        """The object lies at a tape-measured point: visit each checked preset (approved routes), look once
+        from the preset itself and record its camera correction where the object is visible."""
+        pt = req.get("point_m") or self.calibration.get("reference_point_m")
+        if not (isinstance(pt, list) and len(pt) == 2):
+            raise Hold("give point_m [x, y]: where the object lies, tape-measured from the arm base")
+        if not gate["moves"]:
+            raise Hold("physical moves not approved: move the arm to each preset and calibrate there instead")
+        presets = [p for p in (req.get("presets") or motion.view_names()) if motion.view_checked(p)]
+        done = {}
+        self.job["phase"] = "calibrate"
+        for i, p in enumerate(presets, 1):
+            self.step(f"calibrating {p}", preset=p, preset_index=i, preset_count=len(presets))
+            obs = await self.go_shot(p, None, 0.0, f"{p}/calibration")
+            if obs["valid"]:
+                done[p] = list(self._record_bias(p, {int(m): v for m, v in obs["measured_joints"].items()}, obs["box"], pt))
+            else:
+                done[p] = f"not visible: {obs['reason']}"
+        self.job["result"] = {"point_m": pt, "presets": done}
 
     # ------------------------------------------------------------ target
 
@@ -484,7 +509,7 @@ class Director:
     def start(self, req: dict) -> tuple[int, dict]:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
-                   "tour": self._tour, "center": self._center, "watch": self._watch}
+                   "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():

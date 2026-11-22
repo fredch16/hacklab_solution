@@ -311,6 +311,17 @@ class SimDirector(unittest.TestCase):
             J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S = saved
             http(self.base, "/api/director/sim/hand", {"on": False})
 
+    def test_9b_calibration_tour_records_near_zero_corrections_in_the_sim(self):
+        x, y = self.state.director.sim_camera.label_at
+        st = self.run_job({"kind": "calibrate", "point_m": [x, y], "presets": ["top", "wide"]})
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        res = st["job"]["result"]["presets"]
+        for p in ("top", "wide"):
+            self.assertIsInstance(res[p], list, res)
+            # the sim camera is the model, so only the box-centre-vs-projected-centre perspective offset remains
+            self.assertLess(max(abs(v) for v in res[p]), 0.08, res)
+        self.assertEqual(st["calibration"]["presets"], ["top", "wide"])
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

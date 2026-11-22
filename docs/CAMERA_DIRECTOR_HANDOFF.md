@@ -34,6 +34,7 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 - **Cinematic** between verified shots, ending at home; glides along checked lines, cuts (recording paused) where no glide keeps the object in frame.
 - **Gimbal take** (newest working camera move): shoulder and elbow parked at `top`, base yaw ±200 steps, wrist joints keep the framing; one 13 s move, sticker in frame 77 % of sampled frames, shoulder peak load 14 %, no faults, back on `top`.
 - **Snap** back onto a nearby view (144 steps) in 2 s instead of the transit lift.
+- **Director Show** (film grammar, the best demo): establishing hold at `wide` → push-in along the checked wide–top line → gimbal arc at `top` (yaw −325..+350 steps, sticker in frame 77 %) → hold → pull-out to `wide` → closing hold. 66 s end to end, no faults, ends on `wide`. The sticker is too small to recognise from `wide` at its current spot, so the wide holds report `steady: false`. Motor 2 briefly touched load 284 during a move without tripping: close to the limit, watch it.
 - Shoulder-load guard (23 % for 1.2 s) caught real overload build-ups and locked; easing back worked; but a stop at a heavy pose can still trip on the next move (see open issues).
 
 ## What is built but disabled or unverified on the real arm
@@ -42,13 +43,17 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 - **Self-calibration** (`selfcal` job, `camera_director/selfcal.py`): targetless bundle adjustment of camera tilt/offset + joint zero offsets from views of any static object; synthetic test passes (new object within 0.4 cm), simulator job passes; **not yet run on the real arm**. This is the fix for the model errors above and replaces tape measurements.
 - **Claude planner** for scenes and cinematic order (`planner: "claude"`): implemented with structured output and local validation; never exercised with a real key tonight.
 - **Keep in view** (cut away from a covering hand) and MCP tools `director_job` / `director_status`: simulator-tested only.
-- Faster detection (search near the last box, FLANN, feature cap): measured 70 → 24 ms on a real frame; not yet run live.
+- Faster detection (search near the last box, FLANN, feature cap): measured 70 → 24 ms on a real frame; running live since `7332ef3` (the Director Show used it).
 
 ## Current machine state (when this was written)
 
 - Services running: Station (`sg dialout`, :8889/:8888), `capture_server.py --bus 5B79016329 --director` (:8890, needs a restart to load commits after `adfee2c`), `mcp_server.py` (:8200), `voice_bridge.py` (:8210), `laptop_dashboard.py` (:8300).
 - Arm: at `top`, holding, no faults, gripper closed (1258).
 - Local, ignored files (not in git): `director_safety.json` (PHYSICAL approval, lines `right-top`, `right-wide`, `top-wide`, max fraction 0.32, `computed_paths: false`); `director_data/` (sticker crop, `camera_calibration.json` with per-preset offsets `top`/`home`/`wide` and learned `shoulder_reach_limit_m` 0.308, `trail.json`, thumbnails). The per-preset offsets were measured with the sticker at 31 cm; the sticker has since been moved away. After a successful real self-calibration they are ignored (`model` present).
+
+## Tests (22–23 Nov, all passing at `e9028cb` or just before)
+
+Director 32+ tests, motion sim 129 checks, motion opt 1716 checks, MCP sim, framing 28 checks, fk, laptop gateway 7, frontend 34.
 
 ## Code map (new or changed)
 
@@ -73,7 +78,8 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 1. **Run `selfcal` on the real arm** (object visible from `top`/`wide`/`home`; moves only between views and on approved lines). Check `rms_after`, then that a moved object localizes sensibly without measurements. If the fit is poor, add more views (more line fractions) before trusting it.
 2. With a good calibration, retry **gimbal takes** with centred framing and wider yaw, then decide on scenes.
 3. **Shoulder limit**: the reliable fixes are outside software: raise motor 2's overload threshold (register 0x24; norma-core rewrites it at each calibration freeze, so the durable fix is upstream) or reduce its load (counterweight/spring, stronger servo such as STS3250). The owner preferred not to change EEPROM. Gimbal mode stays within the limit.
-4. Known gaps: a guard lock at a heavy pose can still trip on the following move; the reach map takes ~73 s; scene/IK planning takes 5–30 s; dashboard has no button yet for `gimbal`, `snap`, `selfcal` (call `POST /laptop/director/job {"kind": ...}` or `/api/director/job`).
+4. Known gaps: a guard lock at a heavy pose can still trip on the following move; the reach map takes ~73 s; scene/IK planning takes 5–30 s; the wide holds of the show cannot see a small object far away (recognition needs ~40 px).
+6. Director craft to build on (researched: establish wide → closer, slow eased push-ins, arcs around a stationary subject, steady 2–4 s holds as edit points, move only with a reason, keep the subject's framing consistent). Ideas within the shoulder limit: gimbal takes from `wide` (lighter shoulder, smaller parallax), dutch roll in gimbal takes (`roll`), rule-of-thirds framing instead of centring (aim offset), a reveal (start aimed beside the object, pan onto it).
 5. Commit `docs/evidence/camera-director-2026-11-22.md` updates for any new real runs; keep `director_safety.json` truthful.
 
 ## Commands

@@ -353,6 +353,81 @@ _vit = None
 _bank: list = []
 _learned_at = 0.0
 
+# Re-find by YOLOX (opencv_zoo object_detection_yolox_2022nov, COCO): its objectness score marks "an object here"
+# for things outside COCO's classes too (the marker pen is its top box); among those boxes the one whose colours
+# match the marked object wins. Used when the tracker and SIFT have both lost it (a side view, a plain object).
+YOLO_MODEL = VIT_MODEL.parent / "yolox.onnx"
+YOLO_OBJ = 0.03            # objectness for a candidate box (low: the colour match is the real filter)
+YOLO_DISTINCT = 0.25       # ...and this much better than the whole picture does (plain grey objects are skipped)
+YOLO_MATCH = 0.55          # colour-histogram correlation a candidate needs with one of the object's looks
+_yolo = None
+_hists: list = []          # HSV histograms of the object's looks (drawn box first, then learned ones)
+
+
+def _hist(img: np.ndarray, box: list) -> np.ndarray | None:
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h)
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return None
+    hsv = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
+    return cv2.normalize(hist, hist).flatten()
+
+
+def _remember_look(img: np.ndarray, box: list, first: bool = False):
+    global _hists
+    hist = _hist(img, box)
+    if hist is not None:
+        _hists = [hist] if first else ([_hists[0]] + (_hists[1:] + [hist])[-(BANK_MAX - 1):] if _hists else [hist])
+
+
+def proposals(img: np.ndarray) -> list[tuple[list, float]]:
+    """YOLOX boxes ([x1, y1, x2, y2] fractions, objectness) of anything object-like in the picture."""
+    global _yolo
+    if _yolo is None:
+        if not YOLO_MODEL.exists():
+            return []
+        _yolo = cv2.dnn.readNet(str(YOLO_MODEL))
+    h, w = img.shape[:2]
+    r = min(640 / h, 640 / w)
+    pad = np.full((640, 640, 3), 114, np.uint8)
+    pad[:int(h * r), :int(w * r)] = cv2.resize(img, (int(w * r), int(h * r)))
+    _yolo.setInput(cv2.dnn.blobFromImage(pad))
+    out = _yolo.forward()[0]
+    grids, strides = [], []
+    for st in (8, 16, 32):
+        n = 640 // st
+        yv, xv = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+        grids.append(np.stack((xv, yv), 2).reshape(-1, 2))
+        strides.append(np.full((n * n, 1), st))
+    xy = (out[:, :2] + np.concatenate(grids)) * np.concatenate(strides) / r
+    wh = np.exp(out[:, 2:4]) * np.concatenate(strides) / r
+    keep = np.where(out[:, 4] >= YOLO_OBJ)[0]
+    rects = [[float(xy[i, 0] - wh[i, 0] / 2), float(xy[i, 1] - wh[i, 1] / 2), float(wh[i, 0]), float(wh[i, 1])] for i in keep]
+    picked = cv2.dnn.NMSBoxes(rects, [float(out[i, 4]) for i in keep], YOLO_OBJ, 0.5) if rects else []
+    return [([max(0.0, rects[k][0] / w), max(0.0, rects[k][1] / h), min(1.0, (rects[k][0] + rects[k][2]) / w),
+              min(1.0, (rects[k][1] + rects[k][3]) / h)], float(out[keep[k], 4])) for k in np.array(picked).flatten()[:20]]
+
+
+def _detect_yolo(img: np.ndarray) -> dict | None:
+    if not _hists:
+        return None
+    def match_of(hist):
+        return max(float(cv2.compareHist(hist, ref, cv2.HISTCMP_CORREL)) for ref in _hists)
+    scene = match_of(_hist(img, [0.0, 0.0, 1.0, 1.0]))   # colours that are everywhere identify nothing
+    best = None
+    for box, obj in proposals(img):
+        hist = _hist(img, box)
+        if hist is None:
+            continue
+        match = match_of(hist)
+        if match >= max(YOLO_MATCH, scene + YOLO_DISTINCT) and (best is None or match > best[1]):
+            best = (box, match, obj)
+    if best is None:
+        return None
+    return {"box": best[0], "quad": None, "confidence": round(best[1], 3), "inliers": None, "method": "yolo",
+            "evidence": f"YOLOX object box, colour match {best[1]:.2f}, objectness {best[2]:.2f}"}
+
 
 def _bgr(jpeg: bytes) -> np.ndarray:
     img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
@@ -382,7 +457,9 @@ def target_init(ref: Reference, jpeg: bytes, box: list) -> bool:
     """Start tracking a newly selected target: the reference bank starts with its crop, ViT with its box."""
     global _bank
     _bank = [ref]
-    _vit_start(_bgr(jpeg), box)
+    img = _bgr(jpeg)
+    _remember_look(img, box, first=True)
+    _vit_start(img, box)
     return _vit is not None
 
 
@@ -424,6 +501,7 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
                             _bank = [_bank[0]] + (_bank[1:] + [new])[-(BANK_MAX - 1):]   # the drawn crop stays
                     except ValueError:
                         pass
+                    _remember_look(img, box)
                     _vit_start(img, box)   # follow its current look, not only the drawn one
                 return hit
     if not redetect:
@@ -433,6 +511,8 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
     if hit is None:
         gray = decode_gray(jpeg, full=True)
         hit = _detect_bank(gray, hint)
+    if hit is None:
+        hit = _detect_yolo(img)
     if hit is not None:
         hit["frame_score"] = frame_score(hit, gray)
         _vit_start(img, hit["box"])            # pick the learned tracker up again from here

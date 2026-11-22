@@ -136,6 +136,19 @@ class Vision(unittest.TestCase):
         off = V.score_view([V.detect(self.ref, tag_image(at=(560, 400)))] * 5, [tag_image(at=(560, 400))] * 5)
         self.assertLess(off["score"], good["score"])      # off-centre, near the edge: worse
 
+    def test_yolo_refind_picks_the_box_with_the_object_colours(self):
+        img = np.full((360, 640, 3), (70, 110, 160), np.uint8)
+        cv2.rectangle(img, (100, 100), (200, 140), (80, 90, 240), -1)      # the object (red)
+        cv2.rectangle(img, (400, 200), (500, 240), (240, 160, 40), -1)     # another object (blue)
+        V._remember_look(img, [100 / 640, 100 / 360, 200 / 640, 140 / 360], first=True)
+        boxes = [([400 / 640, 200 / 360, 500 / 640, 240 / 360], 0.5), ([100 / 640, 100 / 360, 200 / 640, 140 / 360], 0.1)]
+        with patch.object(V, "proposals", lambda im: boxes):
+            hit = V._detect_yolo(img)
+        self.assertEqual(hit["method"], "yolo")
+        self.assertAlmostEqual(hit["box"][0], 100 / 640)
+        with patch.object(V, "proposals", lambda im: boxes[:1]):            # only the wrong-coloured object
+            self.assertIsNone(V._detect_yolo(img))
+
     def test_tracker_reports_lost_after_misses(self):
         tr = V.Tracker(self.ref)
         self.assertEqual(tr.status(), "SEARCHING")

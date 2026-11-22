@@ -3,6 +3,7 @@
 // word on the phone) in the dock. Everything else (director tools, phone, manual arm control, settings) lives
 // in the menu. Built around the existing robot card and phone dashboard, which keep their own logic.
 import { mountTwin } from "./twin3d.js";
+import { startVideo, videoEl, view as video } from "./video.js";
 
 const JOBS: Record<string, string> = {
   show: "Cinematic show", gimbal: "Gimbal take", film: "Claude's shot", tour: "Director tour", watch: "Keep in view",
@@ -35,17 +36,20 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
   const task = el("div", "s-task", el("span", "s-task-dot"), el("div", "s-task-text", taskName, taskStep));
   task.setAttribute("role", "status"); task.setAttribute("aria-live", "polite");
   const stop = el("button", "s-stop", "STOP"); stop.type = "button"; stop.title = "Stop the arm now";
-  const full = el("button", "s-full", "⛶"); full.type = "button"; full.title = "Full screen (F)"; full.setAttribute("aria-label", "Full screen");
+  const full = el("button", "s-full"); full.type = "button";
+  full.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>'; full.title = "Full screen (F)"; full.setAttribute("aria-label", "Full screen");
   const toggleFull = () => document.fullscreenElement ? void document.exitFullscreen() : void document.documentElement.requestFullscreen().catch(() => {});
   full.onclick = toggleFull;
   document.addEventListener("fullscreenchange", () => full.classList.toggle("on", !!document.fullscreenElement));
   document.addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) toggleFull();
   });
+  const phoneBtn = el("button", "s-phone-btn", el("span", "s-phone-ico", "▣"), el("span", "s-phone-label", "Pair phone"));
+  phoneBtn.type = "button"; phoneBtn.title = "Connect or pair the phone (camera, recording, wake word)";
   const menuBtn = el("button", "s-menu-btn", el("span", "s-burger"), "Menu"); menuBtn.type = "button";
   menuBtn.setAttribute("aria-expanded", "false");
   const top = el("header", "s-top", el("div", "s-brand", logo, el("div", "", el("b", "", "Peter"), el("small", "", "camera robot studio"))),
-    chips, task, stop, full, menuBtn);
+    chips, task, phoneBtn, stop, full, menuBtn);
 
   // ---- hero: twin | camera ----
   const twinHost = el("div", "s-twin-canvas");
@@ -53,7 +57,15 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
   const twin = el("section", "s-panel s-twin", el("div", "s-panel-head", el("h2", "", "Digital twin"), el("span", "s-live", "live")),
     twinHost, readout);
   const recBadge = el("div", "s-recbadge", el("span", "s-recdot"), "REC");
-  const cam = el("section", "s-panel s-cam", el("div", "s-panel-head", el("h2", "", "Robot camera"), recBadge), feed, actions, recStatus);
+  const phoneView = el("div", "s-phone-view"); phoneView.hidden = true;
+  const phoneNote = el("p", "s-phone-note");
+  phoneView.append(phoneNote);
+  const camTitle = el("h2", "", "Robot camera");
+  const segRobot = el("button", "on", "Robot"), segPhone = el("button", "", "Phone");
+  segRobot.type = segPhone.type = "button";
+  const seg = el("div", "s-seg", segRobot, segPhone); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Camera feed");
+  const cam = el("section", "s-panel s-cam", el("div", "s-panel-head", camTitle, recBadge), feed, phoneView,
+    el("div", "s-cam-foot", actions, seg), recStatus);
   const hero = el("main", "s-hero", twin, cam);
 
   // ---- dock: the agent ----
@@ -69,6 +81,24 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
     const b = el("button", "s-chip-btn", x); b.type = "button"; b.onclick = () => { input.value = x; form.requestSubmit(); }; return b;
   }));
   const dock = el("footer", "s-dock", orb, el("div", "s-dock-main", say, form, el("div", "s-dock-foot", hint, sugg)));
+
+  // ---- phone pairing pop-up: hosts the phone dashboard's pairing / connection screen while open ----
+  const modalBody = el("div", "s-modal-body");
+  const modalClose = el("button", "s-close", "×"); modalClose.type = "button"; modalClose.setAttribute("aria-label", "Close");
+  const modal = el("dialog", "s-modal", el("div", "s-modal-head", el("img", "s-modal-logo"), el("div", "",
+    el("b", "", "Connect your phone"), el("small", "", "Start a session in the Peter app, then scan the QR code with it")), modalClose), modalBody);
+  (modal.querySelector(".s-modal-logo") as HTMLImageElement).src = "./peter_icon.png";
+  const openPairing = () => {
+    if (modal.open) return;
+    modalBody.append(...phoneNodes);
+    modal.showModal();
+  };
+  const closePairing = () => { if (modal.open) modal.close(); };
+  modal.addEventListener("close", () => panes.get("phone")!.append(...phoneNodes));
+  modalClose.onclick = closePairing;
+  phoneBtn.onclick = () => {
+    if (modes.phone === "connected") { openTab("phone"); setOpen(true); } else openPairing();
+  };
 
   // ---- menu ----
   const tabs: [string, string][] = [["director", "Director tools"], ["phone", "Phone & voice"], ["arm", "Arm"], ["settings", "Settings"]];
@@ -112,7 +142,7 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
   closeBtn.onclick = scrim.onclick = () => setOpen(false);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
 
-  document.body.prepend(el("div", "s-app", top, hero, dock), scrim, drawer);
+  document.body.prepend(el("div", "s-app", top, hero, dock), scrim, drawer, modal);
 
   // ---- live state: orb, chips, current task ----
   let orbState: Orb = "idle", orbUntil = 0;
@@ -168,17 +198,53 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
 
   document.addEventListener("peter-phone", (e) => {
     const d = (e as CustomEvent).detail ?? {};
+    const was = modes.phone;
     modes.phone = d.conn ?? ""; modes.voice = d.voice ?? "";
     renderChips();
+    const on = modes.phone === "connected";
+    phoneBtn.classList.toggle("on", on);
+    (phoneBtn.querySelector(".s-phone-label") as HTMLElement).textContent = on ? "Phone" : "Pair phone";
+    if (on && was !== "connected") {
+      setTimeout(closePairing, 900);
+      setOrb("done", modes.voice === "listening" ? "Phone connected. Say the wake word, I'm listening." : "Phone connected.", 5000);
+    }
+    if (!on && feedMode === "phone") showFeed("robot");
   });
   document.addEventListener("peter-voice", (e) => {
     const v = (e as CustomEvent).detail as { mode: string; title: string; stable?: string; tail?: string; result?: { kind: string; text: string } } | null;
     if (!v) return;
     const heard = [v.stable, v.tail].filter(Boolean).join(" ");
     if (v.result) setOrb(v.result.kind === "ok" ? "done" : "error", v.result.text, 4000);
-    else if (v.mode === "wake" || v.mode === "listening") setOrb("listening", heard || "Listening…");
+    else if (v.mode === "wake" || v.mode === "listening") setOrb("listening", heard || "I'm listening…");
     else setOrb("thinking", heard || v.title);
   });
+
+  // ---- camera switch: the robot's camera, or the phone's WebRTC stream in the same panel ----
+  let feedMode: "robot" | "phone" = "robot";
+  let videoHome: ParentNode | null = null;
+  function showFeed(mode: "robot" | "phone") {
+    if (mode === "phone" && modes.phone !== "connected") { openPairing(); return; }
+    feedMode = mode;
+    segRobot.classList.toggle("on", mode === "robot"); segPhone.classList.toggle("on", mode === "phone");
+    camTitle.textContent = mode === "robot" ? "Robot camera" : "Phone camera · WebRTC";
+    feed.hidden = mode === "phone"; phoneView.hidden = mode === "robot";
+    actions.hidden = mode === "phone";
+    if (mode === "phone") {
+      videoHome = videoEl.parentNode;
+      phoneView.prepend(videoEl);
+      if (video.phase !== "live" && video.phase !== "connecting") void startVideo();
+    } else if (videoHome && videoEl.parentNode === phoneView) {
+      videoHome.prepend(videoEl);              // back to the phone dashboard's viewport
+    }
+  }
+  segRobot.onclick = () => showFeed("robot");
+  segPhone.onclick = () => showFeed("phone");
+  window.setInterval(() => {
+    if (feedMode !== "phone") return;
+    phoneNote.hidden = video.phase === "live";
+    phoneNote.textContent = video.phase === "connecting" ? "Connecting to the phone camera…"
+      : video.phase === "stalled" ? "No frames arriving from the phone" : video.phase === "stopped" ? "Phone camera stopped" : "";
+  }, 500);
 
   // ---- typed commands: the same path as spoken ones (voice bridge -> Claude/MCP -> director) ----
   form.onsubmit = async (e) => {

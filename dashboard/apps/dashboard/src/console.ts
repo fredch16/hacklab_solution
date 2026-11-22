@@ -207,6 +207,7 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
       : `<span>${t.target ? `${t.target}: locating…` : "no object marked"}</span>`;
     renderTask(t?.job ?? null);
   });
+  let lastHold: string | null = null;
   async function pollState() {
     try {
       const r = await fetch("/laptop/director/state", { cache: "no-store", signal: AbortSignal.timeout(2000) });
@@ -214,7 +215,13 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
       modes.gate = d?.gate?.mode ?? "";
       const obs = d?.target?.observation;
       modes.tracking = d?.target?.status === "TRACKING" && obs ? Math.min(1, obs.confidence ?? 1) : null;
-      renderTask(d?.job ? { kind: d.job.kind, status: d.job.status, step: d.job.step ?? "" } : null);
+      const j = d?.job;
+      renderTask(j ? { kind: j.kind, status: j.status, step: (j.status === "HOLD" ? j.reason : j.step) ?? "" } : null);
+      if (lastHold === null) lastHold = j?.status === "HOLD" ? j.id : "";   // an old hold at page load: not news
+      if (j && j.status === "HOLD" && j.id !== lastHold) {     // say why a job stopped, once
+        setOrb("error", `${JOBS[j.kind] ?? j.kind} stopped: ${j.reason}`, 8000);
+        lastHold = j.id;
+      }
     } catch { modes.gate = ""; }
     modes.rec = /Recording/.test(recStatus.textContent ?? "");
     recBadge.classList.toggle("on", modes.rec);

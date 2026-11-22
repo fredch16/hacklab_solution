@@ -92,6 +92,7 @@ UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: 
 SKILL_FILLER = {"hey", "peter", "claude", "please", "can", "could", "you", "do", "a", "an", "the", "now", "again",
                 "for", "me", "us", "film", "shot", "plan", "it", "that", "this", "some", "just", "go", "ahead"}
 JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
+TAKE_KEEP_HALF = 0.2      # at most this half-size (picture fraction) of the object must stay in frame in a take
 TAKE_LOST_S = 4.0         # a take stops when the object has been out of sight this long
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
@@ -1260,7 +1261,9 @@ class Director:
             if model is None:
                 raise Hold("the camera model places the subject behind the camera")
             bias = tuple(a - b for a, b in zip(centre, model))
-            half_box = ((box[2] - box[0]) / 2, (box[3] - box[1]) / 2)
+            # the part of the object that must stay in the picture through the take: all of a small one, the
+            # middle of a big one (a board filling the frame would refuse every gesture otherwise)
+            half_box = (min((box[2] - box[0]) / 2, TAKE_KEEP_HALF), min((box[3] - box[1]) / 2, TAKE_KEEP_HALF))
             path = await self.vision(orbit.composed_take, point, joints, ranges, shot["keyframes"], bias, aspect, half_box,
                                      self.calibration.get("shoulder_reach_limit_m"))
             if not path["ok"]:

@@ -287,7 +287,7 @@ function render() {
   if (view === "dashboard") { if (!dash) dash = buildDash(); if (root.firstChild !== dash.page) root.replaceChildren(dash.page); updateDash(); return; }
   const focused = (document.activeElement as HTMLElement | null)?.dataset?.focus;
   const typed = (document.getElementById("code") as HTMLInputElement | null)?.value ?? "";
-  root.replaceChildren(view === "pairing" ? pairingView(typed) : view === "terminal" ? terminalView() : h("p", "boot", "Loading dashboard…"));
+  root.replaceChildren(view === "pairing" ? pairingView(typed) : view === "terminal" ? terminalView() : h("p", "boot", laptop ? "Connecting to the phone…" : "Loading dashboard…"));
   if (robot) {
     const holder = h("div", "page robot-unpaired");
     holder.append(robot);
@@ -621,6 +621,7 @@ function railCards(s: Snapshot): Node[] {
 
 async function startLaptop() {
   robot = robotCard();
+  render(); // the robot camera shows at once; the phone may take seconds to answer or be off
   const address = h("input", "txt");
   address.id = "phone-url"; address.placeholder = "https://192.168.1.20:8443"; address.required = true;
   const pin = h("input", "txt");

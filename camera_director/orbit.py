@@ -571,13 +571,19 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
             q, _, err2 = framing.solve_pose({**now, motion.GRIPPER: grip}, tuple(cam), tuple(axis),
                                             tuple(right / np.linalg.norm(right)), ranges, limits=lim)
             joints, err = motion.MOVABLE, err2
-    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in joints else now[m]
-            for m in motion.MOVABLE}
-    goal = motion.clamp_pose(goal, env)
-    if framing.camera_pose({**goal, motion.GRIPPER: grip}, ranges)[0][2] < min(
-            pose[0][2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M):           # never lower than now, below the minimum
-        return {"ok": False, "reason": "that would bring the camera too close to the table"}
-    problem = motion.path_problem([view, now, goal], ranges, env, grip)
-    if problem is not None:
-        return {"ok": False, "reason": problem}
-    return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1), "dolly": joints is motion.MOVABLE}
+    problem = None
+    for share in (1.0, 0.5, 0.25):          # refused? the same correction smaller: always get somewhat closer
+        goal = {m: now[m] + int(share * np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in joints
+                else now[m] for m in motion.MOVABLE}
+        goal = motion.clamp_pose(goal, env)
+        if goal == now:
+            break
+        if framing.camera_pose({**goal, motion.GRIPPER: grip}, ranges)[0][2] < min(
+                pose[0][2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M):       # never lower than now, below the minimum
+            problem = "that would bring the camera too close to the table"
+            continue
+        problem = motion.path_problem([view, now, goal], ranges, env, grip)
+        if problem is None:
+            return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1), "dolly": joints is motion.MOVABLE,
+                    "share": share}
+    return {"ok": False, "reason": problem or "already as close as the joints allow"}

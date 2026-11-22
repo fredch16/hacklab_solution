@@ -535,6 +535,27 @@ class SimDirector(unittest.TestCase):
         self.assertIn("top", tried)                          # it went back after each strained approach
         d.heavy.clear()
 
+    def test_9m_follow_centres_the_object_with_the_shoulder_parked(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        top = motion.load_views()["top"]
+        # look a little off to one side first, so following has something to correct
+        self.state.call(self.state.start_path([{**{m: top[m] for m in motion.MOVABLE}, 1: top[1] + 120}], "off"))
+        wait(lambda: not self.state.moving, what="off")
+        time.sleep(1.5)
+        before = self.state.director.obs
+        st = self.run_job({"kind": "follow", "seconds": 12}, timeout=120)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        after = self.state.arm.joints()
+        for m in (2, 3):                                         # shoulder and elbow never move
+            self.assertLessEqual(abs(after[m] - top[m]), 15, (m, after[m], top[m]))
+        obs = self.state.director.obs
+        self.assertIsNotNone(obs)
+        cx = lambda o: abs((o["box"][0] + o["box"][2]) / 2 - 0.5)
+        if before is not None and cx(before) > J.FOLLOW_DEAD:
+            self.assertGreater(st["job"]["result"]["corrections"], 0, st["job"])
+            self.assertLess(cx(obs), cx(before), (before["box"], obs["box"]))
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

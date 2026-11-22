@@ -82,6 +82,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
+FOLLOW_DEAD = 0.08        # follow: the object's centre may be this far from the picture's centre before turning
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 
 
@@ -564,7 +565,7 @@ class Director:
     def start(self, req: dict) -> tuple[int, dict]:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
-                   "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
+                   "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
                    "selfcal": self._selfcal, "show": self._show, "film": self._film}
         if not isinstance(kind, str) or kind not in runners:
@@ -1743,6 +1744,50 @@ class Director:
             if best is None or (s["status"] == "VALID", s["score"]) > (best["status"] == "VALID", best["score"]):
                 best = s
         return best
+
+    async def _follow(self, req: dict, gate: dict):
+        """Follow the object (Keep in frame): from a saved view, base yaw and the wrist keep turning the camera onto
+        the tracked object in small checked steps (shoulder and elbow parked, like a gimbal take) until STOP or
+        `seconds`. When the object is not seen the arm holds still: it never searches."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "reposition"
+        view = await self.ensure_view()
+        if not view or view == motion.TRANSIT:
+            raise Hold("follow starts from a saved view")
+        vpose = {m: motion.load_views()[view][m] for m in motion.MOVABLE}
+        bias = predict.bias_for({"where": "view", "view": view}, self.calibration)
+        ranges = self.state.arm.ranges()
+        self.trail = [vpose]                  # the way back for the next take (ensure_view retraces it)
+        self._save_trail(self.trail)
+        end, corrections, since = time.monotonic() + float(req.get("seconds", 300)), 0, -1
+        self.job["phase"] = "cinematic"
+        self.step(f"following the object from {view}")
+        try:
+            while time.monotonic() < end:
+                await asyncio.sleep(0.3)
+                f, obs = self.frame(), self.obs
+                if obs is None or f is None or obs["frame_id"] <= since or f[0] - obs["frame_id"] > 8:
+                    continue                  # not seen (or not since the last correction): hold still
+                b = obs["box"]
+                centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+                if abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD:
+                    continue
+                now = self.state.arm.joints(max_age_s=motion.STALE_S)
+                step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect())
+                if not step["ok"]:
+                    self.step(f"following (cannot turn further: {step['reason'][:80]})")
+                    continue
+                await self.move_path([step["pose"]], "follow")
+                self.trail.append(step["pose"])
+                since = (self.frame() or (obs["frame_id"],))[0]
+                corrections += 1
+                if corrections % 10 == 0:
+                    self._save_trail(self.trail)
+                self.step(f"following the object ({corrections} corrections)")
+        finally:
+            self._save_trail(self.trail)
+            self.job["result"] = {"view": view, "corrections": corrections}
 
     async def _center(self, req: dict, gate: dict):
         """Keep in frame: what a centring correction would be (framing.plan 'center'). Preview only:

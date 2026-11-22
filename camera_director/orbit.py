@@ -499,3 +499,34 @@ def gimbal_shot(point, start: dict, ranges, yaw: int = 500, roll: float = 0.0, b
            [q for _, q in reversed(right)][1:]
     return {"ok": True, "path": path, "yaw_range": [yaws[0], yaws[-1]], "complete": p["complete"],
             "reason": p["reason"], "poses": len(seq)}
+
+
+FOLLOW_JOINTS = (1, 4, 5, 6, 7)   # base yaw and the wrist; shoulder and elbow stay where the view holds them
+FOLLOW_YAW_MAX = 600              # steps of base yaw the camera may turn away from its view while following
+FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
+
+
+def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 / 9) -> dict:
+    """One follow correction: turn the camera (base yaw + wrist) toward the object seen at image `centre` (u, v),
+    the shoulder and elbow parked at the view. Checked like a gimbal take: relative to the taught view."""
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    env, limits = motion.envelope(ranges), _limits(ranges)
+    grip = int(now.get(motion.GRIPPER, 1279))
+    now = {m: int(now[m]) for m in motion.MOVABLE}
+    view = {m: int(view[m]) for m in motion.MOVABLE}
+    pose = framing.camera_pose({**now, motion.GRIPPER: grip}, ranges)
+    d = framing.ray(centre[0] - bias[0], centre[1] - bias[1], pose, aspect)   # bias = real minus model
+    if d[2] > -0.1:
+        return {"ok": False, "reason": "the object does not lie on the table from here"}
+    point = np.array(pose[0]) + np.array(d) * (framing.TABLE_Z - pose[0][2]) / d[2]
+    lim = dict(limits)
+    lo, hi = lim[1]
+    lim[1] = (max(lo, view[1] - FOLLOW_YAW_MAX), min(hi, view[1] + FOLLOW_YAW_MAX))
+    q, err = aim({**now, motion.GRIPPER: grip}, ranges, point, aspect=aspect, bias=bias, joints=FOLLOW_JOINTS,
+                 limits=lim, pitch_ref=view[4])
+    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) for m in motion.MOVABLE}
+    goal = motion.clamp_pose(goal, env)
+    problem = motion.path_problem([view, now, goal], ranges, env, grip)
+    if problem is not None:
+        return {"ok": False, "reason": problem}
+    return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1)}

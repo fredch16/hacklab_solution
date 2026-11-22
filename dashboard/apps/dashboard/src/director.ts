@@ -143,7 +143,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const sub = el("p", "muted small");
   const buttons = el("div", "controls");
   const b = (text: string, cls = "btn") => { const x = el("button", cls, text); buttons.append(x); return x; };
-  const select = b("Select object", "btn primary"), autofind = b("Auto-find sticker"), keep = b("Keep in frame"),
+  const select = b("Select object", "btn primary"), autofind = b("Auto-find sticker"), keep = b("Follow object"),
     watch = b("Keep in view"), optimize = b("Optimize all views"), show = b("Director Show", "btn primary"),
     gimbal = b("Gimbal take"), scene = b("Scene"), back = b("Return"), snap = b("Snap to view"), selfcal = b("Self-calibrate"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
   const recLabel = el("label", "small");
@@ -308,7 +308,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     note.textContent = r.status === 200 ? "" : (r.data.error ?? "Could not start.");
     await poll();
   };
-  keep.onclick = job("center");
+  keep.onclick = job("follow");
   briefing.onsubmit = event => {
     event.preventDefault();
     if (brief.value.trim() && !film.disabled) void job("film", { brief: brief.value.trim() })();
@@ -373,7 +373,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     story.replaceChildren();
     const showShots = (s.job?.result as any)?.shots as { shot: string; steady?: boolean; in_frame?: number | null; skipped?: string }[] | undefined;
     if (s.job?.kind === "show" && showShots?.length) {
-      story.append(el("h4", "", "Director Show"));
+      story.append(el("h4", "", "Cinematic show"));
       for (const x of showShots) story.append(el("p", "small", `${x.shot}${x.skipped ? ` · skipped: ${x.skipped}` : x.in_frame != null ? ` · object in frame ${Math.round(x.in_frame * 100)}%` : x.steady === false ? " · object left the picture" : ""}`));
     }
     if (s.job?.kind === "scene" || s.job?.kind === "film") {

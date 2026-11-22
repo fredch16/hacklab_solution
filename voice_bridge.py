@@ -97,11 +97,15 @@ def match_view(phrase: str, views: list[dict]) -> dict | None:
     return None
 
 
+JOB_NAMES = {"show": "Cinematic show", "gimbal": "Gimbal take", "film": "Claude-planned shot", "tour": "Director tour",
+             "watch": "Keep in view", "follow": "Follow object", "selfcal": "Self-calibration", "snap": "Snap to view",
+             "cinematic": "Cinematic shots", "survey": "Survey"}
 DIRECTOR_PHRASES = {
     "find the best view": "survey", "find best view": "survey", "optimize all views": "survey",
     "keep in view": "watch", "keep it in view": "watch", "keep the object in view": "watch",
     "automatic best view": "watch",
-    "keep in frame": "center", "preview framing": "center",
+    "keep in frame": "follow", "keep it in frame": "follow", "follow": "follow", "follow the object": "follow",
+    "follow object": "follow", "track the object": "follow", "preview framing": "center",
     "director show": "show", "director tour": "tour",
     "cinematic": "show", "play the cinematic": "show", "cinematic view": "show", "cinematic shot": "show",
     "cinematic take": "show", "cinematic show": "show", "gimbal shot": "gimbal", "gimbal": "gimbal",
@@ -422,9 +426,10 @@ class Bridge:
             if p["tool"] == "get_status":
                 return {"ok": True, "command": command, "error": None, "message": _status_line(res)}
             if p["tool"] == "director_job":
-                label = p["args"]["kind"].replace("selfcal", "self-calibration")
+                kind = p["args"]["kind"]
+                label = JOB_NAMES.get(kind, f"Director {kind}")
                 return {"ok": bool(res.get("started")), "command": command, "error": None,
-                        "message": f"Director {label} started" if res.get("started") else f"Director {label} did not start"}
+                        "message": f"{label} started" if res.get("started") else f"{label} did not start"}
             if p["tool"] == "director_status":
                 job = res.get("job") or {}
                 return {"ok": True, "command": command, "error": None,

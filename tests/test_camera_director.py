@@ -580,6 +580,16 @@ class RealArmGate(unittest.TestCase):
             path.write_text(json.dumps(approval))
         return J.Director(state, data_dir=Path(tempfile.mkdtemp()), safety_path=path)
 
+    def test_marked_object_survives_a_restart(self):
+        data = Path(tempfile.mkdtemp())
+        V.Reference(np.tile(np.arange(64, dtype=np.uint8), (64, 1)) * 3, "Marker", "manual").save(data / "target")
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        arm = type("Arm", (), {"bus_serial": "5B79016329"})()
+        state = type("S", (), {"sim": False, "loop": loop, "arm": arm, "cam_queue": J.GRIPPER_CAMERA, "gen": 0, "cams": {}})()
+        d = J.Director(state, data_dir=data, safety_path=data / "none.json")
+        self.assertEqual((d.ref.label, d.target["how"]), ("Marker", "restored after restart"))
+
     def test_no_approval_means_dry_run(self):
         g = self.director(None).gate()
         self.assertEqual((g["mode"], g["moves"]), ("DRY RUN", False))
@@ -605,7 +615,7 @@ class RealArmGate(unittest.TestCase):
     def test_physical_candidates_only_on_approved_lines(self):
         ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
         cands = predict.candidate_poses(ranges, 1279, {"lines": ["top-wide"], "max_fraction": 0.12})
-        self.assertNotIn("close", cands)
+        self.assertNotIn("side_low", cands)                      # unchecked views are never candidates
         stops = [c for cs in cands.values() for c in cs if c["toward"]]
         self.assertTrue(stops and all(c["line"] == "top-wide" and c["s"] <= 0.12 for c in stops), stops)
 

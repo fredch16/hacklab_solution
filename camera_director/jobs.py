@@ -118,6 +118,9 @@ class Director:
         self.trail: list = self._load_trail()   # poses driven by the last scene, for "return" (survives a restart)
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
+        saved = None if state.sim else V.Reference.load(self.data / "target")
+        if saved is not None:                # the object marked before a restart (the tracker re-finds it)
+            self._set_target(saved, -1, "restored after restart")
         state.loop.call_soon_threadsafe(lambda: setattr(self, "_task", asyncio.ensure_future(self._run())))
 
     # ------------------------------------------------------------ frames and live tracking
@@ -325,6 +328,11 @@ class Director:
 
     def _set_target(self, ref: V.Reference, frame_id: int, how: str, box: list | None = None):
         self.ref, self.tracker, self.obs = ref, V.Tracker(ref), None
+        if how != "restored after restart":
+            try:
+                ref.save(self.data / "target")
+            except OSError as e:
+                self.note(f"could not save the target for a restart: {e}")
         f = self.frame(frame_id)
         if f is not None and box is not None:     # start the learned tracker on this exact frame and box
             self._init_args = (ref, f[2], list(box))

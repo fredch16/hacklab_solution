@@ -48,7 +48,8 @@ SAFETY_PATH = ROOT / "director_safety.json"  # the operator's approval for physi
 GRIPPER_CAMERA = "usbvideo/74e4d17bc903e40ebc78117539fca31f"   # docs/HARDWARE.md: the follower's gripper camera (Fred's Mac)
 # Station names a camera differently per computer. On the lab Linux laptop the gripper camera (jaws visible at
 # the bottom of the frame, checked by eye on 22 Nov) is this queue:
-GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4")
+GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4",
+                   "usbvideo/ca70cc12cf078fa3798e48cd0a11fabd")   # the same camera after the 22 Nov reboot
 
 TICK_S = 0.2              # frame sampling period
 TRACK_S = 0.25            # live tracking period (learned tracker, a few ms per frame; also while the arm moves)

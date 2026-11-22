@@ -28,7 +28,10 @@ PATCH_MIN_SIDE = 200      # small crops are upscaled to this before feature extr
 
 cv2.setNumThreads(1)      # OpenCV otherwise spreads SIFT over every core and starves Station and the motion loop
 _sift = cv2.SIFT_create()
-_matcher = cv2.BFMatcher(cv2.NORM_L2)
+_sift_frame = cv2.SIFT_create(nfeatures=1500)          # frames: the strongest features are plenty
+_matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=4), dict(checks=32))   # approximate NN: much faster
+ROI_SCALE = 2.2           # live tracking searches a window this much larger than the last box first
+ROI_MIN_PX = 160
 
 
 MAX_W = 960               # every frame is downscaled to at most this width before recognition
@@ -94,7 +97,7 @@ def _box_of(quad: np.ndarray, w: int, h: int) -> list[float]:
 def _features(ref: Reference, gray: np.ndarray) -> dict | None:
     if ref.desc is None or len(ref.pts) < MIN_INLIERS:
         return None
-    kps, desc = _sift.detectAndCompute(gray, None)
+    kps, desc = _sift_frame.detectAndCompute(gray, None)
     if desc is None or len(kps) < MIN_INLIERS:
         return None
     good = []
@@ -150,10 +153,32 @@ def _template(ref: Reference, gray: np.ndarray) -> dict | None:
             "inliers": None, "method": "template", "evidence": f"correlation {score:.2f}"}
 
 
-def detect(ref: Reference, gray: np.ndarray) -> dict | None:
-    """The target in this frame, or None. {box, quad, confidence, method, evidence}."""
+def _full(ref: Reference, gray: np.ndarray) -> dict | None:
     hit = _features(ref, gray) or _template(ref, gray)
     return hit if hit and hit["confidence"] >= MIN_CONFIDENCE else None
+
+
+def detect(ref: Reference, gray: np.ndarray, hint: list | None = None) -> dict | None:
+    """The target in this frame, or None. {box, quad, confidence, method, evidence}.
+    `hint`: the last box (0..1); the window around it is searched first, the whole frame only if that fails."""
+    if hint is not None:
+        h, w = gray.shape
+        cx, cy = (hint[0] + hint[2]) / 2 * w, (hint[1] + hint[3]) / 2 * h
+        half_w = max((hint[2] - hint[0]) * w * ROI_SCALE, ROI_MIN_PX) / 2
+        half_h = max((hint[3] - hint[1]) * h * ROI_SCALE, ROI_MIN_PX) / 2
+        x1, x2 = int(max(0, cx - half_w)), int(min(w, cx + half_w))
+        y1, y2 = int(max(0, cy - half_h)), int(min(h, cy + half_h))
+        if x2 - x1 >= 32 and y2 - y1 >= 32 and (x2 - x1) * (y2 - y1) < 0.8 * w * h:
+            hit = _full(ref, gray[y1:y2, x1:x2])
+            if hit is not None:
+                bw, bh = (x2 - x1) / w, (y2 - y1) / h
+                hit["box"] = [x1 / w + hit["box"][0] * bw, y1 / h + hit["box"][1] * bh,
+                              x1 / w + hit["box"][2] * bw, y1 / h + hit["box"][3] * bh]
+                if hit.get("quad"):
+                    hit["quad"] = [[x1 / w + qx * bw, y1 / h + qy * bh] for qx, qy in hit["quad"]]
+                hit["evidence"] += " (near the last position)"
+                return hit
+    return _full(ref, gray)
 
 
 def _iou(a, b) -> float:
@@ -172,7 +197,11 @@ class Tracker:
     history: list = field(default_factory=list)   # last observations (dicts), newest last
 
     def update(self, gray: np.ndarray, frame_id: int, stamp: float) -> dict | None:
-        return self.record(detect(self.ref, gray), frame_id, stamp)
+        return self.record(detect(self.ref, gray, self.hint()), frame_id, stamp)
+
+    def hint(self) -> list | None:
+        """The last box while tracking is fresh (searched first), else None (whole frame)."""
+        return self.history[-1]["box"] if self.history and self.misses < 2 else None
 
     def record(self, hit: dict | None, frame_id: int, stamp: float) -> dict | None:
         """Book-keeping for a detection made elsewhere (the vision worker process)."""
@@ -256,10 +285,10 @@ def _worker_init():
         pass
 
 
-def look(ref: Reference, jpeg: bytes, reduced: bool = False) -> dict | None:
-    """Detect in one JPEG; with `reduced`, also attach a single-frame score."""
+def look(ref: Reference, jpeg: bytes, reduced: bool = False, hint: list | None = None) -> dict | None:
+    """Detect in one JPEG (near `hint` first); also attach a single-frame score."""
     gray = decode_gray(jpeg, reduced)
-    hit = detect(ref, gray)
+    hit = detect(ref, gray, hint)
     if hit is not None:
         hit["frame_score"] = frame_score(hit, gray)
     return hit

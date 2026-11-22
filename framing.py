@@ -43,6 +43,9 @@ MAX_JOINT_TRAVEL = 500   # encoder steps (~44 deg) any joint may move from where
 POS_TOL = 0.01           # m: model must reach the target camera position this closely
 AXIS_TOL_DEG = 3.0       # and its viewing direction this closely
 MOVABLE = (1, 2, 3, 4, 5, 6, 7)   # the gripper (8) carries the camera and is never moved
+# Self-calibration (camera_director/selfcal.py) of this arm's camera model, or None for the hand-fitted model:
+# {"tilt_deg": extra tilt, "cam": [dx, dforward, dup] m on the gripper, "joint_offsets": {motor: steps}}
+CAMERA_CAL: dict | None = None
 
 
 class FramingError(Exception):
@@ -75,14 +78,22 @@ def _r(v, n=3): return [round(c, n) for c in v]
 def camera_pose(joints: dict, ranges: dict | None = None) -> tuple[tuple, tuple, tuple, tuple]:
     """(position, optical axis, image right, image down) of the camera in fk's world frame.
     Image down points towards the jaws: in views/top.jpg the jaw tip sits just below the centre."""
+    cal = CAMERA_CAL
+    if cal:
+        offs = cal.get("joint_offsets") or {}
+        joints = {m: p + offs.get(m, offs.get(str(m), 0.0)) for m, p in joints.items()}
     points, _, (_x, forward, up) = fk._key_points(fk.steps_to_angles(joints, ranges))
-    t = math.radians(fk.CAMERA_TILT_DEG)
+    t = math.radians(fk.CAMERA_TILT_DEG + (cal.get("tilt_deg", 0.0) if cal else 0.0))
     axis = _unit(_add(_mul(forward, math.cos(t)), _mul(up, -math.sin(t))))
     down = _unit(_sub(forward, _mul(axis, _dot(forward, axis))))
     right = _cross(down, axis)                      # x = y cross z for (x right, y down, z ahead)
     if MIRRORED:
         right = _mul(right, -1.0)
-    return points["camera"], axis, right, down
+    cam = points["camera"]
+    if cal and cal.get("cam"):
+        dx, df, du = cal["cam"]
+        cam = _add(cam, _add(_mul(_x, dx), _add(_mul(forward, df), _mul(up, du))))
+    return cam, axis, right, down
 
 
 def _tans(aspect: float) -> tuple[float, float]:

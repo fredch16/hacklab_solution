@@ -41,7 +41,7 @@ import framing
 import motion
 from station_arm import logger
 
-from . import orbit, predict
+from . import orbit, predict, selfcal
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -114,6 +114,7 @@ class Director:
         self.sightings: list = []            # (measured joints, box) from settled views of this target
         self.loc: dict | None = None         # predict.localize() result
         self.calibration = self._load_calibration()
+        framing.CAMERA_CAL = self.calibration.get("model")      # the self-calibrated camera model, if any
         self.samples: list = []              # frames scored during the last sampled move
         self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
         self.reach: dict | None = None       # orbit.reach_map for the current localization
@@ -125,6 +126,9 @@ class Director:
     # ------------------------------------------------------------ frames and live tracking
 
     async def vision(self, fn, *args):
+        cal = self.calibration.get("model") if hasattr(self, "calibration") else None
+        args = (cal, fn) + args
+        fn = selfcal.call
         try:
             return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
         except concurrent.futures.process.BrokenProcessPool:     # the worker died: start a new one, try once more
@@ -132,6 +136,10 @@ class Director:
             self.pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
                                                                initializer=V._worker_init)
             return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
+
+    def _hint(self):
+        """Where to look first: the live tracker's last box while it is fresh."""
+        return self.tracker.hint() if self.tracker is not None else None
 
     def note(self, text: str):
         self.events.append({"t": round(time.time(), 2), "text": text})
@@ -469,7 +477,7 @@ class Director:
         if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
             return
         self.looks += 1
-        hit = await self.vision(V.look, self.ref, f[2], True)
+        hit = await self.vision(V.look, self.ref, f[2], True, self._hint())
         if hit:
             self.samples.append({"joints": joints, "score": hit["frame_score"], "box": hit["box"]})
 
@@ -537,7 +545,8 @@ class Director:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
-                   "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal}
+                   "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
+                   "selfcal": self._selfcal}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
@@ -868,7 +877,7 @@ class Director:
             while time.monotonic() < end:
                 await asyncio.sleep(0.5)
                 f = (await self.fresh_frames(1))[0]
-                hit = await self.vision(V.look, self.ref, f[2])
+                hit = await self.vision(V.look, self.ref, f[2], False, self._hint())
                 misses = 0 if hit else misses + 1
                 if misses >= 2:
                     raise Hold(f"target lost while holding shot {i} ({p['preset']})")
@@ -1155,6 +1164,67 @@ class Director:
             await self.move_path(self._bridge(now, {m: v[m] for m in motion.MOVABLE}, step=100), f"back onto {view}",
                                  load_guard=False)
 
+    async def _selfcal(self, req: dict, gate: dict):
+        """Calibrate the camera model from the arm's own joint readings and camera images of the marked object
+        (any object; it must not move): look from the saved views and stops along the approved lines, then fit
+        (camera_director/selfcal.py). No measurements. Afterwards every object is localized from images alone."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        w = self.where()
+        start_view = w.get("view") if w.get("where") == "view" else None
+        if not start_view:
+            raise Hold("start self-calibration from a saved view")
+        views = motion.load_views()
+        plan = [(start_view, None, 0.0)]
+        for name in ("top", "wide", "home"):
+            if name in views and name != start_view and motion.view_checked(name):
+                plan.append((name, None, 0.0))
+        for line in (gate["lines"] or []) if gate["lines"] is not None else []:
+            a, b = line.split("-")
+            for s in (0.16, 0.32):
+                plan += [(a, b, s), (b, a, s)]
+        if gate["lines"] is None:            # simulator: every checked line
+            for a, b in (("top", "wide"), ("right", "wide"), ("right", "top")):
+                for s in (0.16, 0.32):
+                    plan += [(a, b, s), (b, a, s)]
+        obs, skipped = [], []
+        self.job["phase"] = "calibrate"
+        old = framing.CAMERA_CAL
+        for i, (p, toward, s) in enumerate(plan, 1):
+            self.step(f"self-calibration: view {i} of {len(plan)}", preset_index=i, preset_count=len(plan))
+            try:
+                look = await self.go_shot(p, toward, s, "selfcal/last")
+            except Hold as e:
+                skipped.append(f"{p}{'→' + toward if toward else ''}: {e}")
+                continue
+            if look["valid"]:
+                c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
+                obs.append(({int(m): v for m, v in look["measured_joints"].items()}, c))
+            else:
+                skipped.append(f"{p}{'→' + toward if toward else ''}: object not seen")
+        if self.loc is None:
+            framing.CAMERA_CAL = None
+            self.calibration.pop("model", None)
+            await self.localize(look=False) if self.sightings else None
+        point0 = (self.loc or {}).get("point_m") or [0.0, 0.3, 0.0]
+        self.step(f"fitting the camera model to {len(obs)} views")
+        fit = await asyncio.get_running_loop().run_in_executor(self.pool, selfcal.fit, obs, self.state.arm.ranges(),
+                                                                self._aspect(), point0)
+        self.job["result"] = {**{k: v for k, v in fit.items() if k != "cal"}, "skipped": skipped}
+        if not fit["ok"] or fit["rms_after"] > 0.05:
+            framing.CAMERA_CAL = old
+            raise Hold(f"self-calibration did not converge well: {fit.get('reason') or fit.get('rms_after')}")
+        self.calibration["model"] = fit["cal"]
+        self.calibration["model_fit"] = {k: fit[k] for k in ("rms_before", "rms_after", "views", "params")}
+        framing.CAMERA_CAL = fit["cal"]
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
+        self.sightings, self.loc = [], None       # re-localize with the calibrated model
+        self.note(f"self-calibrated from {fit['views']} views: image error {fit['rms_before']:.3f} -> {fit['rms_after']:.3f}")
+        if start_view:
+            self.step(f"back to {start_view}")
+            await self.move(start_view)
+
     async def _snap(self, req: dict, gate: dict):
         """Back onto the nearest saved view with one short checked move, when the arm stopped close to it
         (instead of the motion layer's lift to transit). Only within SNAP_MAX steps on every joint."""
@@ -1254,7 +1324,7 @@ class Director:
 
     async def _look(self) -> dict | None:
         f = (await self.fresh_frames(1))[0]
-        return await self.vision(V.look, self.ref, f[2])
+        return await self.vision(V.look, self.ref, f[2], False, self._hint())
 
     def _shot_of(self, p: str) -> dict | None:
         r = self.catalogue.get(p) or {}

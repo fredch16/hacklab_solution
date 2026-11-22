@@ -42,6 +42,8 @@ W_PRED = {"composition": 0.30, "edge_clearance": 0.25, "target_size": 0.20, "leg
 
 def bias_for(where: dict | None, calibration: dict | None) -> tuple[float, float]:
     """Image offset (du, dv) for a pose described like motion.locate(): a view or a stop between two views."""
+    if (calibration or {}).get("model"):       # a self-calibrated camera model replaces the per-preset offsets
+        return (0.0, 0.0)
     b = (calibration or {}).get("bias") or {}
     if not where:
         return (0.0, 0.0)

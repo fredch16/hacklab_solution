@@ -381,6 +381,19 @@ class SimDirector(unittest.TestCase):
         self.assertEqual((st["job"]["status"], st["job"]["result"]["view"]), ("DONE", "top"), st["job"])
         wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="snapped onto top")
 
+    def test_9g_self_calibration_needs_no_measurements(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        st = self.run_job({"kind": "selfcal"}, timeout=400)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        res = st["job"]["result"]
+        self.assertGreaterEqual(res["views"], 5, res)
+        self.assertLess(res["rms_after"], 0.03, res)       # the sim camera is the model: it fits closely
+        self.assertEqual(st["calibration"]["presets"], st["calibration"]["presets"])
+        self.state.director.calibration.pop("model", None)  # leave the model uncalibrated for later tests
+        import framing as _f
+        _f.CAMERA_CAL = None
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

@@ -90,7 +90,8 @@ SLIP_FRAC = 0.35         # framing: a tracker box this far (picture fraction) fr
 UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
 # "slow" / "fast" in a command change that one motion's speed; Claude's custom takes default to first-run speed
 SKILL_FILLER = {"hey", "peter", "claude", "please", "can", "could", "you", "do", "a", "an", "the", "now", "again",
-                "for", "me", "us", "film", "shot", "plan", "it", "that", "this", "some", "just", "go", "ahead"}
+                "for", "me", "us", "film", "shot", "plan", "it", "that", "this", "some", "just", "go", "ahead",
+                "fast", "faster", "quick", "quickly", "slow", "slowly", "gently", "carefully"}   # speed: not the move
 JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
 TAKE_KEEP_HALF = 0.2      # at most this half-size (picture fraction) of the object must stay in frame in a take
 TAKE_LOST_S = 4.0         # a take stops when the object has been out of sight this long
@@ -651,7 +652,8 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave, "skill": self._skill}
+                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave, "skill": self._skill,
+                   "gesture": self._gesture}
         if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
@@ -660,9 +662,11 @@ class Director:
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind == "film" and (learned := self._skill_for(req["brief"])):
+        if kind == "gesture" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 300):
+            return 400, {"ok": False, "error": "say which gesture"}
+        if kind in ("film", "gesture") and (learned := self._skill_for(req["brief"])):
             kind, req = "skill", {**req, "kind": "skill", "name": learned["name"]}   # done before: replay it
-        if kind not in ("tour", "return", "snap", "goto", "wave", "skill") and self.ref is None:
+        if kind not in ("tour", "return", "snap", "goto", "wave", "skill", "gesture") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -1795,6 +1799,48 @@ class Director:
         await self.move_path(poses + [start], skill["name"][:60],
                              speed=JOB_SPEEDS.get(req.get("speed"), skill.get("speed", motion.SPEED_NORMAL)))
         self.job["result"] = {"replayed": skill["name"], "view": skill["view"]}
+
+    async def _gesture(self, req: dict, gate: dict):
+        """A gesture of the arm itself ('do a little dance', 'nod', 'bow'): Claude choreographs joint offsets from
+        the current view; only the arm's own safety is checked (envelope, desk, itself). No subject involved."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "reposition"
+        view = await self.ensure_view()
+        if not view or view == motion.TRANSIT:
+            raise Hold("a gesture starts from a saved view")
+        self.job["phase"] = "estimate"
+        self.step("Claude is choreographing the gesture")
+        try:
+            plan = await asyncio.to_thread(brief.plan_gesture, req["brief"].strip())
+        except ValueError as e:
+            raise Hold(str(e)) from e
+        except Exception as e:
+            raise Hold(f"Claude planning failed ({type(e).__name__})") from e
+        ranges = self.state.arm.ranges()
+        env = motion.envelope(ranges)
+        vpose = motion.clamp_pose({m: motion.load_views()[view][m] for m in motion.MOVABLE}, env)
+        deg = 4096 / 360
+        keys = [motion.clamp_pose({**vpose, 1: vpose[1] + round(f["yaw"] * deg), 3: vpose[3] + round(f["bob"] * deg),
+                                   6: vpose[6] + round(f["pitch"] * deg), 7: vpose[7] + round(f["roll"] * deg)}, env)
+                for f in plan["keyframes"]] + [vpose]
+        poses, prev = [], vpose
+        for k in keys:                        # split big swings: the path allows PATH_STEP_MAX per waypoint
+            n = max(1, math.ceil(max(abs(k[m] - prev[m]) for m in motion.MOVABLE) / 300))
+            poses += [{m: round(prev[m] + (k[m] - prev[m]) * i / n) for m in motion.MOVABLE} for i in range(1, n + 1)]
+            prev = k
+        grip = (await self._joints())[motion.GRIPPER]
+        problem = motion.path_problem([vpose] + poses, ranges, env, grip)
+        if problem:
+            raise Hold(f"that gesture does not fit here: {problem}")
+        self.job["result"] = {"planner": "Claude", "plan_reason": plan["reason"][:300], "view": view}
+        self.job["phase"] = "cinematic"
+        self.step(f"{req['brief'].strip()[:40]}")
+        await self.move_path(poses, req["brief"].strip()[:60] or "gesture",
+                             speed=JOB_SPEEDS.get(req.get("speed"), motion.SPEED_NORMAL))
+        saved = self._save_skill(req["brief"], view, poses, JOB_SPEEDS.get(req.get("speed"), motion.SPEED_NORMAL))
+        self.job["result"]["learned"] = saved["name"]
+        self.note(f"learned a new move: “{saved['name']}” (say it again, or replay it from the menu)")
 
     async def _wave(self, req: dict, gate: dict):
         """Wave hello: from a view, the base sways and the wrist rolls, three times, then back. Shoulder and elbow

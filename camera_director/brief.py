@@ -98,3 +98,49 @@ def plan(text: str, context: dict, computed: bool) -> dict:
     if response.stop_reason != "end_turn":
         raise ValueError(f"Claude did not finish the shot plan ({response.stop_reason})")
     return validate(json.loads(next(b.text for b in response.content if b.type == "text")), bounds, actions)
+
+
+# ---- gestures: motions of the arm itself (dance, nod, bow), nothing to do with a filmed subject ----
+GESTURE = {"yaw": (-35, 35), "bob": (-10, 10), "pitch": (-25, 25), "roll": (-40, 40)}   # degrees from the view
+
+
+def validate_gesture(plan: dict) -> dict:
+    frames = plan.get("keyframes")
+    if not isinstance(plan.get("reason"), str) or not isinstance(frames, list) or not 2 <= len(frames) <= 16:
+        raise ValueError("invalid gesture plan")
+    for f in frames:
+        if not isinstance(f, dict) or f.keys() != GESTURE.keys() or not all(
+                type(f[k]) in (int, float) and math.isfinite(f[k]) and lo <= f[k] <= hi for k, (lo, hi) in GESTURE.items()):
+            raise ValueError("gesture keyframe outside the allowed range")
+    return plan
+
+
+def plan_gesture(text: str) -> dict:
+    """A spoken gesture ('do a little dance', 'nod', 'bow') as keyframes of joint offsets from the current view."""
+    import anthropic
+
+    load_env(Path(__file__).resolve().parents[1] / ".env")
+    key = claude_api_key()
+    if not key:
+        raise ValueError("set CLAUDE_API_KEY to plan a gesture")
+    frame = {"type": "object", "additionalProperties": False, "required": list(GESTURE),
+             "properties": {k: {"type": "number"} for k in GESTURE}}
+    schema = {"type": "object", "additionalProperties": False, "required": ["keyframes", "reason"],
+              "properties": {"keyframes": {"type": "array", "items": frame}, "reason": {"type": "string"}}}
+    client = anthropic.Anthropic(api_key=key, timeout=25, max_retries=0)
+    response = client.messages.create(
+        model="claude-opus-5-5", max_tokens=2000,
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        system=("You choreograph a short expressive gesture for a 7-joint robot arm holding a camera, like a friendly "
+                "character. Each keyframe gives offsets in degrees from where the arm stands now: yaw = the base "
+                "turning left (+) / right (-); bob = the elbow pitch, a small up/down body bob; pitch = the wrist "
+                "nodding up (+) / down (-); roll = the wrist tilting the head. Examples: nod = pitch 0, 15, -10, 15, 0; "
+                "shake head = yaw 0, 15, -15, 15, -15, 0; bow = bob -8 with pitch -20, then back; a little dance = "
+                "rhythmic alternating yaw +-15 with roll +-25 and a light bob; look around = slow yaw sweep with "
+                "pitch up. Start and end at all zeros. 2-16 keyframes, small and playful, within the given ranges. "
+                "You have no control tools; the robot checks and runs your plan."),
+        messages=[{"role": "user", "content": json.dumps({"request": text, "ranges_deg": GESTURE})}],
+    )
+    if response.stop_reason != "end_turn":
+        raise ValueError(f"Claude did not finish the gesture ({response.stop_reason})")
+    return validate_gesture(json.loads(next(b.text for b in response.content if b.type == "text")))

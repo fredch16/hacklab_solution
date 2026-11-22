@@ -475,6 +475,30 @@ class SimDirector(unittest.TestCase):
         http(self.base, "/api/director/skills/delete", {"name": "nod"})
         self.assertEqual(http(self.base, "/api/director/skills")[1]["skills"], [])
 
+    def test_9z4_a_gesture_needs_no_subject_and_is_learned(self):
+        self.goto("top")
+        dance = {"reason": "sway and tilt", "keyframes": [
+            {"yaw": 0, "bob": 0, "pitch": 0, "roll": 0}, {"yaw": 15, "bob": 3, "pitch": 5, "roll": 25},
+            {"yaw": -15, "bob": -3, "pitch": -5, "roll": -25}, {"yaw": 15, "bob": 3, "pitch": 5, "roll": 25},
+            {"yaw": 0, "bob": 0, "pitch": 0, "roll": 0}]}
+        director = self.state.director
+        ref, director.ref = director.ref, None                         # no marked object at all
+        try:
+            with patch.object(J.brief, "plan_gesture", return_value=J.brief.validate_gesture(dance)) as planner:
+                st = self.run_job({"kind": "gesture", "brief": "do a little dance fast", "speed": "fast"}, timeout=120)
+                self.assertEqual(st["job"]["status"], "DONE", st["job"])
+                self.assertEqual(st["job"]["result"]["learned"], "little dance")
+                moved = [h for h in self.state.history if h.get("view") == "do a little dance fast"][-1]
+                self.assertTrue(moved["ok"] and moved["duration"] > 1.0 and moved["speed"] == motion.SPEED_FAST, moved)
+                st = self.run_job({"kind": "gesture", "brief": "little dance"}, timeout=120)   # learned: replayed
+                self.assertEqual((st["job"]["kind"], st["job"]["status"]), ("skill", "DONE"), st["job"])
+                self.assertEqual(planner.call_count, 1)
+        finally:
+            director.ref = ref
+            http(self.base, "/api/director/skills/delete", {"name": "little dance"})
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("view"), "top")
+
     def test_9z_filming_brief_uses_the_measured_view_and_parks_the_shoulder(self):
         self.goto("top")
         fid = self.get()["camera"]["frame_id"]

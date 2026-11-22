@@ -9,7 +9,7 @@ const JOBS: Record<string, string> = {
   show: "Cinematic show", gimbal: "Gimbal take", film: "Claude's shot", tour: "Director tour", watch: "Keep in view",
   follow: "Follow object", selfcal: "Self-calibration", snap: "Snap to view", cinematic: "Cinematic shots",
   survey: "Finding the best view", recall: "Recall view", goto: "Going to a view", scene: "Scene", center: "Framing",
-  calibrate: "Calibration tour", return: "Returning", wave: "Waving hello",
+  calibrate: "Calibration tour", return: "Returning", wave: "Waving hello", gesture: "Gesture", skill: "Learned move",
 };
 const EXAMPLES = ["follow the object", "wave hello", "go to the left view", "do a gimbal take", "cinematic show", "keep it in view",
   "film a shot: slow reveal from the right"];

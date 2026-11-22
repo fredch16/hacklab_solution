@@ -116,6 +116,8 @@ DIRECTOR_PHRASES = {
     "return along the last shot": "return", "snap to view": "snap",
     "self calibrate the camera": "selfcal", "self calibrate": "selfcal",
 }
+GESTURE_RE = re.compile(r"\b(dance|dancing|nod|bow|wiggle|celebrate|shake (?:your|the) head|look around|boogie|"
+                        r"say yes|say no|happy dance|groove)\b")
 FILM_BRIEF_RE = re.compile(r"^(?:(?:please|hey claude|claude|can you|could you)[\s,]+)*"
                            r"(?:film a shot|plan a shot|director shot)\b[\s:,.–-]+(.+)$", re.IGNORECASE)
 
@@ -155,6 +157,8 @@ def _director_plan(text: str, views: list[dict]) -> dict | None:
             return {"tool": "director_job", "args": {"kind": "recall", "preset": view["name"]}}
     if brief := FILM_BRIEF_RE.fullmatch(text.strip()):
         return {"tool": "director_job", "args": {"kind": "film", "brief": brief[1].strip()}}
+    if GESTURE_RE.search(request):          # a motion of the arm itself: Claude choreographs it, no subject involved
+        return {"tool": "director_job", "args": {"kind": "gesture", "brief": text.strip()}}
     return None
 
 
@@ -196,7 +200,8 @@ RECORD_ACTIONS = {
     "start_phone_recording": ("phone", "start"), "stop_phone_recording": ("phone", "stop"),
     "start_robot_recording": ("robot", "start"), "stop_robot_recording": ("robot", "stop"),
 }
-ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "director_film", "director_watch", "none", *RECORD_ACTIONS)
+ACTIONS = ("go_to_view", "stop", "get_status", "list_views", "director_film", "director_gesture", "director_watch", "none",
+           *RECORD_ACTIONS)
 RECORD_WORDS = re.compile(r"\b(?:record(?:s|ed|ing)?|film(?:s|ed|ing)?|rolling|roll (?:the|video))\b")
 RECORD_NEGATION = re.compile(r"\b(?:don't|do not|never|without|not|cancel)\b")
 CLEAR_RECORDING = re.compile(r"\b(?:start|begin|stop|end|finish|record|film|rolling|roll)\b")
@@ -249,6 +254,8 @@ table" mean the widest view).
 "that's enough", "careful").
 - get_status: the speaker asks where the camera is or what it is doing.
 - list_views: the speaker asks which views exist or what the camera can show.
+- director_gesture: a motion of the arm itself, like a character, that is not about filming the object:
+  dance, nod, shake your head, bow, wiggle, celebrate, look around, say yes / no.
 - director_film: any other request to move, aim or position the camera, or to film something in a
   particular way, that no saved view or other action covers: a reveal, a pan, a roll, a closer or lower
   look, "look at me", "show it from the side", a little dance or gesture, artistic framing. Claude's shot
@@ -340,6 +347,11 @@ def plan_from_answer(answer: dict | None, views: list[dict], text: str = "") -> 
     None when it gave nothing to act on."""
     if not answer or answer["action"] == "none":
         return None
+    if answer["action"] == "director_gesture":
+        args = {"kind": "gesture", "brief": text.strip()}
+        if speed := speed_of(text):
+            args["speed"] = speed
+        return {"tool": "director_job", "args": args}
     if answer["action"] in ("director_film", "director_watch"):
         if RECORD_NEGATION.search(normalize(text)) or STOP_RE.match(normalize(text)):
             return None

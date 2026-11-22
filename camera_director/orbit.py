@@ -375,6 +375,8 @@ def composed_take(point, start: dict, ranges, keyframes: list[dict], bias, aspec
         samples.extend({k: a[k] + (b[k] - a[k]) * i / steps for k in a} for i in range(1, steps + 1))
     q, path = start, []
     margins = [max(0.10, span + 0.05) for span in half_box]
+    # a taught view may already look at the object lower than MIN_FILM_ELEV (wide): never lower than it does now
+    floor_elev = min(MIN_FILM_ELEV, viewing_elevation(point, framing.camera_pose(start, ranges)) - 5)
     for s in samples:
         yaw = start[1] + round(s["pan"] * 4096 / 360)
         if not limits[1][0] <= yaw <= limits[1][1]:
@@ -384,11 +386,13 @@ def composed_take(point, start: dict, ranges, keyframes: list[dict], bias, aspec
                      limits=limits, pitch_ref=start[4], roll_axis=roll_axis)
         pose = framing.camera_pose(q, ranges)
         uv = framing.project(point, pose, aspect)
-        if (err > GIMBAL_AIM_TOL or uv is None
-                or viewing_elevation(point, pose) < MIN_FILM_ELEV
-                or any(not m <= p + b <= 1 - m for p, b, m in zip(uv, bias, margins))
-                or abs(float(np.dot(pose[2], roll_axis)) - math.sin(math.radians(s["roll"]))) > 0.08):
-            return {"ok": False, "reason": "the wrist cannot deliver the requested composition within the frame"}
+        why = ("the wrist cannot aim at the subject there" if err > GIMBAL_AIM_TOL or uv is None
+               else "the camera would look at the subject too low" if viewing_elevation(point, pose) < floor_elev
+               else "the subject would leave the frame" if any(not m <= p + b <= 1 - m for p, b, m in zip(uv, bias, margins))
+               else "the wrist cannot roll that far" if abs(float(np.dot(pose[2], roll_axis)) - math.sin(math.radians(s["roll"]))) > 0.12
+               else None)
+        if why:
+            return {"ok": False, "reason": f"{why} (at pan {s['pan']:.0f}°, roll {s['roll']:.0f}°)"}
         path.append({m: q[m] for m in motion.MOVABLE})
     stage = _bridge(view, path[0], step=100)
     if limit is not None:

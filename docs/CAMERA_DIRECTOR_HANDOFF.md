@@ -13,6 +13,44 @@
 - Physical sequence remains owner-operated. Run the director, motion and MCP simulator suites before each run. First run Self-calibrate and inspect `rms_after`, then move and reselect the target and verify localization with a prediction-only survey. Only then try one short free arc while monitoring motor 2. The existing approval still has `computed_paths: false`.
 - The updated capture and MCP services are running. Station, the voice bridge and laptop gateway kept running through the reload. The arm stayed at `wide`, and Auto-find restored the selected sticker.
 
+## 22 Nov evening: `UI` branch, Peter studio, framing that keeps the object centred (read this first)
+
+The `UI` branch holds everything on `beta/ai-camera-director` plus the work below. Restart the arm server after pulling.
+
+- **Every view centres the marked object.** `Director._center_on_object` runs at the end of a view move asked for by voice or Claude (`/api/goto` with `frame_object`, the director `goto` job) and at every held shot (show, cinematic, tour, Claude's takes). Claude takes stay off-centre only when the brief composes them that way (keyframe u/v more than 0.15 from 0.5). `UNFRAMED_VIEWS` is empty: the owner wants left and right centred too. The next move steps back onto the view first (`_framed`, trail).
+- **Centring algorithm** (`orbit.follow_step`):
+  - Turns base yaw and the wrist with gain 0.7, within ±1000 yaw from the view and 150 steps per correction. A refused turn is retried at ½ and ¼.
+  - Plans from the clamped pose: `right`'s shoulder is taught at 3032, outside the 2995 envelope, so every turn used to be refused at waypoint 0.
+  - A ray that misses the table (a sideways camera at left/right) is aimed at `FOLLOW_AIM_DIST` = 0.35 m along it.
+  - When the camera is too low to tilt down (left view, about 10 cm), the whole arm solves for a camera 4 cm higher, aimed at the object with the wrist roll free.
+  - The whole arm also aims when turning alone saturates.
+- **Framing robustness** (`jobs._center_on_object`):
+  - Waits for a confident detection and makes up to 8 corrections, stopping within 4 % of centre.
+  - Remembers the last good pose and goes back to it when the object is lost.
+  - Treats a ViT box that jumps more than 35 % from where the last turn should have put the object as a tracker slip, and runs `vision.refind` near that spot (nearest confident YOLOE box, else SIFT).
+  - The camera model is not used to judge detections: at extreme side views it is wrong, and it rejected the real marker.
+- **Follow:**
+  - Dead band with hysteresis: starts correcting at 10 % off-centre, stops at 4 %.
+  - Low-passes the box centre and steps from the last commanded pose (no shoulder sag).
+  - The 3-D move needs a fused shift of more than 3 cm on 3 checks in a row and the object off-centre in the picture. The dolly needs size and fused range to agree beyond 25 %, three times in a row.
+- **Keep in view:** the tracker decides whether the object is there. SIFT inliers, when counted, show a covering hand. It re-centres when the object drifts past 6 % or touches the edge, and backs off 8 s when it cannot turn further.
+- **Fusion** (`fuse.ObjectFilter`): an innovation gate ignores rays more than 10° from the estimate unless 6 arrive in a row. The estimate stays above the table. Settled looks measure with the drawn crop first (`look_many`).
+- **Servos** (`servo_limits.py`, kept by the arm server): overload threshold 60 on motors 1–7, gains P16/I8/D32 on motors 2–3. The software shoulder guard is 55 %.
+- **Peter studio** (laptop dashboard home screen; files `src/console.ts`, `src/twin3d.ts`, `app.css`):
+  - A live 3-D twin: URDF meshes from `/laptop/director/twin` and `/laptop/director/mesh/<name>.stl`, served by `camera_director/twin.py`, with three.js vendored (`vendor/`, MIT).
+  - The robot camera with a Robot/Phone (WebRTC) switch.
+  - The agent dock: typed commands take the voice path, and the orb grows and shines on the wake word.
+  - Mode chips, the current-job capsule, STOP, full screen (F) and a Pair phone pop-up.
+  - A menu with director tools, phone & voice, arm links and settings.
+  - Select object closes the menu; a confirm bar floats on the camera picture, and the menu reopens afterwards.
+- **App:** named P.E.T.E.R. with the Peter icon and splash (`peter_app_icon.png`) and the Peter palette. The package ID is unchanged (`dev.localvision.local_vision`).
+- **After a reboot or replug:**
+  - `sudo chmod a+rw /dev/bus/usb/<bus>/<dev>` for the gripper camera, then restart Station (it looks for cameras only at start).
+  - Put the new queue name in `director_safety.json` `camera_queue` and in `jobs.GRIPPER_CAMERAS`.
+  - The servos come back limp: use Hold here.
+- **Tests:** 62 director tests. On 22 Nov a run of every test that changed today passed: test_4, 9a, 9b, framing, follow, show, filming briefs, FollowDistance, ObjectFusion. test_4's triangulated-height cross-check allows 3 cm. 9a starts from top with a fresh catalogue.
+- **Not verified on the real arm:** the rise-and-roll fallback at the left view (`1f1e0c8`), and whether side-view centring converges on hardware.
+
 ## 22 Nov afternoon: detector, servos, follow, framing (read this first)
 
 - **Setup:** `uv sync --locked --extra detector` installs YOLOE: Ultralytics plus CUDA 12.8 torch for the laptop's RTX 3070. The models live in `director_data/models/` and are git-ignored, so copy them onto a new machine: `vittrack.onnx`, `yolox.onnx`, `yoloe-26m-seg.pt` (sha256 prefix 585f5ec9028fd358). After a reboot, Station needs `sudo chmod a+rw /dev/bus/usb/<bus>/<dev>` for the gripper camera, and the camera queue name changes. The new name goes in `director_safety.json` `camera_queue` and in `jobs.GRIPPER_CAMERAS`.

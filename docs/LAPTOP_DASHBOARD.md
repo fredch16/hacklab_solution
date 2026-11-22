@@ -30,6 +30,13 @@ All four services listen on loopback by default. The dashboard's **Stop arm** us
 
 If the USB feed is unavailable, check that the real arm server's `/api/state` reports `camera_state.live: true`. A one-frame V4L2 check can work while Station lacks access to the camera's raw USB node. Check the Station log for device permissions and use the current bus/device path shown by `lsusb`.
 
+## The Peter studio (home screen, `UI` branch)
+
+- **Layout:** the laptop dashboard opens on the studio. The live 3-D twin is on the left, the robot camera (Robot/Phone switch, record) is on the right, and the agent dock is at the bottom. Type a command, or say the wake word to the phone.
+- **Top bar:** active modes, the current director job, **Pair phone**, STOP, full screen (F) and **Menu**.
+- **Menu:** Director tools, Phone & voice, Arm (manual control, capture views, Station) and Settings.
+- **Requirements:** the twin needs the arm server with `--director`, and the phone feed needs a paired phone. three.js is vendored in `dashboard/apps/dashboard/vendor/`, so it works offline.
+
 ## Pair the phone
 
 1. Connect the phone and laptop to the same Wi-Fi. Open Local Vision on the Pixel and tap **Start session**.

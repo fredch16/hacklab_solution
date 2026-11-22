@@ -506,7 +506,7 @@ FOLLOW_YAW_MAX = 600              # steps of base yaw the camera may turn away f
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
-FOLLOW_DIST_DEAD = 0.12          # keep the distance: re-dolly when the object's size is off by more than this
+FOLLOW_DIST_DEAD = 0.25          # keep the distance: re-dolly when it is off by more than this (box sizes jitter ~15 %)
 FOLLOW_DOLLY_MAX = 500           # steps the shoulder and elbow may move away from the view while following
 
 
@@ -519,13 +519,15 @@ def follow_depth(now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 
 
 
 def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 / 9,
-                depth0: float | None = None, size_ratio: float = 1.0) -> dict:
+                depth0: float | None = None, size_ratio: float = 1.0, point=None, offset=None) -> dict:
     """One follow correction from the commanded pose `now`: turn the camera (base yaw + wrist) toward the object at
     image `centre` (u, v) and, when its size in the picture is off by more than FOLLOW_DIST_DEAD (`size_ratio` =
     size now / size at the start), dolly along the line of sight back to the starting distance `depth0`.
     Checked like a gimbal take: relative to the taught view, camera above MIN_CAMERA_HEIGHT_M."""
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
     env, limits = motion.envelope(ranges), _limits(ranges)
+    three_d = point is not None and offset is not None
+    fused = np.asarray(point, float) if three_d else None
     grip = int(now.get(motion.GRIPPER, 1279))
     now = {m: int(now[m]) for m in motion.MOVABLE}
     view = {m: int(view[m]) for m in motion.MOVABLE}
@@ -541,10 +543,12 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
         point = np.array(pose[0]) + d * depth
     lim = dict(limits)
     lim[1] = (max(lim[1][0], view[1] - FOLLOW_YAW_MAX), min(lim[1][1], view[1] + FOLLOW_YAW_MAX))
-    if depth0 and abs(size_ratio - 1.0) > FOLLOW_DIST_DEAD:
+    if three_d:                     # 3-D follow: the camera keeps its offset from the (fused) object position
+        point = fused
+    if three_d or (depth0 and abs(size_ratio - 1.0) > FOLLOW_DIST_DEAD):
         for m in (2, 3):                                     # the dolly stays near the taught view
             lim[m] = (max(lim[m][0], view[m] - FOLLOW_DOLLY_MAX), min(lim[m][1], view[m] + FOLLOW_DOLLY_MAX))
-        cam = point - d * depth0
+        cam = point + np.asarray(offset, float) if three_d else point - d * depth0
         cam[2] = max(cam[2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M)
         axis = (point - cam) / np.linalg.norm(point - cam)
         right = np.array(pose[2]) - axis * float(np.dot(pose[2], axis))

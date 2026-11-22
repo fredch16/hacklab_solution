@@ -592,6 +592,35 @@ class SimDirector(unittest.TestCase):
         self.assertLessEqual(max(abs(after[m] - before[m]) for m in motion.MOVABLE), 5)
 
 
+class ObjectFusion(unittest.TestCase):
+    """Rays from several camera poses pin the object down although each range (from its size) is 30 % off."""
+
+    def test_rays_from_two_sides_triangulate(self):
+        from camera_director import fuse
+        rng = np.random.default_rng(1)
+        obj, size_m = np.array([0.0, -0.30, 0.0]), 0.03
+        f = fuse.ObjectFilter()
+        f.start(obj + [0.03, 0.02, 0.0], [0.0, -0.10, 0.30], size_m / np.linalg.norm([0.0, 0.2, 0.3]), 0.0)
+        for k in range(60):
+            cam = np.array([0.15 * np.sin(k / 6), -0.10, 0.30])     # the camera swings around (gimbal / follow)
+            d = (obj - cam) / np.linalg.norm(obj - cam)
+            size = size_m / np.linalg.norm(obj - cam) * rng.uniform(0.7, 1.3)
+            d = d + rng.normal(0, 0.003, 3)
+            f.update(cam, d / np.linalg.norm(d), size, 0.1 * k)
+        self.assertLess(np.linalg.norm(f.x - obj), 0.015, f.x)
+
+    def test_follows_a_moved_object(self):
+        from camera_director import fuse
+        f = fuse.ObjectFilter()
+        cam, obj = np.array([0.0, -0.1, 0.3]), np.array([0.0, -0.3, 0.0])
+        f.start(obj, cam, 0.1, 0.0)
+        moved = obj + [0.08, 0.0, 0.0]
+        for k in range(1, 30):
+            d = (moved - cam) / np.linalg.norm(moved - cam)
+            f.update(cam, d, f.size_m / np.linalg.norm(moved - cam), 0.15 * k)
+        self.assertLess(np.linalg.norm(f.x - moved), 0.02, f.x)
+
+
 class FollowDistance(unittest.TestCase):
     """Follow keeps the distance: bigger in the picture (closer) -> the camera backs off, smaller -> it comes in."""
 
@@ -615,6 +644,24 @@ class FollowDistance(unittest.TestCase):
             self.assertEqual(np.linalg.norm(cam - seen) > np.linalg.norm(cam0 - seen), farther, (ratio, cam0, cam))
         same = orbit.follow_step(view, now, ranges, (0.5, 0.5), depth0=depth0, size_ratio=1.05)
         self.assertFalse(same["dolly"])                           # inside the dead band: turn only
+
+    def test_3d_follow_moves_the_camera_with_the_object(self):
+        from camera_director import orbit
+        raw = motion._read_views_file()
+        ranges = {int(k): tuple(r) for k, r in raw["transit"]["ranges"].items()}
+        view = {m: int(raw["top"]["joints"][str(m)]) for m in motion.MOVABLE}
+        now = {**view, motion.GRIPPER: 1279}
+        pose = framing.camera_pose(now, ranges)
+        depth = orbit.follow_depth(now, ranges, (0.5, 0.5))
+        obj = np.array(pose[0]) + np.array(framing.ray(0.5, 0.5, pose, 16 / 9)) * depth
+        offset = np.array(pose[0]) - obj
+        side = np.array(pose[2])                                   # the camera's image-right direction
+        for sign in (1, -1):
+            moved = obj + sign * 0.05 * side
+            step = orbit.follow_step(view, now, ranges, (0.5, 0.5), point=moved.tolist(), offset=offset.tolist())
+            self.assertTrue(step["ok"] and step["dolly"], step)
+            cam = np.array(framing.camera_pose({**step["pose"], motion.GRIPPER: 1279}, ranges)[0])
+            self.assertGreater(sign * float(np.dot(cam - np.array(pose[0]), side)), 0.005, (sign, cam))
 
 
 class RealArmGate(unittest.TestCase):

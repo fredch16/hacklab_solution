@@ -39,7 +39,7 @@ import framing
 import motion
 from station_arm import logger
 
-from . import brief, orbit, predict, selfcal
+from . import brief, fuse, orbit, predict, selfcal
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,6 +83,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
+FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
 FOLLOW_SPEED = motion.SPEED_NORMAL   # follow's corrections: <= 150 steps of base yaw and wrist, shoulder parked
 FOLLOW_DEAD = 0.08        # follow: the object's centre may be this far from the picture's centre before turning
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
@@ -116,6 +117,8 @@ class Director:
         self.samples: list = []              # frames scored during the last sampled move
         self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
         self.reach: dict | None = None       # orbit.reach_map for the current localization
+        self.obj = fuse.ObjectFilter()       # the object's position, fused over every tracked frame
+        self._fuse_bias = (0.0, 0.0)
         self.heavy: set = set()              # views whose approach tripped the shoulder guard: not tried again
         self.trail: list = self._load_trail()   # poses driven by the last scene, for "return" (survives a restart)
         self.thumbs: dict[str, bytes] = {}
@@ -164,16 +167,41 @@ class Director:
                 if f and self.tracker is not None and time.monotonic() - self._tracked_at >= TRACK_S:
                     self._tracked_at = time.monotonic()
                     tracker = self.tracker
+                    try:
+                        joints = self.state.arm.joints(max_age_s=motion.STALE_S)   # the camera pose of this frame
+                    except RuntimeError:
+                        joints = None                 # late joint data: track, but do not fuse this frame
                     hit = tracker.record(await self.vision(V.track, tracker.ref, f[2], tracker.hint(),
                                                            not self.state.moving), f[0], f[1])
                     if tracker is self.tracker:
                         self.obs = hit
+                        if hit is not None and joints is not None:
+                            self._fuse(hit, joints, f[1])
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.exception("director tick")
                 self.note(f"vision error: {e}")
             await asyncio.sleep(TICK_S)
+
+    def _fuse(self, hit: dict, joints: dict, stamp: float):
+        """Fold one tracked frame into the object's 3-D position (fuse.ObjectFilter)."""
+        b = hit["box"]
+        u, v = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        w = self.where()
+        if w.get("where") in ("view", "between"):
+            self._fuse_bias = predict.bias_for(w, self.calibration)
+        bias = self._fuse_bias                # off the views: keep the last view's offset (no jump as the camera turns)
+        pose = framing.camera_pose(joints, self.state.arm.ranges())
+        d = framing.ray(u - bias[0], v - bias[1], pose, self._aspect())
+        size = (b[2] - b[0] + b[3] - b[1]) / 2
+        if self.obj.x is None:
+            if d[2] > -0.1:
+                return                        # not looking down at the table: no starting point yet
+            point = np.array(pose[0]) + np.array(d) * (framing.TABLE_Z - pose[0][2]) / d[2]
+            self.obj.start(point, pose[0], size, stamp)
+        elif not self.state.moving:           # while moving the tracker box lags the picture: the ray would be off
+            self.obj.update(pose[0], d, size, stamp)
 
     async def _grab(self):
         st = self.state
@@ -336,6 +364,7 @@ class Director:
 
     def _set_target(self, ref: V.Reference, frame_id: int, how: str, box: list | None = None):
         self.ref, self.tracker, self.obs = ref, V.Tracker(ref), None
+        self.obj.reset()
         if how != "restored after restart":
             try:
                 ref.save(self.data / "target")
@@ -1660,8 +1689,9 @@ class Director:
     # ---- keep in view: hold the shot, change view only when the target stays covered
 
     async def _look(self) -> dict | None:
+        """Keep in view's look: matched features (inliers), so a hand covering part of the object shows."""
         f = (await self.fresh_frames(1))[0]
-        return await self.vision(V.track, self.ref, f[2], self._hint())
+        return await self.vision(V.look, self.ref, f[2], False, self._hint())
 
     def _shot_of(self, p: str) -> dict | None:
         r = self.catalogue.get(p) or {}
@@ -1796,7 +1826,8 @@ class Director:
         ranges = self.state.arm.ranges()
         self.trail = [vpose]                  # the way back for the next take (ensure_view retraces it)
         commanded = dict(vpose)
-        size0 = depth0 = None
+        size0 = depth0 = anchor = offset = None
+        far_count = 0
         self._save_trail(self.trail)
         end, corrections, since = time.monotonic() + float(req.get("seconds", 300)), 0, -1
         self.job["phase"] = "cinematic"
@@ -1812,18 +1843,44 @@ class Director:
                 b = obs["box"]
                 centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
                 size = (b[2] - b[0] + b[3] - b[1]) / 2
-                if size0 is None:             # the distance to keep: as it is now (the object on the table)
+                cam = np.array(framing.camera_pose({**commanded, motion.GRIPPER: 1279}, ranges)[0])
+                fused = self.obj.x is not None and self.obj.state()["sigma_m"] < 0.08
+                dist = float(np.linalg.norm(self.obj.x - cam)) if fused else None
+                if size0 is None:             # the distance to keep: as it is now
                     size0 = size
-                    depth0 = await self.vision(orbit.follow_depth, {**commanded, motion.GRIPPER: 1279}, ranges, centre,
-                                               bias, self._aspect())
+                    depth0 = dist or await self.vision(orbit.follow_depth, {**commanded, motion.GRIPPER: 1279}, ranges,
+                                                       centre, bias, self._aspect())
+                # how far it is now: the fused estimate (every frame, all camera poses), but only when the object's
+                # size in the picture agrees that the distance changed (the model drifts a little off the views)
                 ratio = size / size0
-                if (abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD
+                if dist:
+                    fused_ratio = depth0 / dist
+                    dead = orbit.FOLLOW_DIST_DEAD
+                    agree = (ratio > 1 + dead and fused_ratio > 1 + dead) or (ratio < 1 - dead and fused_ratio < 1 - dead)
+                    ratio = fused_ratio if agree else 1.0
+                off = abs(ratio - 1) > orbit.FOLLOW_DIST_DEAD
+                far_count = far_count + 1 if off else 0
+                if off and far_count < 3:     # a real move toward/away holds; one odd box size does not
+                    ratio = 1.0
+                if fused and anchor is None:  # 3-D follow keeps this offset between camera and object
+                    anchor, offset = self.obj.x.copy(), cam - self.obj.x
+                # moved sideways or up/down: from the ray directions (precise); along the line of sight the size
+                # estimate is too rough (and differs between tracker and YOLOE boxes): that is the dolly's job
+                moved = False
+                if fused and anchor is not None:
+                    shift, ray = self.obj.x - anchor, (anchor - cam) / np.linalg.norm(anchor - cam)
+                    moved = float(np.linalg.norm(shift - ray * float(np.dot(shift, ray)))) > FOLLOW_MOVE_M
+                    if moved:
+                        self.note(f"follow: object moved {np.round(shift, 3).tolist()} m (sigma {self.obj.state()['sigma_m']})")
+                if (not moved and abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD
                         and abs(ratio - 1) <= orbit.FOLLOW_DIST_DEAD):
                     continue
                 # from the last commanded pose, not the measured one (that sags under load, step after step)
                 now = {**commanded, motion.GRIPPER: (await self._joints())[motion.GRIPPER]}
                 step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect(),
-                                         depth0, ratio)
+                                         depth0, ratio, *((self.obj.x.tolist(), offset.tolist()) if moved else ()))
+                if moved and step["ok"]:
+                    anchor = self.obj.x.copy()
                 if not step["ok"]:
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
                     continue
@@ -1886,6 +1943,7 @@ class Director:
                       "observation": None if obs is None else {k: obs[k] for k in ("box", "quad", "confidence", "method", "evidence", "frame_id", "stable")} | {"age_s": age}}
         order = motion.view_names()
         return {"ok": True, "gate": self.gate(), "camera": cam, "target": target, "localization": self.loc,
+                "object": self.obj.state(),
                 "calibration": {"presets": sorted((self.calibration.get("bias") or {}))},
                 "sticker_reference": (self.data / "sticker.png").exists(),
                 "arm": {"joints": joints, "where": self.where(), "moving": self.state.moving, "generation": self.state.gen},

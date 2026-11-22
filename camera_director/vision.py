@@ -409,6 +409,74 @@ def proposals(img: np.ndarray) -> list[tuple[list, float]]:
               min(1.0, (rects[k][1] + rects[k][3]) / h)], float(out[keep[k], 4])) for k in np.array(picked).flatten()[:20]]
 
 
+# YOLOE visual prompt (ICCV 2025; Ultralytics YOLOE-26m): the drawn box IS the prompt, so the detector looks for
+# this object, not a class. On the laptop GPU 13 ms per frame; on the real marker it found it rotated, shrunk,
+# darker, and nothing once it was gone. Each confident new look (another side, distance) is averaged into the
+# prompt, the drawn look always kept. Runs on every tracked frame with a GPU; without one only to re-find.
+YOLOE_MODEL = VIT_MODEL.parent / "yoloe-26m-seg.pt"
+YOLOE_MIN = 0.3            # detection confidence trusted as the object
+YOLOE_LEARN = 0.6          # confident enough to add this look to the prompt
+YOLOE_LEARN_S = 5.0        # at most this often (re-prompting rebuilds YOLOE's predictor: ~0.25 s)
+_yoloe = None              # the model, False when unavailable
+_yoloe_gpu = False
+_vpes: list = []           # prompt embeddings of the object's looks
+_yoloe_learned_at = 0.0
+
+
+def _yoloe_model():
+    global _yoloe, _yoloe_gpu
+    if _yoloe is None:
+        try:
+            if not YOLOE_MODEL.exists():
+                raise FileNotFoundError(YOLOE_MODEL)
+            import torch
+            from ultralytics import YOLOE
+            _yoloe, _yoloe_gpu = YOLOE(str(YOLOE_MODEL)), torch.cuda.is_available()
+        except Exception:          # not installed (the detector extra), no model file
+            _yoloe = False
+    return _yoloe or None
+
+
+def _yoloe_look(img: np.ndarray, box: list, first: bool = False):
+    """Add the object as it looks in `box` to the prompt (or start it, `first`)."""
+    global _vpes
+    model = _yoloe_model()
+    if model is None:
+        return
+    import torch
+    from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+    h, w = img.shape[:2]
+    p = YOLOEVPSegPredictor(overrides=dict(task="segment", mode="predict", save=False, batch=1, verbose=False))
+    p.set_prompts({"bboxes": np.array([[box[0] * w, box[1] * h, box[2] * w, box[3] * h]]), "cls": np.array([0])})
+    p.setup_model(model=model.model, verbose=False)
+    vpe = p.get_vpe(img)
+    _vpes = [vpe] if first or not _vpes else [_vpes[0]] + (_vpes[1:] + [vpe])[-(BANK_MAX - 1):]
+    mean = torch.nn.functional.normalize(torch.stack(_vpes).mean(0), dim=-1)
+    model.set_classes(["object0"], mean)
+
+
+def _detect_yoloe(img: np.ndarray) -> dict | None:
+    model = _yoloe_model()
+    if model is None or not _vpes:
+        return None
+    r = model.predict(img, conf=YOLOE_MIN, verbose=False)[0]
+    if not len(r.boxes):
+        return None
+    k = int(r.boxes.conf.argmax())
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in r.boxes.xyxy[k].cpu())
+    conf = float(r.boxes.conf[k])
+    return {"box": [max(0.0, x1 / w), max(0.0, y1 / h), min(1.0, x2 / w), min(1.0, y2 / h)], "quad": None,
+            "confidence": round(conf, 3), "inliers": None, "method": "yoloe",
+            "evidence": f"YOLOE visual prompt, confidence {conf:.2f}"}
+
+
+def _iou(a, b) -> float:
+    ix, iy = max(0.0, min(a[2], b[2]) - max(a[0], b[0])), max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
+    return ix * iy / union if union > 0 else 0.0
+
+
 def _detect_yolo(img: np.ndarray) -> dict | None:
     if not _hists:
         return None
@@ -459,6 +527,10 @@ def target_init(ref: Reference, jpeg: bytes, box: list) -> bool:
     _bank = [ref]
     img = _bgr(jpeg)
     _remember_look(img, box, first=True)
+    try:
+        _yoloe_look(img, box, first=True)
+    except Exception:              # a GPU/driver hiccup must not stop the tracker
+        pass
     _vit_start(img, box)
     return _vit is not None
 
@@ -475,35 +547,57 @@ def _detect_bank(gray: np.ndarray, hint=None) -> dict | None:
 def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool = True) -> dict | None:
     """The target in this frame: ViT first; if it is not confident, re-find with SIFT over the bank (full
     resolution if needed) and restart ViT there. `redetect=False` (during moves) skips the slow re-find."""
-    global _bank, _learned_at
+    global _bank, _learned_at, _yoloe_learned_at
     if not _bank or all(r.uid != ref.uid for r in _bank):
         _bank = [ref]
     img = _bgr(jpeg)
     weak = None
+    vit = None
     if _vit is not None:
         ok, r = _vit.update(img)
         score = float(_vit.getTrackingScore())
         if ok and score >= VIT_KEEP and r[2] > 4 and r[3] > 4:
             h, w = img.shape[:2]
-            box = [max(0.0, r[0] / w), max(0.0, r[1] / h), min(1.0, (r[0] + r[2]) / w), min(1.0, (r[1] + r[3]) / h)]
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            hit = {"box": box, "quad": None, "confidence": round(score, 3), "inliers": None, "method": "vit",
-                   "evidence": f"learned tracker, score {score:.2f}"}
-            hit["frame_score"] = frame_score(hit, gray)
-            if score < VIT_MIN:
-                weak = hit                 # try the re-find first; fall back to this box
-            else:
-                if score >= VIT_LEARN and time.monotonic() - _learned_at >= LEARN_S:
-                    _learned_at = time.monotonic()
-                    try:                   # the object as it looks from here (a side view, another distance)
-                        new = Reference.from_frame(gray, box, ref.label, ref.kind)
-                        if len(new.pts) >= MIN_INLIERS:
-                            _bank = [_bank[0]] + (_bank[1:] + [new])[-(BANK_MAX - 1):]   # the drawn crop stays
-                    except ValueError:
-                        pass
-                    _remember_look(img, box)
-                    _vit_start(img, box)   # follow its current look, not only the drawn one
-                return hit
+            vit = ([max(0.0, r[0] / w), max(0.0, r[1] / h), min(1.0, (r[0] + r[2]) / w), min(1.0, (r[1] + r[3]) / h)],
+                   score)
+    if _vpes and _yoloe_gpu:               # YOLOE on every frame: it knows the object, not just its last box
+        try:
+            yo = _detect_yoloe(img)
+        except Exception:                  # a GPU hiccup: carry on with the tracker
+            yo = None
+        if yo is not None:
+            if vit is None or _iou(vit[0], yo["box"]) < 0.3:
+                _vit_start(img, yo["box"])          # the tracker had lost it or slid off: put it back
+            if yo["confidence"] >= YOLOE_LEARN and time.monotonic() - _yoloe_learned_at >= YOLOE_LEARN_S:
+                _yoloe_learned_at = time.monotonic()
+                try:
+                    _yoloe_look(img, yo["box"])     # remember this side / distance too
+                except Exception:
+                    pass
+            yo["frame_score"] = frame_score(yo, cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+            return yo
+        if vit is not None and vit[1] < VIT_MIN:
+            vit = None                     # YOLOE does not see it either: a weak tracker box is not trusted
+    if vit is not None:
+        box, score = vit
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        hit = {"box": box, "quad": None, "confidence": round(score, 3), "inliers": None, "method": "vit",
+               "evidence": f"learned tracker, score {score:.2f}"}
+        hit["frame_score"] = frame_score(hit, gray)
+        if score < VIT_MIN:
+            weak = hit                 # try the re-find first; fall back to this box
+        else:
+            if score >= VIT_LEARN and time.monotonic() - _learned_at >= LEARN_S:
+                _learned_at = time.monotonic()
+                try:                   # the object as it looks from here (a side view, another distance)
+                    new = Reference.from_frame(gray, box, ref.label, ref.kind)
+                    if len(new.pts) >= MIN_INLIERS:
+                        _bank = [_bank[0]] + (_bank[1:] + [new])[-(BANK_MAX - 1):]   # the drawn crop stays
+                except ValueError:
+                    pass
+                _remember_look(img, box)
+                _vit_start(img, box)   # follow its current look, not only the drawn one
+            return hit
     if not redetect:
         return weak
     gray = decode_gray(jpeg)
@@ -511,6 +605,11 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
     if hit is None:
         gray = decode_gray(jpeg, full=True)
         hit = _detect_bank(gray, hint)
+    if hit is None and _vpes and not _yoloe_gpu:
+        try:
+            hit = _detect_yoloe(img)       # on the CPU (~0.3 s) only here, while the arm stands still
+        except Exception:
+            hit = None
     if hit is None:
         hit = _detect_yolo(img)
     if hit is not None:

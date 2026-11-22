@@ -11,3 +11,21 @@ dependencies = [
     "opencv-python-headless>=4.10",
     "zeroconf>=0.132,<0.155",
 ]
+
+[project.optional-dependencies]
+# Camera director's visual-prompt detector (YOLOE). `uv sync --locked --extra detector`; runs on an NVIDIA GPU
+# (CUDA 12.8 wheels), falls back to the CPU, and the director works without it (YOLOX / SIFT re-find).
+detector = [
+    "ultralytics>=8.4",
+    "torch>=2.11",
+    "torchvision>=0.26",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", extra = "detector" }]
+torchvision = [{ index = "pytorch-cu128", extra = "detector" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

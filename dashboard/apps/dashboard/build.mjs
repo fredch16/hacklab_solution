@@ -9,6 +9,7 @@ execFileSync("npx", ["tsc"], { stdio: "inherit" });
 cpSync("vendor/qrcode.js", join(dist, "qrcode.js"));
 cpSync("index.html", join(dist, "index.html"));
 cpSync("app.css", join(dist, "app.css"));
+for (const f of ["peter_icon.png", "favicon.png"]) cpSync(f, join(dist, f));   // the Peter app icon
 if (process.argv.includes("--phone")) {
   const out = new URL("../mobile/assets/dashboard/", import.meta.url).pathname;
   mkdirSync(out, { recursive: true });

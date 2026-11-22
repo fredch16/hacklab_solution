@@ -121,7 +121,7 @@ class Dashboard:
 
     async def assets(self, request):
         name = request.match_info.get("name") or "index.html"
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+\.(?:html|css|js)", name) or not (ASSETS / name).is_file():
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+\.(?:html|css|js|png)", name) or not (ASSETS / name).is_file():
             raise web.HTTPNotFound()
         if name == "index.html":
             body = (ASSETS / name).read_text().replace('<html lang="en">', '<html lang="en" data-host="laptop">')
@@ -463,7 +463,8 @@ class Dashboard:
     async def director(self, request):
         """Camera director on the arm server (capture_server.py --director): state, frames, jobs."""
         path = request.match_info["path"]
-        if not re.fullmatch(r"[a-z]+(?:/[a-z0-9_]+){0,2}(?:\.jpg)?", path):
+        if not (re.fullmatch(r"[a-z]+(?:/[a-z0-9_]+){0,2}(?:\.jpg)?", path)
+                or re.fullmatch(r"mesh/[A-Za-z0-9_.-]+\.stl", path)):          # the 3-D view's arm meshes
             raise web.HTTPNotFound()
         url = f"{self.arm}/api/director/{path}" + (f"?{request.query_string}" if request.query_string else "")
         try:

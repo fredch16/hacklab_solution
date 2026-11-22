@@ -38,6 +38,8 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string | null, .
   return e;
 }
 const icon = (c: string) => { const s = h("span", "ico", c); s.setAttribute("aria-hidden", "true"); return s; };
+/** The Peter app icon as a badge in front of the brand name. */
+const logo = () => { const i = h("img", "logo"); i.src = "./peter_icon.png"; i.alt = ""; i.width = i.height = 28; return i; };
 
 async function api(path: string, method = "GET", body?: unknown): Promise<{ status: number; json: any } | null> {
   try {
@@ -298,7 +300,7 @@ function render() {
 
 function brand(extra?: Node) {
   const hd = h("header", "top");
-  hd.append(h("div", "brand", icon("◈"), " LOCAL VISION"));
+  hd.append(h("div", "brand", logo(), " LOCAL VISION"));
   if (extra) hd.append(extra);
   return hd;
 }
@@ -550,7 +552,7 @@ function updateDash() {
   const dev = snap?.device;
   const model = dev?.model ? [dev.manufacturer, dev.model].filter(Boolean).join(" ") : "Waiting for phone\u2026";
   const un = h("button", "btn", "Unpair this browser"); un.dataset.focus = "unpair"; un.onclick = () => void unpair();
-  patch(d.hdr, [h("div", "brand", icon("\u25C8"), " LOCAL VISION"), h("div", "device", model), badge(), h("span", "pill neutral", icon("\u2302"), "LAN only"), un]);
+  patch(d.hdr, [h("div", "brand", logo(), " LOCAL VISION"), h("div", "device", model), badge(), h("span", "pill neutral", icon("\u2302"), "LAN only"), un]);
   patch(d.stale, live ? [h("div", "stale-bar", icon("\u23F8"), `Showing last known values \u2014 not live. Last updated ${formatClock(state.receivedAt)}.`)] : []);
   d.grid.classList.toggle("stale", live);
 

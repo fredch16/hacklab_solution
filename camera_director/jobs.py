@@ -420,13 +420,24 @@ class Director:
 
     # ------------------------------------------------------------ observing a settled view
 
+    async def _joints(self, wait_s: float = 3.0) -> dict:
+        """Fresh joint readings; rides out a short gap in Station's data instead of failing the job."""
+        end = time.monotonic() + wait_s
+        while True:
+            try:
+                return self.state.arm.joints(max_age_s=motion.STALE_S)
+            except RuntimeError:
+                if time.monotonic() > end:
+                    raise
+                await asyncio.sleep(0.1)
+
     async def settle(self) -> tuple[dict, float]:
         await asyncio.sleep(SETTLE_S)
         try:
-            prev = self.state.arm.joints(max_age_s=motion.STALE_S)
+            prev = (await self._joints())
             for _ in range(20):
                 await asyncio.sleep(0.15)
-                now = self.state.arm.joints(max_age_s=motion.STALE_S)
+                now = (await self._joints())
                 if max(abs(now[m] - prev[m]) for m in motion.MOVABLE) <= SETTLE_TOL:
                     return now, time.monotonic()
                 prev = now
@@ -492,7 +503,7 @@ class Director:
     async def _sample(self) -> bool:
         f = self.frame()
         try:
-            joints = self.state.arm.joints(max_age_s=motion.STALE_S)
+            joints = (await self._joints())
         except RuntimeError:
             return False
         if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
@@ -1055,7 +1066,7 @@ class Director:
         self.job["phase"] = "estimate"
         if self.loc is None:
             await self.localize()
-        home_pose = self.state.arm.joints(max_age_s=motion.STALE_S)
+        home_pose = (await self._joints())
         planner, reason = "request", ""
         moves = req.get("moves")
         reach = None if moves else await self.ensure_reach()
@@ -1255,7 +1266,7 @@ class Director:
 
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
-        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        now = (await self._joints())
         i = min(range(len(trail)), key=lambda k: max(abs(trail[k][m] - now[m]) for m in motion.MOVABLE))
         gap = max(abs(trail[i][m] - now[m]) for m in motion.MOVABLE)
         if gap > motion.PATH_STEP_MAX:
@@ -1278,7 +1289,7 @@ class Director:
             if not await self.move(near):
                 raise Hold(f"the route to {near} was refused")
         elif w.get("where") != "view":
-            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            now = (await self._joints())
             views = motion.load_views()
             name, gap = min(((n, max(abs(v[m] - now[m]) for m in motion.MOVABLE)) for n, v in views.items()
                              if n != motion.TRANSIT), key=lambda x: x[1])
@@ -1328,7 +1339,7 @@ class Director:
         yaw, roll = int(req.get("yaw", 500)), float(req.get("roll", 0.0))
         preds = self.predict_all(gate)
         ranked = [n for _, n in sorted(((p["best"]["score"], n) for n, p in preds.items() if p["best"]), reverse=True)]
-        grip = self.state.arm.joints(max_age_s=motion.STALE_S)[motion.GRIPPER]
+        grip = (await self._joints())[motion.GRIPPER]
         chosen = None
         for cand in dict.fromkeys([view] + ranked):
             if cand in ("home", motion.TRANSIT) or cand in self.heavy or not motion.view_checked(cand):
@@ -1454,7 +1465,7 @@ class Director:
 
     async def snap_home(self, view: str):
         """After a take that ended next to its view, put the arm exactly back on it."""
-        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        now = (await self._joints())
         v = motion.load_views()[view]
         if max(abs(v[m] - now[m]) for m in motion.MOVABLE) > 15:
             await self.move_path(self._bridge(now, {m: v[m] for m in motion.MOVABLE}, step=100), f"back onto {view}")
@@ -1530,7 +1541,7 @@ class Director:
         (instead of the motion layer's lift to transit). Only within SNAP_MAX steps on every joint."""
         if not gate["moves"]:
             raise Hold("physical moves not approved")
-        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        now = (await self._joints())
         views = motion.load_views()
         name, gap = min(((n, max(abs(v[m] - now[m]) for m in motion.MOVABLE)) for n, v in views.items()),
                         key=lambda x: x[1])
@@ -1552,7 +1563,7 @@ class Director:
         transit = {**views[motion.TRANSIT], motion.GRIPPER: here[motion.GRIPPER]}
         for i, mv in enumerate(moves, 1):
             self.step(f"move {i} of {len(moves)}: planning {mv['name']}", shot_index=i, shot_count=len(moves))
-            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            now = (await self._joints())
             can_lift = not filming and len(trail) == 1 and self.where().get("where") == "view"
             starts = [now, transit] if can_lift else [now]
             plan = await self.vision(orbit.plan_shot, self.loc["point_m"], starts, self.state.arm.ranges(),
@@ -1569,7 +1580,7 @@ class Director:
                 self.step(f"move {i} of {len(moves)}: rising to transit first")
                 if not await self.move(motion.TRANSIT):
                     raise Hold("the route up to the transit pose was refused")
-                now = self.state.arm.joints(max_age_s=motion.STALE_S)
+                now = (await self._joints())
                 trail[:] = [{m: now[m] for m in motion.MOVABLE}]
             self.step(f"move {i} of {len(moves)}: getting into position for {mv['name']}")
             approach = self._bridge(now, plan["poses"][0])
@@ -1596,7 +1607,7 @@ class Director:
             if filming and not await self._hold_shot(2.0, "opening"):
                 raise Hold("marked subject left the opening shot")
             self.step(f"move {i} of {len(moves)}: {mv['name']}")
-            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            now = (await self._joints())
             path = self._bridge(now, plan["poses"][0]) + plan["poses"][1:]
             self._save_trail(trail + path)
             try:
@@ -1781,7 +1792,7 @@ class Director:
                 centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
                 if abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD:
                     continue
-                now = self.state.arm.joints(max_age_s=motion.STALE_S)
+                now = (await self._joints())
                 step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect())
                 if not step["ok"]:
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
@@ -1804,7 +1815,7 @@ class Director:
         obs = self.obs
         if obs is None or f is None or f[0] - obs["frame_id"] > 10:
             raise Hold("the target is not being tracked right now")
-        joints, ranges = self.state.arm.joints(max_age_s=motion.STALE_S), self.state.arm.ranges()
+        joints, ranges = (await self._joints()), self.state.arm.ranges()
         b = obs["box"]
         wh = framing.jpeg_size(f[2]) or (4, 3)
         bbox = {"cx": (b[0] + b[2]) / 2, "cy": (b[1] + b[3]) / 2, "w": b[2] - b[0], "h": b[3] - b[1]}

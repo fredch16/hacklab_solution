@@ -58,6 +58,13 @@ Scene (filmed as a Director Show because `computed_paths` is false): establishin
 
 Detection tip measured on the far sticker: SIFT on a 2× upscaled region around the last box gives confidence 0.97 (48 inliers) in 75 ms against 0.60 at full resolution; worth adding to `vision.detect` for small boxes.
 
+## Safety guidelines for planned camera moves (owner, 23 Nov)
+
+- **Stay well above the table:** "closer" means the object larger in frame, never the camera lowered toward the desk. Claude's filming instructions say so; Claude keyframes with dist × sin(elev) < 12 cm are refused (`brief.validate`), and `orbit.plan_shot` refuses any solved path whose camera comes below `MIN_CAMERA_HEIGHT_M` (12 cm) above the table.
+- **Close enough, never lost:** the whole object stays in frame with margin, and it may fill at most `MAX_TARGET_FILL` (60 %) of the frame's width or height.
+- `close` is now **checked** in `views.json` (supervised first-run there-and-back on 23 Nov, no faults), so voice and Claude can use it. `side_low` is still unchecked: run it the same way from `/control` before voice uses it.
+- A second agent (Codex) committed to this branch in the same working tree (`303dc93`, `4dd5e0e`, `565e151`: Claude-planned `film` takes, voice wiring). Work one agent at a time, or pull and check `git log` before editing.
+
 ## Phone pairing fix (23 Nov)
 
 QR pairing kept failing ("QR expired" on the second scan): the laptop gateway held one pairing proof and every QR request from any open tab replaced it, so the QR being scanned stopped matching. Fixed in `laptop_dashboard.py` (`0260abc`): while a pairing request is pending (< 45 s) every tab gets the same QR. Phone app 0.1.0 (installed 22 Nov 00:34) is current; no APK update was needed. After a gateway restart the phone must pair again.

@@ -1169,8 +1169,11 @@ class Director:
             raise Hold("physical moves not approved")
         start_where = self.where()
         self.job["phase"] = "estimate"
+        self.step("looking at the marked subject")
         joints, stamp = await self.settle()
         look = await self.observe("film/start", joints, stamp)
+        if not look["valid"]:
+            look = self._live_look() or look   # a plain or big object: the live tracker sees it, feature matching not
         if not look["valid"]:
             raise Hold("the marked subject is not visible")
         self.sightings, self.loc = [], None
@@ -1254,6 +1257,8 @@ class Director:
                 joints, stamp = await self.settle()
                 look = await self.observe("film/start", joints, stamp)
                 if not look["valid"]:
+                    look = self._live_look() or look
+                if not look["valid"]:
                     raise Hold("subject lost before the next shot")
             box = look["box"]
             centre = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
@@ -1288,6 +1293,8 @@ class Director:
                 self._lock_at_limit(trail + path["stage"], name, str(e))
             joints, stamp = await self.settle()
             ready = await self.observe("film/ready", joints, stamp)
+            if not ready["valid"]:
+                ready = self._live_look() or ready
             if not ready["valid"]:
                 raise Hold("marked subject is not visible in the opening position")
             self.job["phase"] = "cinematic"
@@ -1551,6 +1558,13 @@ class Director:
             raise Hold(f"the pull-out to {wide} was refused")
         shots.append({"shot": f"closing wide ({wide})", "steady": await self._hold_shot(hold, f"closing, {wide}")})
         self.job["result"] = {"shots": shots}
+
+    def _live_look(self) -> dict | None:
+        """The live tracker's fresh, confident detection as a settled look (YOLOE, or ViT above VIT_MIN)."""
+        o, f = self.obs, self.frame()
+        if not o or not f or f[0] - o["frame_id"] > 8 or (o.get("method") == "vit" and o["confidence"] < V.VIT_MIN):
+            return None
+        return {"valid": True, "box": o["box"], "confidence": o["confidence"], "method": o.get("method")}
 
     def _note_once(self, text: str):
         if getattr(self, "_last_note", None) != text:

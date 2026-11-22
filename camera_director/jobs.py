@@ -84,7 +84,7 @@ class TooHeavy(Hold):
 
 
 FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
-UNFRAMED_VIEWS = ("left", "right")   # views that are never turned onto the object (owner, 22 Nov)
+UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
 WATCH_FRAME_S = 1.5       # keep in view re-frames on the object at most this often

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -336,18 +337,21 @@ def look_many(ref: Reference, jpegs: list[bytes]) -> tuple[list, dict]:
 #
 # OpenCV's ViT tracker (opencv_zoo object_tracking_vittrack, ~0.7 MB ONNX) follows any object frame to frame
 # through scale and viewpoint changes, textured or not, at a few ms per frame. It is trusted above VIT_MIN; below
-# that SIFT re-finds the object from the reference bank and restarts it. While ViT tracks confidently and the
-# object's size in the picture has changed a lot, a new reference crop is added to the bank, so re-finding works
-# at every distance. On real footage (21 Nov clip): ViT kept the sticker in 122/149 frames at 4 ms, SIFT 94/149.
+# that SIFT re-finds the object from the reference bank and restarts it (or, if that fails, a box down to VIT_KEEP
+# is kept). While ViT tracks confidently it learns the object's current look every LEARN_S: a crop for the bank
+# (the drawn crop always stays) and a fresh ViT template, so side views and other distances keep being recognized. On real footage (21 Nov clip): ViT kept the sticker in 122/149 frames at 4 ms, SIFT 94/149.
 
 VIT_MODEL = Path(__file__).resolve().parent.parent / "director_data" / "models" / "vittrack.onnx"
 VIT_MIN = 0.5              # tracking score below this: the tracker is not trusted (it drifts to wrong boxes)
+VIT_KEEP = 0.3             # ...unless the SIFT re-find also fails: then a weaker box still beats losing the object
+VIT_LEARN = 0.65           # confident enough to learn the object's current look (side views look different)
+LEARN_S = 1.5              # at most this often
 BANK_MAX = 5
-BANK_SCALE = 1.6           # add a reference when the box is this much bigger or smaller than every bank crop
 TRACK_W = 960
 
 _vit = None
 _bank: list = []
+_learned_at = 0.0
 
 
 def _bgr(jpeg: bytes) -> np.ndarray:
@@ -394,32 +398,36 @@ def _detect_bank(gray: np.ndarray, hint=None) -> dict | None:
 def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool = True) -> dict | None:
     """The target in this frame: ViT first; if it is not confident, re-find with SIFT over the bank (full
     resolution if needed) and restart ViT there. `redetect=False` (during moves) skips the slow re-find."""
-    global _bank
+    global _bank, _learned_at
     if not _bank or all(r.uid != ref.uid for r in _bank):
         _bank = [ref]
     img = _bgr(jpeg)
+    weak = None
     if _vit is not None:
         ok, r = _vit.update(img)
         score = float(_vit.getTrackingScore())
-        if ok and score >= VIT_MIN and r[2] > 4 and r[3] > 4:
+        if ok and score >= VIT_KEEP and r[2] > 4 and r[3] > 4:
             h, w = img.shape[:2]
             box = [max(0.0, r[0] / w), max(0.0, r[1] / h), min(1.0, (r[0] + r[2]) / w), min(1.0, (r[1] + r[3]) / h)]
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             hit = {"box": box, "quad": None, "confidence": round(score, 3), "inliers": None, "method": "vit",
                    "evidence": f"learned tracker, score {score:.2f}"}
             hit["frame_score"] = frame_score(hit, gray)
-            side = max(r[2], r[3])
-            if score >= 0.7 and len(_bank) < BANK_MAX + 1 and all(
-                    not (1 / BANK_SCALE < side / max(b.patch.shape) < BANK_SCALE) for b in _bank):
-                try:                       # a new distance / angle: remember what the object looks like here
-                    new = Reference.from_frame(gray, box, ref.label, ref.kind)
-                    if len(new.pts) >= MIN_INLIERS:
-                        _bank = (_bank + [new])[:BANK_MAX]
-                except ValueError:
-                    pass
-            return hit
+            if score < VIT_MIN:
+                weak = hit                 # try the re-find first; fall back to this box
+            else:
+                if score >= VIT_LEARN and time.monotonic() - _learned_at >= LEARN_S:
+                    _learned_at = time.monotonic()
+                    try:                   # the object as it looks from here (a side view, another distance)
+                        new = Reference.from_frame(gray, box, ref.label, ref.kind)
+                        if len(new.pts) >= MIN_INLIERS:
+                            _bank = [_bank[0]] + (_bank[1:] + [new])[-(BANK_MAX - 1):]   # the drawn crop stays
+                    except ValueError:
+                        pass
+                    _vit_start(img, box)   # follow its current look, not only the drawn one
+                return hit
     if not redetect:
-        return None
+        return weak
     gray = decode_gray(jpeg)
     hit = _detect_bank(gray, hint)
     if hit is None:
@@ -428,4 +436,5 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
     if hit is not None:
         hit["frame_score"] = frame_score(hit, gray)
         _vit_start(img, hit["box"])            # pick the learned tracker up again from here
-    return hit
+        return hit
+    return weak

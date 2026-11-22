@@ -1531,8 +1531,8 @@ class Director:
         """Is this detection where the fused estimate says the object is (seen from `joints`)? A tracker that slid
         onto something else at the edge of a view is not. True while there is no confident estimate yet."""
         st = self.obj.state()
-        if st is None or st["sigma_m"] > 0.06:
-            return True
+        if st is None or st["sigma_m"] > 0.06 or obs.get("method") != "vit":
+            return True                       # YOLOE / feature matches recognise the object itself: trusted
         uv = framing.project(tuple(self.obj.x), framing.camera_pose(joints, self.state.arm.ranges()), self._aspect())
         if uv is None:
             return False

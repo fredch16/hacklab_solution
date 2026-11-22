@@ -37,6 +37,12 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 - **Director Show** (film grammar, the best demo): establishing hold at `wide` → push-in along the checked wide–top line → gimbal arc at `top` (yaw −325..+350 steps, sticker in frame 77 %) → hold → pull-out to `wide` → closing hold. 66 s end to end, no faults, ends on `wide`. The sticker is too small to recognise from `wide` at its current spot, so the wide holds report `steady: false`. Motor 2 briefly touched load 284 during a move without tripping: close to the limit, watch it.
 - Shoulder-load guard (23 % for 1.2 s) caught real overload build-ups and locked; easing back worked; but a stop at a heavy pose can still trip on the next move (see open issues).
 
+## Latest real-arm result (23 Nov, owner pressed Scene, sticker moved further from the base)
+
+Scene (filmed as a Director Show because `computed_paths` is false): establishing `wide` steady → push-in steady → **arc at `top`, yaw −300..+325, sticker in frame 100 %** → hold steady → closing `wide` steady; no faults, motor 2 peak load 272 (trip: 25 % for 2 s). The owner reports the earlier overloads also came from the object lying too close to the base. **First thing to try next:** with the object at this distance, set `computed_paths: true` and run one short free-camera arc while watching motor 2 (the guard and the lock are in place); keep it off again if it trips.
+
+Detection tip measured on the far sticker: SIFT on a 2× upscaled region around the last box gives confidence 0.97 (48 inliers) in 75 ms against 0.60 at full resolution; worth adding to `vision.detect` for small boxes.
+
 ## Dashboard buttons and what each does on the real arm (23 Nov)
 
 | Button | Status on the real arm |

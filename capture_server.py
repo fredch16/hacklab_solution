@@ -920,7 +920,8 @@ class State:
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
 
-    async def start_path(self, poses: list, label: str, gen: int | None = None, load_guard: bool = True) -> dict:
+    async def start_path(self, poses: list, label: str, gen: int | None = None, load_guard: bool = True,
+                         speed: float = motion.SPEED_FIRST) -> dict:
         """Start motion.go_through (a computed, model-checked path from the camera director) like start_move."""
         gen = self.gen if gen is None else gen
 
@@ -932,9 +933,10 @@ class State:
             self.move_view, self.move_outcome = label, None
             # computed poses are new territory: first-run speed, like any view nobody has checked (and the shoulder
             # servo's overload protection tripped twice on the real arm at slow speed)
-            self.move_started, self.move_speed = time.time(), ("first-run", motion.SPEED_FIRST)
+            # (follow's small wrist/base corrections, shoulder parked, may ask for more)
+            self.move_started, self.move_speed = time.time(), ("first-run" if speed == motion.SPEED_FIRST else "path", speed)
             self._forget_where()
-            self.move_task = asyncio.create_task(self._run_move(label, motion.SPEED_FIRST, False, path=poses,
+            self.move_task = asyncio.create_task(self._run_move(label, speed, False, path=poses,
                                                                 load_guard=load_guard))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": label, "generation": gen}

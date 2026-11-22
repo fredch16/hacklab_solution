@@ -52,7 +52,7 @@ GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4",
                    "usbvideo/ca70cc12cf078fa3798e48cd0a11fabd")   # the same camera after the 22 Nov reboot
 
 TICK_S = 0.2              # frame sampling period
-TRACK_S = 0.25            # live tracking period (learned tracker, a few ms per frame; also while the arm moves)
+TRACK_S = 0.15            # live tracking period (learned tracker, a few ms per frame; also while the arm moves)
 FRAME_CACHE = 60          # frames kept for selection by id (~12 s)
 SELECT_MAX_AGE_S = 600.0  # a box drawn on a frozen frame older than this is refused (the frame is pinned meanwhile)
 FRAME_FRESH_S = 1.0       # a frame older than this is not used for decisions
@@ -83,7 +83,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
-GRIPPER_ZONE = ((0.25, 0.80), 0.62)   # follow: the jaws fill the bottom middle of the gripper camera picture
+FOLLOW_SPEED = motion.SPEED_NORMAL   # follow's corrections: <= 150 steps of base yaw and wrist, shoulder parked
 FOLLOW_DEAD = 0.08        # follow: the object's centre may be this far from the picture's centre before turning
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 
@@ -941,13 +941,14 @@ class Director:
 
     # ---- free camera scenes: moves generated around the object (arcs, cranes, push-ins, mixes)
 
-    async def move_path(self, poses: list[dict], label: str, sample: bool = False, require_visible: bool = False) -> None:
+    async def move_path(self, poses: list[dict], label: str, sample: bool = False, require_visible: bool = False,
+                        speed: float = motion.SPEED_FIRST) -> None:
         """One continuous computed move (motion.go_through) through the command owner, frames scored if `sample`."""
         self.job["moving_to"] = label
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
-                await self.state.start_path(poses, label, gen=self.job_gen)
+                await self.state.start_path(poses, label, gen=self.job_gen, speed=speed)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1800,7 +1801,7 @@ class Director:
         self.step(f"following the object from {view}")
         try:
             while time.monotonic() < end:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
                 f, obs = self.frame(), self.obs
                 if obs is None or f is None or obs["frame_id"] <= since or f[0] - obs["frame_id"] > 8:
                     continue                  # not seen (or not since the last correction): hold still
@@ -1808,8 +1809,6 @@ class Director:
                     continue                  # a weak box may have slid onto something else: never steer by it
                 b = obs["box"]
                 centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-                if centre[1] > GRIPPER_ZONE[1] and GRIPPER_ZONE[0][0] < centre[0] < GRIPPER_ZONE[0][1]:
-                    continue                  # on the jaws: they move with the camera, chasing them only tilts down
                 if abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD:
                     continue
                 # from the last commanded pose, not the measured one (that sags under load, step after step)
@@ -1818,7 +1817,7 @@ class Director:
                 if not step["ok"]:
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
                     continue
-                await self.move_path([step["pose"]], "follow")
+                await self.move_path([step["pose"]], "follow", speed=FOLLOW_SPEED)
                 commanded = dict(step["pose"])
                 self.trail.append(step["pose"])
                 since = (self.frame() or (obs["frame_id"],))[0]

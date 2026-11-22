@@ -416,11 +416,13 @@ def proposals(img: np.ndarray) -> list[tuple[list, float]]:
 YOLOE_MODEL = VIT_MODEL.parent / "yoloe-26m-seg.pt"
 YOLOE_MIN = 0.3            # detection confidence trusted as the object
 YOLOE_LEARN = 0.6          # confident enough to add this look to the prompt
+YOLOE_CHECK_S = 1.0        # YOLOE checks the tracker this often even when the tracker is sure
 YOLOE_LEARN_S = 5.0        # at most this often (re-prompting rebuilds YOLOE's predictor: ~0.25 s)
 _yoloe = None              # the model, False when unavailable
 _yoloe_gpu = False
 _vpes: list = []           # prompt embeddings of the object's looks
 _yoloe_learned_at = 0.0
+_yoloe_checked_at = 0.0
 
 
 def _yoloe_model():
@@ -560,7 +562,12 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
             h, w = img.shape[:2]
             vit = ([max(0.0, r[0] / w), max(0.0, r[1] / h), min(1.0, (r[0] + r[2]) / w), min(1.0, (r[1] + r[3]) / h)],
                    score)
-    if _vpes and _yoloe_gpu:               # YOLOE on every frame: it knows the object, not just its last box
+    global _yoloe_checked_at
+    unsure = vit is None or vit[1] < VIT_MIN
+    if _vpes and _yoloe_gpu and (unsure or time.monotonic() - _yoloe_checked_at >= YOLOE_CHECK_S):
+        # the OpenCV tracker does the per-frame work; YOLOE (which knows the object, not just its last box) steps
+        # in when it is unsure, and checks once a second that it has not slid onto something else
+        _yoloe_checked_at = time.monotonic()
         try:
             yo = _detect_yoloe(img)
         except Exception:                  # a GPU hiccup: carry on with the tracker
@@ -576,7 +583,7 @@ def track(ref: Reference, jpeg: bytes, hint: list | None = None, redetect: bool 
                     pass
             yo["frame_score"] = frame_score(yo, cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
             return yo
-        if vit is not None and vit[1] < VIT_MIN:
+        if unsure:
             vit = None                     # YOLOE does not see it either: a weak tracker box is not trusted
     if vit is not None:
         box, score = vit

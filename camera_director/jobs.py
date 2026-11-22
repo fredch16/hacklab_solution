@@ -92,6 +92,7 @@ UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: 
 SKILL_FILLER = {"hey", "peter", "claude", "please", "can", "could", "you", "do", "a", "an", "the", "now", "again",
                 "for", "me", "us", "film", "shot", "plan", "it", "that", "this", "some", "just", "go", "ahead"}
 JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
+TAKE_LOST_S = 4.0         # a take stops when the object has been out of sight this long
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
@@ -1006,12 +1007,14 @@ class Director:
             except Exception as e:
                 raise Hold(f"move refused: {e}")
             task = self.state.move_task
-            misses = 0
+            seen_at = time.monotonic()
             while not task.done():
                 await asyncio.wait({task}, timeout=0.4)
                 if sample and not task.done():
-                    misses = 0 if await self._sample() else misses + 1
-                    if require_visible and misses >= 3 and not task.done():
+                    if await self._sample():
+                        seen_at = time.monotonic()
+                    # quick sways (a dance, a nod) hide the object for a moment; only a take that really lost it stops
+                    if require_visible and time.monotonic() - seen_at > TAKE_LOST_S and not task.done():
                         self.job["phase"] = "occluded"
                         await self.state.stop("subject lost during the take")
             out = self.state.move_outcome or {}

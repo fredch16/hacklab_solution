@@ -8,6 +8,14 @@ job; STOP and any person's command also cancel the job (State.command / State._s
 Every move is to a saved view or to a stop part-way along a checked line between two checked views
 (motion.plan_along): no computed poses.
 
+A director, not a search: the arm does not sweep candidate poses with the camera rolling. The target
+is localized on the desk from settled sightings (measured servo positions + live calibration through
+fk.py, camera_director/predict.py); every approved pose is scored by prediction without moving; then
+each preset gets at most one deliberate move to its predicted best pose, verified by the camera. A
+better view passed on the way in can be pulled back to (a short stop along the same checked line).
+Keep in view changes shot only when the target stays covered, announces the move, dwells, and does
+not bounce straight back.
+
 Physical motion needs the operator's approval file director_safety.json (ignored by git). Without
 it the real arm only gets a plan and a score of the current view (DRY RUN). In --sim the same jobs
 run on the simulated arm with a rendered camera, labelled SIMULATED.
@@ -16,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 import uuid
 from collections import deque
@@ -29,6 +38,7 @@ import framing
 import motion
 from station_arm import logger
 
+from . import predict
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,9 +53,17 @@ FRAME_FRESH_S = 1.0       # a frame older than this is not used for decisions
 SETTLE_S = 0.6            # wait after a move before checking that the joints stand still
 SETTLE_TOL = 4            # steps between two reads 0.15 s apart
 OBSERVE_FRAMES = 5        # frames scored per view after settling
-FRACTIONS = (0.12, 0.25)  # stops along each checked line from a preset (<= motion.ALONG_MAX)
-MIN_TRAVEL = 100          # a stop moving no joint this far is too close to the preset to be a new view
-CANDIDATES = 6
+PULLBACK_MARGIN = 0.08   # a view seen on the way in must beat the arrival by this much to pull back to it
+PULLBACK_MIN_S = 0.04     # ...and lie at least this far back along the line
+VERIFY_MIN = 0.6          # only presets predicted at least this good get a verification move...
+VERIFY_EDGE = 0.5         # ...with the target predicted clear of the picture edge (edge clearance >= 0.5, ~6%)
+PREDICTED_DISCOUNT = 0.9  # a predicted (unvisited) shot counts for a bit less than a verified one
+WATCH_LOOK_S = 0.5        # keep in view: one look this often
+MIN_DWELL_S = 8.0         # ...stay at least this long after any move
+NO_RETURN_S = 30.0        # ...do not go back to a view left because it was covered for this long
+PULL_BACK_S = 15.0        # ...after this long at a fallback view, try the preferred view once
+ANNOUNCE_S = 2.0          # ...every automatic move is announced this long before it starts
+MIN_ANGLE_DEG = 20.0      # ...an alternative must look at the target from at least this different a direction
 RECHECK_RATIO = 0.85      # a best view counts as verified when a fresh look scores at least this share
 SHOT_HOLD_S = 3.0         # cinematic: how long each shot is held
 MOVE_SPEED = "slow"
@@ -72,6 +90,9 @@ class Director:
         self.job_gen = 0
         self._own_move = False
         self.catalogue: dict[str, dict] = {}
+        self.sightings: list = []            # (measured joints, box) from settled views of this target
+        self.loc: dict | None = None         # predict.localize() result
+        self.samples: list = []              # frames scored during the last sampled move
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
         state.loop.call_soon_threadsafe(lambda: setattr(self, "_task", asyncio.ensure_future(self._run())))
@@ -167,26 +188,6 @@ class Director:
         return {"mode": "DRY RUN" if reasons else "PHYSICAL", "moves": not reasons, "reasons": reasons,
                 "lines": sorted(lines), "max_fraction": frac}
 
-    def candidates(self, preset: str, gate: dict, limit: int = CANDIDATES) -> list[dict]:
-        """Stops along checked lines from `preset`; in PHYSICAL mode only the approved lines and fractions."""
-        views, out = motion.load_views(), []
-        for other in motion.view_names():
-            if other == preset or not motion.view_checked(other):
-                continue
-            kind, why = motion.route_kind(preset, other)
-            if kind not in ("direct", "arc"):
-                continue
-            line = "-".join(sorted((preset, other)))
-            if gate["lines"] is not None and line not in gate["lines"]:
-                continue
-            for s in FRACTIONS:
-                if s > gate["max_fraction"] + 1e-9:
-                    continue
-                travel = max(abs(views[other][m] - views[preset][m]) * s for m in motion.MOVABLE)
-                if travel >= MIN_TRAVEL:
-                    out.append({"toward": other, "s": s, "route": kind, "line": line, "travel_steps": round(travel)})
-        return out[:limit]
-
     # ------------------------------------------------------------ target
 
     def _set_target(self, ref: V.Reference, frame_id: int, how: str):
@@ -195,6 +196,7 @@ class Director:
                        "how": how, "set_at": round(time.time(), 2)}
         self.catalogue.clear()   # results for another target say nothing about this one
         self.thumbs.clear()
+        self.sightings, self.loc = [], None
         self.note(f"target {ref.label} ({how})")
 
     async def select(self, req: dict) -> tuple[int, dict]:
@@ -319,11 +321,12 @@ class Director:
 
     # ------------------------------------------------------------ moving
 
-    async def move(self, view: str, along: tuple[str, float] | None = None) -> bool:
-        """One move through the capture server's command owner. True when it arrived, False when the
-        motion layer refused before commanding anything; Hold when a move failed part-way."""
+    async def move(self, view: str, along: tuple[str, float] | None = None, sample: bool = False) -> bool:
+        """One deliberate move through the capture server's command owner. True when it arrived, False when
+        the motion layer refused before commanding anything; Hold when a move failed part-way. With `sample`,
+        frames seen on the way are scored (self.samples) so a better view passed en route can be pulled back to."""
         self.job["moving_to"] = view if not along else f"{view} → {along[0]} {along[1]:.0%}"
-        self._own_move = True
+        self._own_move, self.samples = True, []
         try:
             try:
                 await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along)
@@ -332,7 +335,10 @@ class Director:
             except Exception as e:     # refused by the command owner (STOP since the job began, busy, no data)
                 raise Hold(f"move refused: {e}")
             task = self.state.move_task
-            await asyncio.shield(task)
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.25)     # never cancels the move: only STOP does
+                if sample and not task.done():
+                    await self._sample()
             out = self.state.move_outcome or {}
         finally:
             self._own_move = False
@@ -344,9 +350,61 @@ class Director:
             return False
         raise Hold(f"the move to {view} did not finish: {out.get('error')}")
 
+    async def _sample(self):
+        f = self.frame()
+        try:
+            joints = self.state.arm.joints(max_age_s=motion.STALE_S)
+        except RuntimeError:
+            return
+        if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
+            return
+        gray = await asyncio.to_thread(V.decode_gray, f[2])
+        hit = await asyncio.to_thread(V.detect, self.ref, gray)
+        if hit:
+            self.samples.append({"joints": joints, "score": V.frame_score(hit, gray), "box": hit["box"]})
+
+    def pullback(self, dest: str, start: str | None, gate: dict, than: float | None) -> dict | None:
+        """A stop on the line start -> dest, near dest, where the camera saw the target better on the way in
+        (e.g. a hand covers it at dest). Only on a checked line within the allowed fraction of dest."""
+        if not self.samples or not start or start == dest or start not in motion.view_names():
+            return None
+        kind, _ = motion.route_kind(dest, start)
+        line = "-".join(sorted((dest, start)))
+        if kind not in ("direct", "arc") or (gate["lines"] is not None and line not in gate["lines"]):
+            return None
+        views = motion.load_views()
+        best = max(self.samples, key=lambda x: x["score"])
+        s = round(1.0 - predict.line_fraction(best["joints"], views[start], views[dest]), 3)
+        if not PULLBACK_MIN_S <= s <= min(gate["max_fraction"], motion.ALONG_MAX):
+            return None
+        if than is not None and best["score"] < than + PULLBACK_MARGIN:
+            return None
+        return {"toward": start, "s": s, "route": kind, "seen_score": best["score"]}
+
     def where(self) -> dict:
         w = (self.state.where or {}).get("where") or {}
         return w
+
+    async def go_shot(self, p: str, toward: str | None, s: float, key: str, sample: bool = False) -> dict:
+        """Move to a shot (a preset, or a stop along one of its checked lines) and look. Moves only when
+        the arm is not already there; a stop on the same line is reached directly along it."""
+        w = self.where()
+        on_line = toward and w.get("where") == "between" and {w.get("view"), w.get("to")} == {p, toward}
+        at_p = w.get("where") == "view" and w.get("view") == p
+        if not (on_line or at_p):
+            if not await self.move(p, sample=sample):
+                raise Hold(f"the route to {p} was refused")
+        if toward and not (on_line and abs(self._line_s(p, toward) - s) < 0.02):
+            if not await self.move(p, (toward, s)):
+                raise Hold(f"the stop {s:.0%} toward {toward} was refused")
+        joints, t = await self.settle()
+        return await self.observe(key, joints, t)
+
+    def _line_s(self, p: str, toward: str) -> float:
+        w = self.where()
+        if w.get("where") != "between":
+            return 0.0
+        return w["s"] if w.get("view") == p else 1.0 - w["s"]
 
     # ------------------------------------------------------------ jobs
 
@@ -368,7 +426,7 @@ class Director:
     def start(self, req: dict) -> tuple[int, dict]:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
-                   "tour": self._tour, "center": self._center}
+                   "tour": self._tour, "center": self._center, "watch": self._watch}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
@@ -376,10 +434,10 @@ class Director:
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
         if kind != "tour" and self.ref is None:
-            return 409, {"ok": False, "error": "no target: use Auto-find sticker or Select object first"}
+            return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
-        self.job = {"id": uuid.uuid4().hex[:8], "kind": kind, "mode": gate["mode"], "status": "RUNNING",
+        self.job = {"id": uuid.uuid4().hex[:8], "kind": kind, "mode": gate["mode"], "status": "RUNNING", "phase": None,
                     "step": "starting", "progress": {}, "reason": None, "result": None, "moving_to": None,
                     "started_at": round(time.time(), 2), "ended_at": None}
         self.job_task = asyncio.ensure_future(self._wrap(runners[kind], req, gate))
@@ -399,6 +457,7 @@ class Director:
             logger.exception("director job")
             self.job["status"], self.job["reason"] = "HOLD", f"internal error: {type(e).__name__}: {e}"
         finally:
+            self.job["phase"] = None
             self.job["ended_at"] = round(time.time(), 2)
             self.job["step"] = self.job["status"].lower()
             self.note(f"{self.job['kind']} job {self.job['status']}" + (f": {self.job['reason']}" if self.job["reason"] else ""))
@@ -408,85 +467,128 @@ class Director:
         self.job["step"] = text
         self.job["progress"].update(progress)
 
+    # ---- localize and predict (no motion)
+
+    def _aspect(self) -> float:
+        f = self.frame()
+        wh = framing.jpeg_size(f[2]) if f else None
+        return wh[0] / wh[1] if wh else 4 / 3
+
+    async def localize(self, look: bool = True) -> dict:
+        """Add a settled sighting from the current pose (if `look`) and localize the target from all of them."""
+        if look:
+            joints, t = await self.settle()
+            obs = await self.observe("locate", joints, t)
+            if not obs["valid"]:
+                raise Hold(f"the target is not visible from the current pose ({obs['reason']}); point the camera at it first")
+            self._add_sighting(joints, obs["box"])
+        self.loc = await asyncio.to_thread(predict.localize, self.sightings, self.state.arm.ranges(), self._aspect())
+        if not self.loc["ok"]:
+            raise Hold(f"cannot localize the target: {self.loc['reason']}")
+        self.note(f"target at {self.loc['point_m']} m, {self.loc['size_m'] * 100:.1f} cm wide ({self.loc['method']}, "
+                  f"residual {self.loc['residual_m'] * 100:.1f} cm)")
+        return self.loc
+
+    def _add_sighting(self, joints: dict, box: list):
+        far = all(max(abs(joints[m] - j[m]) for m in motion.MOVABLE) > 40 for j, _ in self.sightings)
+        if far:
+            self.sightings = (self.sightings + [(dict(joints), list(box))])[-8:]
+
+    def predict_all(self, gate: dict) -> dict[str, dict]:
+        """Predicted best shot per checked preset from the current localization."""
+        ranges = self.state.arm.ranges()
+        grip = self.state.arm.joints()[motion.GRIPPER]
+        aspect, out = self._aspect(), {}
+        for p, cands in predict.candidate_poses(ranges, grip, gate).items():
+            preds = []
+            for c in cands:
+                pv = predict.predict_view(c["joints"], self.loc, ranges, aspect)
+                preds.append({k: v for k, v in c.items() if k != "joints"} | pv)
+            vis = [x for x in preds if x["visible"]]
+            out[p] = {"best": max(vis, key=lambda x: x["score"]) if vis else None, "count": len(preds),
+                      "visible": len(vis), "why_not": None if vis else preds[0].get("reason")}
+        return out
+
+    # ---- survey: estimate, then one deliberate verification move per preset
+
     async def _survey(self, req: dict, gate: dict):
         presets = req.get("presets") or motion.view_names()
         known = motion.view_names()
         bad = [p for p in presets if p not in known]
         if bad or not presets:
             raise Hold(f"unknown presets {bad}; known: {known}")
-        for i, p in enumerate(presets, 1):
-            self.step(f"preset {p}", preset=p, preset_index=i, preset_count=len(presets), candidate_index=0, candidate_count=0)
-            self.catalogue[p] = await self._survey_preset(p, gate)
+        self.job["phase"] = "estimate"
+        self.step("localizing the target from the measured arm pose")
+        await self.localize()
+        self._predict_into_catalogue(presets, gate)
+        self.job["result"] = {"localization": self.loc}
+        if not gate["moves"] or req.get("verify") is False:
+            self.job["result"]["verified"] = 0
+            return
+        self.job["phase"] = "verify"
+        todo = sorted((p for p in presets if self.catalogue[p]["status"] == "PREDICTED"
+                       and self.catalogue[p]["predicted"]["score"] >= VERIFY_MIN
+                       and self.catalogue[p]["predicted"]["components"]["edge_clearance"] >= VERIFY_EDGE),
+                      key=lambda p: -self.catalogue[p]["predicted"]["score"])
+        for p in presets:
+            if self.catalogue[p]["status"] == "PREDICTED" and p not in todo:
+                pr = self.catalogue[p]["predicted"]
+                self.catalogue[p]["reason"] = (f"predicted {pr['score']:.2f}" + (", cut by the picture edge"
+                                               if pr["components"]["edge_clearance"] < VERIFY_EDGE else "")
+                                               + ": not worth a move")
+        for i, p in enumerate(todo, 1):
+            self.step(f"verifying {p}", preset=p, preset_index=i, preset_count=len(todo))
+            await self._verify(p, gate)
+            self._predict_into_catalogue([q for q in todo[i:]], gate)    # refined by the new sighting
         valid = [r for r in self.catalogue.values() if r["status"] == "VALID"]
-        self.job["result"] = {"valid": len(valid), "presets": len(presets),
-                              "best": max(valid, key=lambda r: r["best"]["score"])["preset"] if valid else None}
-        if gate["moves"] and self.job["result"]["best"]:
-            self.step(f"returning to the best view ({self.job['result']['best']})")
-            await self._go_best(self.catalogue[self.job["result"]["best"]])
+        best = max(valid, key=lambda r: r["best"]["score"])["preset"] if valid else None
+        self.job["result"].update(verified=len(valid), presets=len(presets), best=best, localization=self.loc)
+        if best:
+            b = self.catalogue[best]["best"]
+            self.step(f"holding the best view ({best})")
+            await self.go_shot(best, b.get("toward"), b.get("s", 0.0), f"{best}/best")
 
-    async def _survey_preset(self, p: str, gate: dict) -> dict:
-        base = {"preset": p, "target_id": self.target["id"], "target": self.target["label"],
-                "camera": self.camera_state()["queue"], "mode": gate["mode"], "baseline": None, "best": None,
-                "candidates": [], "reason": None, "surveyed_at": round(time.time(), 2)}
-        if not motion.view_checked(p):
-            return {**base, "status": "BLOCKED", "reason": "not checked on the real arm, so it has no approved route"}
-        cands = self.candidates(p, gate)
-        if not gate["moves"]:
-            out = {**base, "status": "DRY_RUN", "plan": cands,
-                   "reason": "physical moves not approved: plan only" + ("" if cands else " (no checked lines from here)")}
-            w = self.where()
-            if w.get("where") == "view" and w.get("view") == p:
-                joints, t = await self.settle()
-                out["baseline"] = await self.observe(f"{p}/baseline", joints, t)
-            return out
-        if not await self.move(p):
-            return {**base, "status": "BLOCKED", "reason": "the motion layer refused the route to this preset"}
-        joints, t = await self.settle()
-        b = await self.observe(f"{p}/baseline", joints, t)
-        b.update(toward=None, s=0.0, label="preset")
-        base["baseline"] = b
-        if not b["valid"]:
-            return {**base, "status": "SKIPPED", "reason": f"target not visible ({b['reason']})"}
-        tried, line = [b], None
-        for k, c in enumerate(cands, 1):
-            self.step(f"preset {p}: candidate {k} of {len(cands)}", candidate_index=k, candidate_count=len(cands))
-            if line not in (None, c["toward"]):
-                await self.move(p)                     # back along the last line to the preset
-            line = c["toward"]
-            if not await self.move(p, (c["toward"], c["s"])):
-                base["candidates"].append({**c, "valid": False, "reason": "refused by the motion layer"})
-                line = None if self.where().get("where") == "view" else line
+    def _predict_into_catalogue(self, presets: list[str], gate: dict):
+        preds = self.predict_all(gate)
+        for p in presets:
+            base = {"preset": p, "target_id": self.target["id"], "target": self.target["label"], "mode": gate["mode"],
+                    "camera": self.camera_state()["queue"], "baseline": None, "best": None, "candidates": [],
+                    "predicted": None, "reason": None, "surveyed_at": round(time.time(), 2)}
+            if p not in preds:
+                self.catalogue[p] = {**base, "status": "BLOCKED", "reason": "not checked on the real arm, so it has no approved route"}
                 continue
-            joints, t = await self.settle()
-            obs = await self.observe(f"{p}/c{k}", joints, t)
-            obs.update(c, label=f"{c['s']:.0%} toward {c['toward']}")
-            base["candidates"].append(obs)
-            tried.append(obs)
-        best = max((o for o in tried if o["valid"]), key=lambda o: o["score"])
-        self.step(f"preset {p}: rechecking the best view")
-        result = {**base, "status": "VALID", "best": dict(best)}
-        recheck = await self._go_best(result)
-        result["best"]["recheck_score"] = recheck["score"]
-        result["best"]["measured_joints"] = recheck["measured_joints"]
-        if not recheck["valid"] or recheck["score"] < RECHECK_RATIO * best["score"]:
-            result["status"] = "UNVERIFIED"
-            result["reason"] = f"a fresh look scored {recheck['score']} against {best['score']}"
-        return result
+            pr = preds[p]
+            if pr["best"] is None:
+                self.catalogue[p] = {**base, "status": "SKIPPED", "reason": f"predicted not visible: {pr['why_not']}"}
+                continue
+            self.catalogue[p] = {**base, "status": "PREDICTED", "predicted": pr["best"],
+                                 "reason": f"best of {pr['visible']} visible of {pr['count']} approved poses, by the model; not visited"}
 
-    async def _go_best(self, result: dict) -> dict:
-        """Move to a result's best view along approved routes and look again."""
-        p, best = result["preset"], result["best"]
+    async def _verify(self, p: str, gate: dict):
+        r = self.catalogue[p]
+        pred = r["predicted"]
         w = self.where()
-        on_line = w.get("where") == "between" and {w.get("view"), w.get("to")} == {p, best.get("toward")}
-        if not (best.get("toward") and on_line):
-            if not (w.get("where") == "view" and w.get("view") == p):
-                if not await self.move(p):
-                    raise Hold(f"the route back to {p} was refused")
-        if best.get("toward"):
-            if not await self.move(p, (best["toward"], best["s"])):
-                raise Hold(f"the stop {best['s']:.0%} toward {best['toward']} was refused")
-        joints, t = await self.settle()
-        return await self.observe(f"{p}/best", joints, t)
+        start = w.get("view") if w.get("where") == "view" else None
+        obs = await self.go_shot(p, pred.get("toward"), pred["s"], f"{p}/best", sample=True)
+        obs.update(toward=pred.get("toward"), s=pred["s"], label="predicted best", predicted_score=pred["score"])
+        pb = self.pullback(p, start, gate, obs["score"] if obs["valid"] else None) if not pred.get("toward") else None
+        if pb:
+            self.step(f"{p}: the view was better on the way in; pulling back {pb['s']:.0%} toward {pb['toward']}")
+            back = await self.go_shot(p, pb["toward"], pb["s"], f"{p}/pullback")
+            back.update(toward=pb["toward"], s=pb["s"], label="seen on the way in", predicted_score=None)
+            r["candidates"].append(back)
+            if back["valid"] and (not obs["valid"] or back["score"] >= obs["score"]):
+                obs = back
+            elif obs["valid"]:
+                obs = await self.go_shot(p, None, 0.0, f"{p}/best")
+                obs.update(toward=None, s=0.0, label="predicted best", predicted_score=pred["score"])
+        if obs["valid"]:
+            self._add_sighting({int(m): v for m, v in obs["measured_joints"].items()}, obs["box"])
+            await self.localize(look=False)
+            r.update(status="VALID", best=obs, reason=f"verified by the camera (model predicted {pred['score']:.2f})")
+        else:
+            r.update(status="NOT_CONFIRMED", best=None, baseline=obs,
+                     reason=f"the model predicted it visible, the camera did not see it ({obs['reason']})")
 
     def _shots(self, req: dict) -> list[dict]:
         order = req.get("order") or motion.view_names()
@@ -494,34 +596,37 @@ class Director:
 
     async def _recall(self, req: dict, gate: dict):
         r = self.catalogue.get(str(req.get("preset")))
-        if not r or r["status"] not in ("VALID", "UNVERIFIED"):
-            raise Hold("no saved best view for that preset; run Optimize all views first")
+        if not r or r["status"] != "VALID":
+            raise Hold("no verified best view for that preset; run Optimize all views first")
         if r["target_id"] != self.target["id"]:
             raise Hold("that view was found for another target; survey again")
         if not gate["moves"]:
             self.job.update(status="BLOCKED", reason="physical moves not approved", result={"preset": r["preset"]})
             return
         self.step(f"recalling {r['preset']}", preset=r["preset"])
-        look = await self._go_best(r)
-        ok = look["valid"] and look["score"] >= RECHECK_RATIO * r["best"]["score"]
-        self.job["result"] = {"preset": r["preset"], "saved_score": r["best"]["score"], "score_now": look["score"],
+        b = r["best"]
+        look = await self.go_shot(r["preset"], b.get("toward"), b.get("s", 0.0), f"{r['preset']}/recall")
+        ok = look["valid"] and look["score"] >= RECHECK_RATIO * b["score"]
+        self.job["result"] = {"preset": r["preset"], "saved_score": b["score"], "score_now": look["score"],
                               "verified": ok, "measured_joints": look["measured_joints"]}
         if not ok:
-            raise Hold(f"recalled view does not match: score now {look['score']} against {r['best']['score']}")
+            raise Hold(f"recalled view does not match: score now {look['score']} against {b['score']}")
 
     async def _cinematic(self, req: dict, gate: dict):
         shots = self._shots(req)
         board = [{"preset": s["preset"], "toward": s["best"].get("toward"), "s": s["best"].get("s"),
                   "score": s["best"]["score"], "thumb": s["best"]["thumb"]} for s in shots]
-        self.job["result"] = {"storyboard": board, "shots": []}
+        self.job["result"] = {**(self.job["result"] or {}), "storyboard": board, "shots": []}
         if not shots:
             raise Hold("no verified best shots yet: run Optimize all views first")
         if not gate["moves"]:
             self.job.update(status="BLOCKED", reason="physical moves not approved: storyboard only (no moving take)")
             return
+        self.job["phase"] = "cinematic"
         for i, s in enumerate(shots, 1):
             self.step(f"shot {i} of {len(shots)}: {s['preset']}", shot_index=i, shot_count=len(shots), preset=s["preset"])
-            look = await self._go_best(s)
+            b = s["best"]
+            look = await self.go_shot(s["preset"], b.get("toward"), b.get("s", 0.0), f"{s['preset']}/shot")
             if not look["valid"]:
                 raise Hold(f"target lost at shot {i} ({s['preset']}): {look['reason']}")
             self.step(f"shot {i} of {len(shots)}: holding {s['preset']}")
@@ -537,20 +642,127 @@ class Director:
 
     async def _tour(self, req: dict, gate: dict):
         if self.ref is None:
-            self.step("auto-finding the sticker")
+            self.step("auto-finding the saved sticker (no object selected)")
             status, body = await self.autofind()
             if status != 200:
                 raise Hold(body.get("detail") or body.get("error"))
-        self.step("optimizing all views")
         await self._survey(req, gate)
         survey = self.job["result"]
-        if gate["moves"] and survey["valid"]:
+        if gate["moves"] and survey.get("verified"):
             await self._cinematic(req, gate)
-            self.job["result"] = {**self.job["result"], "survey": survey}
+        elif not gate["moves"]:
+            self.job.update(status="DRY_RUN", reason="physical moves not approved: localized and predicted only")
+
+    # ---- keep in view: hold the shot, change view only when the target stays covered
+
+    async def _look(self) -> dict | None:
+        f = (await self.fresh_frames(1))[0]
+        return await asyncio.to_thread(V.detect, self.ref, await asyncio.to_thread(V.decode_gray, f[2]))
+
+    def _shot_of(self, p: str) -> dict | None:
+        r = self.catalogue.get(p) or {}
+        b = r.get("best") if r.get("status") == "VALID" else r.get("predicted") if r.get("status") == "PREDICTED" else None
+        if not b:
+            return None
+        score = b["score"] if r["status"] == "VALID" else b["score"] * PREDICTED_DISCOUNT
+        return {"preset": p, "toward": b.get("toward"), "s": b.get("s", 0.0), "score": score, "status": r["status"]}
+
+    def _direction(self, shot: dict) -> np.ndarray | None:
+        cands = predict.candidate_poses(self.state.arm.ranges(), self.state.arm.joints()[motion.GRIPPER], {"lines": None})
+        for c in cands.get(shot["preset"], []):
+            if c["toward"] == shot["toward"] and abs(c["s"] - shot["s"]) < 1e-6 or (not shot["toward"] and not c["toward"]):
+                pv = predict.predict_view(c["joints"], self.loc, self.state.arm.ranges(), self._aspect())
+                return np.array(pv["direction"]) if pv.get("visible") else None
+        return None
+
+    async def _watch(self, req: dict, gate: dict):
+        if self.loc is None:
+            self.job["phase"] = "estimate"
+            self.step("localizing the target")
+            await self.localize()
+            self._predict_into_catalogue(motion.view_names(), gate)
+        shots = [s for s in (self._shot_of(p) for p in motion.view_names()) if s]
+        if not shots:
+            raise Hold("no view is known or predicted to see the target")
+        preferred = max(shots, key=lambda s: s["score"])
+        current = None
+        w = self.where()
+        here = next((s for s in shots if w.get("where") == "view" and w.get("view") == s["preset"] and not s["toward"]), None)
+        if here is None and gate["moves"]:
+            self.step(f"going to the preferred view ({preferred['preset']})")
+            await self.go_shot(preferred["preset"], preferred["toward"], preferred["s"], f"{preferred['preset']}/watch")
+            current = preferred
         else:
-            self.job["result"] = {"survey": survey, "storyboard": [], "shots": []}
-            if not gate["moves"]:
-                self.job.update(status="DRY_RUN", reason="physical moves not approved: plan and current view only")
+            current = here or preferred
+        self.job["phase"] = "watch"
+        joints, t = await self.settle()
+        clear = await self.observe("watch/settled", joints, t)
+        base = clear.get("inliers") or None
+        looks: deque = deque(maxlen=4)
+        arrived, left = time.monotonic(), {}
+        self.job["result"] = {"preferred": preferred["preset"], "moves": []}
+        while True:
+            await asyncio.sleep(WATCH_LOOK_S)
+            hit = await self._look()
+            ratio = None if hit is None or not base or hit.get("inliers") is None else round(hit["inliers"] / base, 2)
+            covered = hit is None or (ratio is not None and ratio < V.COVERED_RATIO)
+            looks.append(covered)
+            self.job["progress"].update(preset=current["preset"], visible_share=ratio if hit else 0.0)
+            now = time.monotonic()
+            label = current["preset"] + (f" ({current['s']:.0%} toward {current['toward']})" if current["toward"] else "")
+            if len(looks) == 4 and sum(looks) >= 3 and now - arrived >= MIN_DWELL_S:
+                alt = self._alternative(current, shots, left, now)
+                if alt is None:
+                    self.step(f"covered at {label}: no other approved view is expected to see it; holding")
+                    continue
+                if not gate["moves"]:
+                    self.step(f"covered at {label}: would cut to {alt['preset']} (physical moves not approved)")
+                    continue
+                self.step(f"covered at {label}: cutting to {alt['preset']} in {ANNOUNCE_S:.0f} s (STOP cancels)")
+                await asyncio.sleep(ANNOUNCE_S)
+                left[current["preset"]] = now
+                obs = await self.go_shot(alt["preset"], alt["toward"], alt["s"], f"{alt['preset']}/watch", sample=True)
+                self.job["result"]["moves"].append({"from": current["preset"], "to": alt["preset"], "why": "covered",
+                                                    "seen": obs["valid"], "t": round(time.time(), 1)})
+                current, arrived, base = alt, time.monotonic(), (obs.get("inliers") or base)
+                looks.clear()
+                if not obs["valid"]:      # covered here too: the next look round picks another view, not the one left
+                    left[alt["preset"]] = time.monotonic()
+                    arrived -= MIN_DWELL_S
+                    looks.extend([True] * 4)
+                continue
+            if (current is not preferred and not covered and now - arrived >= PULL_BACK_S
+                    and now - left.get(preferred["preset"], -1e9) >= NO_RETURN_S and gate["moves"]):
+                self.step(f"trying to pull back to the preferred view ({preferred['preset']}) in {ANNOUNCE_S:.0f} s")
+                await asyncio.sleep(ANNOUNCE_S)
+                prev = current
+                obs = await self.go_shot(preferred["preset"], preferred["toward"], preferred["s"], f"{preferred['preset']}/watch")
+                self.job["result"]["moves"].append({"from": prev["preset"], "to": preferred["preset"], "why": "pull back",
+                                                    "seen": obs["valid"], "t": round(time.time(), 1)})
+                if obs["valid"]:
+                    current, base = preferred, obs.get("inliers") or base
+                else:      # still covered there: back to the view that worked, and wait longer before trying again
+                    left[preferred["preset"]] = time.monotonic()
+                    obs = await self.go_shot(prev["preset"], prev["toward"], prev["s"], f"{prev['preset']}/watch")
+                    current, base = prev, obs.get("inliers") or base
+                arrived = time.monotonic()
+                looks.clear()
+                continue
+            self.step(f"holding {label}" + (" (partly covered)" if covered else ""))
+
+    def _alternative(self, current: dict, shots: list[dict], left: dict, now: float) -> dict | None:
+        """The best other shot that looks at the target from a clearly different direction."""
+        here = self._direction(current)
+        best = None
+        for s in shots:
+            if s["preset"] == current["preset"] or now - left.get(s["preset"], -1e9) < NO_RETURN_S:
+                continue
+            d = self._direction(s)
+            if d is None or (here is not None and math.degrees(math.acos(float(np.clip(d @ here, -1, 1)))) < MIN_ANGLE_DEG):
+                continue
+            if best is None or s["score"] > best["score"]:
+                best = s
+        return best
 
     async def _center(self, req: dict, gate: dict):
         """Keep in frame: what a centring correction would be (framing.plan 'center'). Preview only:
@@ -598,7 +810,7 @@ class Director:
             target = {**self.target, "status": tr.status() if tr else "SEARCHING",
                       "observation": None if obs is None else {k: obs[k] for k in ("box", "quad", "confidence", "method", "evidence", "frame_id", "stable")} | {"age_s": age}}
         order = motion.view_names()
-        return {"ok": True, "gate": self.gate(), "camera": cam, "target": target,
+        return {"ok": True, "gate": self.gate(), "camera": cam, "target": target, "localization": self.loc,
                 "sticker_reference": (self.data / "sticker.png").exists(),
                 "arm": {"joints": joints, "where": self.where(), "moving": self.state.moving, "generation": self.state.gen},
                 "presets": [{"name": p, "checked": motion.view_checked(p)} for p in order],
@@ -620,12 +832,23 @@ class Director:
             jpeg = self.thumbs.get(name[len("thumb/"):].removesuffix(".jpg"))
             return (200, jpeg, "image/jpeg") if jpeg else (404, {"ok": False, "error": "no such thumbnail"}, "")
         if method == "POST":
+            if name == "sim/hand" and st.sim:   # tests and demos without hardware: put a "hand" over the target
+                return 200, st.call(self._on_loop(lambda: self._sim_hand(req))), "application/json"
             handlers = {"select": lambda: self.select(req), "autofind": self.autofind,
                         "clear": lambda: self._on_loop(self.clear), "job": lambda: self._on_loop(lambda: self.start(req))}
             if name in handlers:
                 status, body = st.call(handlers[name](), timeout=20)
                 return status, body, "application/json"
         return 404, {"ok": False, "error": f"unknown director call {method} {name}"}, ""
+
+    def _sim_hand(self, req: dict) -> dict:
+        cam = self.sim_camera
+        if cam is None:
+            return {"ok": False, "error": "no simulated camera yet"}
+        x, y = cam.label_at
+        cam.hand = (x + float(req.get("dx", 0.0)), y + float(req.get("dy", 0.0)), float(req.get("z", 0.12)),
+                    float(req.get("r", 0.05))) if req.get("on") else None
+        return {"ok": True, "hand": cam.hand}
 
     @staticmethod
     async def _on_loop(fn):

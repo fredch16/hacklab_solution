@@ -1,6 +1,8 @@
 # Camera director (beta)
 
-Find a target in the robot camera, find the best view of it near every approved preset, recall a best view, and play the best views as a cinematic sequence. Everything runs locally in the arm server: no phone, voice, Claude key or internet. Design and audit: [implementation map](IMPLEMENTATION_MAP.md). Demo flow: [runbook](DEMO_RUNBOOK.md).
+Mark any object in the robot camera, find the best view of it near every approved preset, recall a best view, play the best views as a cinematic sequence, and keep the object in view when a hand covers it. The Hack Lab sticker is only an example target.
+
+**A director, not a search.** The arm does not sweep candidate poses with the camera rolling. The object is localized on the desk from the measured servo positions and Station's live calibration (through `fk.py`'s ElRobot model), every approved pose is scored by prediction without moving, and each preset gets at most one deliberate move to its predicted best pose, which the camera then verifies. Everything runs locally in the arm server: no phone, voice, Claude key or internet. Design and audit: [implementation map](IMPLEMENTATION_MAP.md). Demo flow: [runbook](DEMO_RUNBOOK.md).
 
 ## Start
 
@@ -16,20 +18,24 @@ Without `--director` nothing changes: the director API answers 404 and the dashb
 
 | Control | What it does |
 |---|---|
-| **Select object** | Freezes the current frame; drag a box, optionally name it, **Confirm box**. Tick **Save as Hack Lab sticker** to store the crop as the sticker reference (needed once). |
-| **Auto-find sticker** | Looks for the saved sticker reference in three fresh frames and needs two consistent hits. Without a reference it opens the box selection. |
+| **Select object** | Freezes the current frame; drag a box around any object, optionally name it, **Confirm box**. The same tracker, localization and director handle every object. **Save as Hack Lab sticker** stores the crop for Auto-find. |
+| **Auto-find sticker** | Shown once a sticker crop is saved: looks for it in three fresh frames and needs two consistent hits. |
 | **Keep in frame** | Centre error and the correction `framing.py` would compute. Preview only: moves to computed poses are not enabled. |
-| **Optimize all views** | Visits every preset. At each checked preset with the target visible it scores the preset and stops along its checked lines (12% and 25% of the way to each other checked view), returns to the best and looks again. Unchecked presets show `BLOCKED`; presets without the target show `SKIPPED`. |
-| **Recall best** (per card) | Back to that preset's best view along approved routes, then a fresh look must score at least 85% of the saved score. |
-| **Cinematic** | Visits the verified best views in preset order, re-acquires the target and holds each shot for 3 s; holds if the target is lost. Tick **Record the cinematic take** to record it with the card's own robot recorder (same tab and visibility rules). |
-| **Director Tour** | Auto-find (if no target) → Optimize all views → Cinematic. |
+| **Optimize all views** | 1. *Estimate* (no motion): localize the object from the current settled view (triangulated once there are views from different directions; the residual is shown) and predict every approved pose: each checked preset and stops 8–32% along its checked lines. 2. *Verify*: presets predicted at least 0.6 and clear of the picture edge get one move to their predicted best pose and a camera check; each new sighting refines the localization. If the view was better on the way in (a hand covers the destination), the arm pulls back along the same line. Card states: `VALID` (verified), `PREDICTED` (not worth a move, with the reason), `NOT CONFIRMED` (predicted but not seen), `SKIPPED` (predicted not visible), `BLOCKED` (unchecked preset). |
+| **Keep in view** | Holds the best shot and watches. When the object stays covered (3 of 4 looks over 2 s, compared with the matched-feature count when the arm settled), it announces and makes one cut to the best other view that looks from at least 20° different, then dwells ≥ 8 s, never returns to a covered view within 30 s, and after 15 s tries the preferred view once (going back if it is still covered). |
+| **Recall best** (per card) | Back to that preset's verified view along approved routes, then a fresh look must score at least 85% of the saved score. |
+| **Cinematic** | Visits the verified best views in preset order, re-acquires the object and holds each shot for 3 s; holds if it is lost. |
+| **Record the shots** | Records with the card's own robot recorder (same tab and visibility rules) during the cinematic and keep-in-view phases only, never while estimating or verifying. |
+| **Director Tour** | (Auto-find if nothing is selected) → Optimize all views → Cinematic. |
 | **STOP** | The arm server's STOP: cancels any director job and move and holds the arm. Any manual arm command also ends a director job. |
 
 Badges: `SIMULATED` (sim), `DRY RUN` (real arm, not approved), `PHYSICAL` (approved). Target: `TRACKING n%`, `TARGET LOST`, `NO TARGET`.
 
 ## Score
 
-`Q = 0.30 composition + 0.25 edge clearance + 0.20 target size + 0.15 sharpness + 0.10 stability`, the median over 5 frames after the arm has settled. A view without the target in at least 3 of them has no score. Target size aims at 8% of the frame. A bounding box says nothing about hidden sides or true occlusion.
+Measured: `Q = 0.30 composition + 0.25 edge clearance + 0.20 target size + 0.15 sharpness + 0.10 stability`, the median over 5 frames after the arm has settled. A view without the object in at least 3 of them has no score. Target size aims at 8% of the frame.
+
+Predicted: the same terms from the projected outline, with legibility (cosine of the angle from straight down) in place of sharpness. Views more than 55° from straight down, under 40 px, behind the gripper jaws or outside the picture are not visible. Predictions rest on `fk.py`'s model and the camera estimates in `framing.py`; a prediction never counts as a verified view, and the card shows model and camera scores side by side so the model error is visible.
 
 ## Approving physical moves
 

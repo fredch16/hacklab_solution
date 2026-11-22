@@ -143,6 +143,7 @@ class Vision(unittest.TestCase):
 
 import tempfile
 import camera_director.jobs as J
+from camera_director import predict
 
 
 def white_box(jpeg: bytes):
@@ -216,27 +217,33 @@ class SimDirector(unittest.TestCase):
         self.assertEqual((status, body["error"]), (404, "not_found"))
         wait(lambda: self.get()["target"]["status"] == "TARGET_LOST", timeout=10, what="target lost")
 
-    def test_4_survey_reports_every_preset_honestly(self):
+    def test_4_survey_estimates_then_moves_only_to_verify(self):
+        self.goto("top")
+        moves_before = len(self.state.history)
         st = self.run_job({"kind": "survey"})
         job, cat = st["job"], {p["preset"]: p for p in st["catalogue"]}
         self.assertEqual(job["status"], "DONE", job)
         self.assertEqual(set(cat), set(motion.view_names()))
+        loc = st["localization"]
+        self.assertTrue(loc["ok"] and loc["method"].startswith("triangulated"), loc)
         for p in ("close", "side_low"):
             self.assertEqual(cat[p]["status"], "BLOCKED")
-        self.assertEqual(cat["left"]["status"], "SKIPPED")
-        self.assertIsNone(cat["left"]["best"])
-        self.assertIn(cat["top"]["status"], ("VALID", "UNVERIFIED"))
         valid = [p for p in cat.values() if p["status"] == "VALID"]
         self.assertGreaterEqual(len(valid), 2)
+        self.assertTrue(all(p["status"] in ("VALID", "BLOCKED", "SKIPPED", "PREDICTED", "NOT_CONFIRMED") for p in cat.values()))
+        for p in cat.values():
+            if p["status"] == "PREDICTED":                     # predicted but not visited: no image, no measured pose
+                self.assertIsNone(p["best"])
+                self.assertIn("not worth a move", p["reason"])
         for p in valid:
-            self.assertGreaterEqual(p["best"]["score"], p["baseline"]["score"])
-            self.assertEqual(set(p["best"]["measured_joints"]), {str(m) for m in range(1, 9)})
-            self.assertEqual(http(self.base, f"/api/director/thumb/{p['best']['thumb']}.jpg")[0], 200)
-            for c in p["candidates"]:
-                self.assertLessEqual(c["s"], motion.ALONG_MAX)
-                self.assertIn(c["route"], ("direct", "arc"))
-        self.assertEqual(st["arm"]["where"], {"where": "view", "view": job["result"]["best"]}
-                         if not cat[job["result"]["best"]]["best"]["toward"] else st["arm"]["where"])
+            b = p["best"]
+            self.assertEqual(set(b["measured_joints"]), {str(m) for m in range(1, 9)})
+            self.assertEqual(http(self.base, f"/api/director/thumb/{b['thumb']}.jpg")[0], 200)
+            self.assertIsNotNone(b["predicted_score"])
+            self.assertLessEqual(b["s"], motion.ALONG_MAX)
+        # a director, not a search: at most a preset move and one stop per verified or refuted preset, plus the final hold
+        visited = len(valid) + sum(p["status"] == "NOT_CONFIRMED" for p in cat.values())
+        self.assertLessEqual(len(self.state.history) - moves_before, 2 * visited + 2, list(self.state.history)[moves_before:])
 
     def test_5_recall_rechecks_the_saved_view(self):
         best = self.get()["job"]["result"]["best"]
@@ -274,6 +281,29 @@ class SimDirector(unittest.TestCase):
         wait(lambda: self.get()["job"]["status"] != "RUNNING", timeout=10, what="job end")
         self.assertEqual(self.get()["job"]["reason"], "manual control took over")
         wait(lambda: not self.state.moving and not self.state.stopping, timeout=10, what="arm idle")
+
+    def test_9a_keep_in_view_cuts_away_from_a_hand_and_pulls_back(self):
+        saved = (J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S)
+        J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S = 3.0, 8.0, 6.0, 0.3
+        try:
+            self.assertEqual(http(self.base, "/api/director/job", {"kind": "watch"})[0], 200)
+            wait(lambda: self.get()["job"]["phase"] == "watch" and "holding" in self.get()["job"]["step"], timeout=60, what="watching")
+            preferred = self.get()["job"]["result"]["preferred"]
+            time.sleep(J.MIN_DWELL_S)
+            http(self.base, "/api/director/sim/hand", {"on": True, "dy": 0.04, "z": 0.10})
+            wait(lambda: self.get()["job"]["result"]["moves"], timeout=40, what="a cut away from the hand")
+            cut = self.get()["job"]["result"]["moves"][0]
+            self.assertEqual((cut["from"], cut["why"], cut["seen"]), (preferred, "covered", True), cut)
+            self.assertNotEqual(cut["to"], preferred)
+            http(self.base, "/api/director/sim/hand", {"on": False})
+            wait(lambda: len(self.get()["job"]["result"]["moves"]) >= 2, timeout=40, what="pull back")
+            back = self.get()["job"]["result"]["moves"][1]
+            self.assertEqual((back["to"], back["why"], back["seen"]), (preferred, "pull back", True), back)
+            self.assertEqual(http(self.base, "/api/stop", {})[0], 200)
+            self.assertEqual(self.get()["job"]["status"], "STOPPED")
+        finally:
+            J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S = saved
+            http(self.base, "/api/director/sim/hand", {"on": False})
 
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
@@ -313,11 +343,52 @@ class RealArmGate(unittest.TestCase):
             self.assertFalse(self.director({**ok, **change}).gate()["moves"], change)
 
     def test_physical_candidates_only_on_approved_lines(self):
+        ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
+        cands = predict.candidate_poses(ranges, 1279, {"lines": ["top-wide"], "max_fraction": 0.12})
+        self.assertNotIn("close", cands)
+        stops = [c for cs in cands.values() for c in cs if c["toward"]]
+        self.assertTrue(stops and all(c["line"] == "top-wide" and c["s"] <= 0.12 for c in stops), stops)
+
+    def test_pullback_only_near_the_destination_on_a_checked_line(self):
         d = self.director(None)
-        gate = {"lines": ["top-wide"], "max_fraction": 0.12}
-        cands = d.candidates("top", gate)
-        self.assertTrue(all(c["line"] == "top-wide" and c["s"] <= 0.12 for c in cands), cands)
-        self.assertEqual(d.candidates("close", gate), [])
+        views = motion.load_views()
+        gate = {"lines": None, "max_fraction": motion.ALONG_MAX}
+        at = lambda s: {m: round(views["wide"][m] + (views["top"][m] - views["wide"][m]) * s) for m in views["top"]}
+        d.samples = [{"joints": at(0.5), "score": 0.6}, {"joints": at(0.9), "score": 0.8}]
+        pb = d.pullback("top", "wide", gate, than=0.5)
+        self.assertEqual((pb["toward"], round(pb["s"], 2)), ("wide", 0.1))
+        self.assertIsNone(d.pullback("top", "wide", gate, than=0.78))           # not better enough
+        d.samples = [{"joints": at(0.3), "score": 0.9}]
+        self.assertIsNone(d.pullback("top", "wide", gate, than=0.2))            # too far back along the line
+        self.assertIsNone(d.pullback("top", "home", gate, than=None))           # home has no direct line
+        self.assertIsNone(d.pullback("top", "wide", {"lines": ["left-top"], "max_fraction": 0.35}, than=None))
+
+
+class Prediction(unittest.TestCase):
+    ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
+    target = {"point_m": [-0.03, 0.35, 0.0], "size_m": 0.08}
+
+    def sighting(self, view):
+        joints = motion.load_views()[view]
+        return joints, predict.predict_view(joints, self.target, self.ranges, 4 / 3)["box"]
+
+    def test_triangulates_from_two_views_and_cuts_the_desk_from_one(self):
+        two = predict.localize([self.sighting("top"), self.sighting("wide")], self.ranges, 4 / 3)
+        self.assertTrue(two["method"].startswith("triangulated"), two)
+        self.assertLess(np.linalg.norm(np.array(two["point_m"]) - self.target["point_m"]), 0.005)
+        self.assertLess(two["residual_m"], 0.005)
+        one = predict.localize([self.sighting("top")], self.ranges, 4 / 3)
+        self.assertEqual(one["method"], "desk plane, one view")
+        self.assertLess(np.linalg.norm(np.array(one["point_m"]) - self.target["point_m"]), 0.005)
+        self.assertAlmostEqual(one["size_m"], 0.08, delta=0.01)
+
+    def test_prediction_refuses_unrecognisable_views(self):
+        views = motion.load_views()
+        self.assertTrue(predict.predict_view(views["top"], self.target, self.ranges, 4 / 3)["visible"])
+        far = {"point_m": [0.6, -0.4, 0.0], "size_m": 0.08}
+        self.assertFalse(predict.predict_view(views["top"], far, self.ranges, 4 / 3)["visible"])
+        tiny = {**self.target, "size_m": 0.005}
+        self.assertIn("too small", predict.predict_view(views["top"], tiny, self.ranges, 4 / 3)["reason"])
 
 
 if __name__ == "__main__":

@@ -69,15 +69,18 @@ export function boxToView(d: Display, b: Box): [number, number, number, number] 
 type Obs = { box: Box; confidence: number; method: string; evidence: string; age_s: number | null; stable: boolean };
 type View = { valid: boolean; score: number | null; reason?: string; thumb?: string; measured_joints?: Record<string, number>;
   toward?: string | null; s?: number; label?: string; recheck_score?: number; components?: Record<string, number> };
-type Preset = { preset: string; status: string; reason: string | null; baseline: View | null; best: View | null;
-  candidates: View[]; plan?: { toward: string; s: number; route: string }[] };
-type Job = { id: string; kind: string; mode: string; status: string; step: string; reason: string | null; moving_to: string | null;
+type Predicted = { score: number; toward: string | null; s: number; route: string; components: Record<string, number> };
+type Preset = { preset: string; status: string; reason: string | null; baseline: View | null; best: (View & { predicted_score?: number | null }) | null;
+  candidates: View[]; predicted: Predicted | null };
+type Localization = { ok: boolean; point_m: number[]; size_m: number; method: string; residual_m: number; warning?: string };
+type Job = { id: string; kind: string; mode: string; status: string; phase: string | null; step: string; reason: string | null; moving_to: string | null;
   progress: Record<string, number | string>; result: Record<string, unknown> | null };
 export type DirectorState = {
   gate: { mode: string; moves: boolean; reasons: string[] };
   camera: { queue: string | null; simulated: boolean; frame_id: number | null; age_s: number | null; live: boolean; size: [number, number] | null; gripper_camera: boolean };
   target: null | { id: string; label: string; kind: string; how: string; status: string; observation: Obs | null };
   sticker_reference: boolean;
+  localization: Localization | null;
   arm: { joints: Record<string, number> | null; where: { where?: string; view?: string; to?: string; s?: number }; moving: boolean };
   job: Job | null; catalogue: Preset[]; events: { t: number; text: string }[];
 };
@@ -106,7 +109,8 @@ export function describe(s: DirectorState): string {
     const pos = p.preset_count ? ` · position ${p.preset_index} of ${p.preset_count}` : "";
     const cand = p.candidate_count ? ` · candidate ${p.candidate_index} of ${p.candidate_count}` : "";
     const shot = p.shot_count ? ` · shot ${p.shot_index} of ${p.shot_count}` : "";
-    return `${j.kind}: ${j.step}${pos}${cand}${shot}${j.moving_to ? ` · moving to ${j.moving_to}` : ""}`;
+    const vis = j.phase === "watch" && p.visible_share != null ? ` · visible ${Math.round(Number(p.visible_share) * 100)}%` : "";
+    return `${j.kind}: ${j.step}${pos}${cand}${shot}${vis}${j.moving_to ? ` · moving to ${j.moving_to}` : ""}`;
   }
   if (j && j.status !== "DONE") return `${j.kind} ${j.status.replace("_", " ")}${j.reason ? `: ${j.reason}` : ""}`;
   if (!s.camera.live) return "HOLD: the robot camera has no fresh frames";
@@ -135,12 +139,12 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const sub = el("p", "muted small");
   const buttons = el("div", "controls");
   const b = (text: string, cls = "btn") => { const x = el("button", cls, text); buttons.append(x); return x; };
-  const autofind = b("Auto-find sticker"), select = b("Select object"), keep = b("Keep in frame"),
-    optimize = b("Optimize all views"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
+  const select = b("Select object", "btn primary"), autofind = b("Auto-find sticker"), keep = b("Keep in frame"),
+    watch = b("Keep in view"), optimize = b("Optimize all views"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
   const recLabel = el("label", "small");
   const rec = el("input");
   rec.type = "checkbox";
-  recLabel.append(rec, " Record the cinematic take (robot camera clip)");
+  recLabel.append(rec, " Record the shots (cinematic and keep-in-view holds only, never the estimating)");
   buttons.append(recLabel);
   const confirm = el("div", "controls director-confirm");
   confirm.hidden = true;
@@ -156,14 +160,15 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   confirm.append(hint, name, stickerLabel, ok, redo, cancel);
   const note = el("p", "small");
   note.setAttribute("role", "status");
+  const locLine = el("p", "small muted");
   const gallery = el("div", "director-gallery");
   const story = el("div", "director-story");
-  panel.append(head, line, sub, buttons, confirm, note, gallery, story);
+  panel.append(head, line, sub, buttons, confirm, note, locLine, gallery, story);
   card.append(panel);
 
   let st: DirectorState | null = null, off = false;
   let picking: { frameId: number; box: Box | null } | null = null, drag: [number, number] | null = null;
-  let recordingJob: string | null = null;
+  let recordingFor: string | null = null;   // job id whose shot phase this tab is recording
 
   const shown = () => (picking ? still : live);
   // The shown image's geometry, plus where its element box sits inside the frame (the canvas covers the frame).
@@ -280,13 +285,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const job = (kind: string, extra: Record<string, unknown> = {}) => async () => {
     const r = await call("job", { kind, ...extra });
     note.textContent = r.status === 200 ? "" : (r.data.error ?? "Could not start.");
-    if (r.status === 200 && rec.checked && (kind === "cinematic" || kind === "tour") && st?.gate.moves && !isRecording()) {
-      recordingJob = r.data.job.id;
-      await startRecording();
-    }
     await poll();
   };
   keep.onclick = job("center");
+  watch.onclick = job("watch");
   optimize.onclick = job("survey");
   cinema.onclick = job("cinematic");
   tour.onclick = job("tour");
@@ -306,25 +308,29 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     return c;
   }
   function renderGallery(s: DirectorState) {
+    const l = s.localization;
+    locLine.textContent = l?.ok ? `Target localized at (${l.point_m.map((v) => (v * 100).toFixed(1)).join(", ")}) cm, ${(l.size_m * 100).toFixed(1)} cm wide · ${l.method} · residual ${(l.residual_m * 100).toFixed(1)} cm${l.warning ? ` · ${l.warning}` : ""}` : "";
     gallery.replaceChildren(...s.catalogue.map((p) => {
       const c = el("article", `preset-card ${p.status.toLowerCase()}`);
       const h = el("div", "director-head");
       h.append(el("strong", "", p.preset), el("span", `badge ${p.status.toLowerCase()}`, p.status.replace("_", " ")));
       c.append(h);
       if (p.reason) c.append(el("p", "small muted", p.reason));
-      const row = el("div", "shots");
-      row.append(viewCell("before", p.baseline), viewCell("best", p.best));
-      c.append(row);
+      const pos = (v: { toward?: string | null; s?: number } | null) => (v?.toward ? `${Math.round((v.s ?? 0) * 100)}% toward ${v.toward}` : "the preset itself");
+      if (p.predicted) c.append(el("p", "small", `Predicted best: ${pos(p.predicted)} · ${fmt(p.predicted.score)}`));
+      if (p.best || p.baseline) {
+        const row = el("div", "shots");
+        row.append(viewCell(p.best ? "verified" : "seen", p.best ?? p.baseline));
+        p.candidates.forEach((x) => row.append(viewCell(x.label ?? "extra", x)));
+        c.append(row);
+      }
       if (p.best) {
-        const where = p.best.toward ? `${Math.round((p.best.s ?? 0) * 100)}% toward ${p.best.toward}` : "the preset itself";
-        c.append(el("p", "small", `Best: ${where} · score ${fmt(p.best.score)}${p.best.recheck_score != null ? ` (recheck ${fmt(p.best.recheck_score)})` : ""} · ${p.candidates.length} candidates`));
+        c.append(el("p", "small", `Verified: ${pos(p.best)} · score ${fmt(p.best.score)}${p.best.predicted_score != null ? ` (model ${fmt(p.best.predicted_score)})` : ""}`));
         if (p.best.measured_joints) c.append(el("p", "small muted mono", `measured ${Object.entries(p.best.measured_joints).map(([m, v]) => `${m}:${v}`).join(" ")}`));
         const recall = el("button", "btn", "Recall best");
         recall.onclick = job("recall", { preset: p.preset });
         recall.disabled = !s.gate.moves || s.job?.status === "RUNNING";
         c.append(recall);
-      } else if (p.plan) {
-        c.append(el("p", "small muted", `Plan: ${p.plan.map((x) => `${Math.round(x.s * 100)}% toward ${x.toward} (${x.route})`).join(", ") || "baseline only"}`));
       }
       return c;
     }));
@@ -365,12 +371,13 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       (s.arm.joints ? ` · measured ${Object.entries(s.arm.joints).map(([m, v]) => `${m}:${v}`).join(" ")}` : "") +
       (s.gate.moves ? "" : ` · ${s.gate.reasons[0] ?? ""}`);
     const running = s.job?.status === "RUNNING";
-    for (const x of [autofind, select, keep, optimize, cinema, tour]) x.disabled = running || !!picking;
+    for (const x of [autofind, select, keep, watch, optimize, cinema, tour]) x.disabled = running || !!picking;
+    autofind.hidden = !s.sticker_reference;
     renderGallery(s);
-    if (recordingJob && s.job && (s.job.id !== recordingJob || s.job.status !== "RUNNING")) {
-      recordingJob = null;
-      if (isRecording()) await stopRecording();
-    }
+    // Record only deliberate shots: the cinematic phase and keep-in-view holds, never estimating or verifying.
+    const shooting = running && s.gate.moves && (s.job?.phase === "cinematic" || s.job?.phase === "watch");
+    if (shooting && rec.checked && !recordingFor && !isRecording()) { recordingFor = s.job!.id; await startRecording(); }
+    else if (recordingFor && !(shooting && s.job?.id === recordingFor)) { recordingFor = null; if (isRecording()) await stopRecording(); }
     draw();
   }
   new ResizeObserver(() => draw()).observe(frame);

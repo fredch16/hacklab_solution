@@ -53,6 +53,7 @@ class SimCamera:
         u = (np.arange(W) + 0.5) / W * 2 - 1
         v = (np.arange(H) + 0.5) / H * 2 - 1
         self.uu, self.vv = np.meshgrid(u * th, v * th * H / W)
+        self.hand = None   # (x, y, z, radius) m: a dark sphere standing in for a hand, or None
 
     def render(self, joints: dict, ranges=None) -> bytes:
         cam, axis, right, down = (np.array(x) for x in framing.camera_pose(joints, ranges))
@@ -65,6 +66,15 @@ class SimCamera:
         img = cv2.remap(self.desk, np.nan_to_num(mx, nan=-1), np.nan_to_num(my, nan=-1), cv2.INTER_LINEAR,
                         borderMode=cv2.BORDER_CONSTANT, borderValue=105)
         img[np.isnan(t)] = 190                                   # not looking at the desk: wall
+        if self.hand is not None:                                # a hand in the air: covers what lies behind it
+            p = np.array(self.hand[:3])
+            z = float((p - cam) @ axis)
+            if z > 0.02:
+                th = math.tan(math.radians(framing.HFOV_DEG) / 2)
+                u = 0.5 + float((p - cam) @ right) / z / th / 2
+                v = 0.5 + float((p - cam) @ down) / z / (th * H / W) / 2
+                r = self.hand[3] / z / th * W / 2
+                cv2.circle(img, (int(u * W), int(v * H)), int(r), 55, -1)
         cv2.putText(img, "SIMULATED", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 255, 2)
         ok, jpeg = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
         return jpeg.tobytes()

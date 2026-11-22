@@ -37,6 +37,23 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 - **Director Show** (film grammar, the best demo): establishing hold at `wide` → push-in along the checked wide–top line → gimbal arc at `top` (yaw −325..+350 steps, sticker in frame 77 %) → hold → pull-out to `wide` → closing hold. 66 s end to end, no faults, ends on `wide`. The sticker is too small to recognise from `wide` at its current spot, so the wide holds report `steady: false`. Motor 2 briefly touched load 284 during a move without tripping: close to the limit, watch it.
 - Shoulder-load guard (23 % for 1.2 s) caught real overload build-ups and locked; easing back worked; but a stop at a heavy pose can still trip on the next move (see open issues).
 
+## Dashboard buttons and what each does on the real arm (23 Nov)
+
+| Button | Status on the real arm |
+|---|---|
+| Select object / Auto-find sticker | works; far objects (from `wide`) found via the full-resolution retry |
+| Keep in frame | preview only (computed centring correction, never moves) |
+| Keep in view | simulator-tested; on the real arm it cuts between verified shots only |
+| Optimize all views | works (estimate, then one checking move per worthwhile view) |
+| **Director Show** | works: the recommended demo (66 s, no faults) |
+| Gimbal take | works (shoulder and elbow parked) |
+| Scene | with `computed_paths: false` it films a Director Show instead of refusing; free-camera scenes need `computed_paths: true` and overload the shoulder |
+| Return | for free-camera scenes only (needs `computed_paths`) |
+| Snap to view | works (short move back onto a view within 200 steps) |
+| Self-calibrate | built and simulator-tested; run it on the real arm next (see open issues) |
+| Cinematic / Director Tour | work (glides and cuts between verified shots) |
+| STOP | always works; cancels any job and holds |
+
 ## What is built but disabled or unverified on the real arm
 
 - **Scenes** (free camera: keyframes in azimuth/elevation/distance, IK + monotone-cubic paths, approach/look/re-aim, return): pass all simulator tests; **disabled on the real arm** (`computed_paths: false` in `director_safety.json`) because approaches overload the shoulder.

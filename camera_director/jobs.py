@@ -1007,8 +1007,12 @@ class Director:
         if not gate["moves"]:
             raise Hold("physical moves not approved")
         if not gate.get("computed"):
-            raise Hold("moves to computed poses are not approved (computed_paths in director_safety.json): "
-                       "the shoulder servo's overload protection tripped during them on this arm")
+            # free-camera moves are off on this arm (shoulder overload): film the scene with the moves it does
+            # within its limit: glides between views and gimbal arcs with the shoulder parked (Director Show)
+            self.note("scene: computed poses are off on this arm, filming it as a Director Show")
+            await self._show(req, gate)
+            self.job["result"]["planner"] = "director show (shoulder-safe moves)"
+            return
         w = self.where()
         if w.get("where") not in ("view", "between"):
             raise Hold("start the scene from a saved view (or a stop on a checked line)")

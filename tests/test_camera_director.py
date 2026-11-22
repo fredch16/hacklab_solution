@@ -494,6 +494,19 @@ class SimDirector(unittest.TestCase):
         st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=300)          # no saved view: it finds one itself
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
 
+    def test_9k_after_a_free_take_it_retraces_back_onto_a_view(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        top = {m: motion.load_views()["top"][m] for m in motion.MOVABLE}
+        trail = [top, {**top, 1: top[1] - 130, 4: top[4] + 70}, {**top, 1: top[1] - 260, 4: top[4] + 140}]
+        self.state.call(self.state.start_path(trail[1:], "free take"))
+        wait(lambda: not self.state.moving, what="free take")
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("where"), "unknown")
+        self.state.director.trail = trail                     # what a film take leaves behind
+        st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=300)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

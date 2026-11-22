@@ -1269,6 +1269,9 @@ class Director:
                     self.step(f"going to {target}")
                     if not await self.move(target):
                         raise Hold(f"the route to {target} was refused")
+                elif self.trail:          # a free take ended here: go back the way it came, then onto its view
+                    await self._return(self.trail)
+                    return await self.ensure_view(best_for_object)
                 else:
                     raise Hold(f"the arm is {gap} steps from the nearest view ({name}); use Recover in Arm controls")
             else:

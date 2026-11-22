@@ -54,8 +54,8 @@ internal class WakeDetector(private val assets: AssetManager) {
                 keywordsFile = "$bpeDirectory/keywords.txt",
                 maxActivePaths = if (usePhones) 12 else 4,
                 numTrailingBlanks = if (usePhones) 0 else 1,
-                keywordsScore = if (usePhones) 2.0f else 1.5f,
-                keywordsThreshold = if (usePhones) 0.17f else 0.25f,
+                keywordsScore = if (usePhones) 3.0f else 2.5f,   // generous: the owner prefers a false wake over a missed one (far from the mic)
+                keywordsThreshold = if (usePhones) 0.08f else 0.12f,
             ))
             phoneme = usePhones
         }

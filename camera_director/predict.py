@@ -212,3 +212,99 @@ def line_fraction(joints: dict, a: dict, b: dict) -> float:
     num = sum((joints[m] - a[m]) * (b[m] - a[m]) for m in ids)
     den = sum((b[m] - a[m]) ** 2 for m in ids) or 1
     return max(0.0, min(1.0, num / den))
+
+
+# ---------------------------------------------------------------- seamless transitions between shots
+#
+# A shot is a preset, or a stop a fraction s along a checked line from it. A transition is seamless when
+# it glides along checked lines only (no rise-turn-descend through the hub) and the model keeps the target
+# in the picture for most of the way. Shots on one line: one glide. Shots on two lines that meet at a
+# preset: two glides through that preset. Anything else is a cut (the recording pauses while it moves).
+
+SEAMLESS_SHARE = 0.8      # share of sampled poses along a glide that must show the target
+GLIDE_SAMPLES = 12
+
+
+def checked_lines(ranges, grip: int, gate: dict) -> tuple[dict, dict]:
+    """({frozenset({a, b}): lift} for checked lines the gate allows, clamped views incl. transit)."""
+    raw = motion._read_views_file()
+    env = motion.envelope(ranges)
+    views = {n: motion.clamp_pose({int(k): v for k, v in raw[n]["joints"].items()}, env) for n in raw}
+    links = motion._Links(views, ranges, grip)
+    names = [n for n in motion.view_names() if n in views]
+    lines = {}
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            plan = links.plan(a, b)
+            if plan["ok"] and (gate.get("lines") is None or "-".join(sorted((a, b))) in gate["lines"]):
+                lines[frozenset((a, b))] = plan["lift"]
+    return lines, views
+
+
+def _on_lines(shot: dict, lines: dict) -> dict:
+    """{line: fraction along it from its alphabetically first end} for every checked line the shot lies on."""
+    p, q, s = shot["preset"], shot.get("toward"), shot.get("s") or 0.0
+    out = {}
+    for line in lines:
+        if q:
+            if line != frozenset((p, q)):
+                continue
+        elif p not in line:
+            continue
+        first = sorted(line)[0]
+        out[line] = (s if first == p else 1.0 - s) if q else (0.0 if first == p else 1.0)
+    return out
+
+
+def transition(a: dict, b: dict, lines: dict) -> list[list] | None:
+    """Candidate glide plans from shot a to shot b: each a list of segments (line, from, to); [] when none."""
+    la, lb = _on_lines(a, lines), _on_lines(b, lines)
+    plans = [[(line, la[line], lb[line])] for line in set(la) & set(lb)]
+    for l1, f1 in la.items():
+        for l2, f2 in lb.items():
+            meet = (l1 & l2) if l1 != l2 else frozenset()
+            if len(meet) == 1:
+                m = next(iter(meet))
+                end1 = 0.0 if sorted(l1)[0] == m else 1.0
+                end2 = 0.0 if sorted(l2)[0] == m else 1.0
+                plans.append([(l1, f1, end1), (l2, end2, f2)])
+    out = []
+    for plan in plans:            # drop zero-length pieces (a shot sitting exactly on the shared preset)
+        plan = [seg for seg in plan if abs(seg[2] - seg[1]) > 1e-6]
+        if plan and plan not in out:
+            out.append(plan)
+    return out
+
+
+def glide_visibility(plan: list, lines: dict, views: dict, target: dict, ranges, aspect: float,
+                     calibration: dict | None, grip: int) -> tuple[float, float]:
+    """(share of sampled poses with the target in the picture, mean predicted score where visible)."""
+    seen, scores, total = 0, [], 0
+    for line, f0, f1 in plan:
+        x, y = sorted(line)
+        for i in range(GLIDE_SAMPLES + 1):
+            f = f0 + (f1 - f0) * i / GLIDE_SAMPLES
+            j = motion._path_pose(views[x], views[y], views[motion.TRANSIT], lines[line], f)
+            joints = {**{m: int(round(v)) for m, v in j.items()}, motion.GRIPPER: grip}
+            pv = predict_view(joints, target, ranges, aspect, bias=bias_for({"preset": x, "toward": y, "s": f}, calibration))
+            total += 1
+            if pv["visible"]:
+                seen += 1
+                scores.append(pv["score"])
+    return (seen / total if total else 0.0), (sum(scores) / len(scores) if scores else 0.0)
+
+
+def best_transition(a: dict, b: dict, lines: dict, views: dict, target: dict, ranges, aspect: float,
+                    calibration: dict | None, grip: int) -> dict:
+    """{"seamless": bool, "visible": share, "segments": [...]} for the best glide from a to b, or a cut."""
+    best = None
+    for plan in transition(a, b, lines):
+        share, score = glide_visibility(plan, lines, views, target, ranges, aspect, calibration, grip)
+        if best is None or (share, score, -len(plan)) > (best["visible"], best["score"], -len(best["segments"])):
+            best = {"segments": plan, "visible": round(share, 3), "score": round(score, 3)}
+    if best is None:
+        return {"seamless": False, "visible": 0.0, "score": 0.0, "segments": None, "why": "no checked line joins them"}
+    best["seamless"] = best["visible"] >= SEAMLESS_SHARE
+    if not best["seamless"]:
+        best["why"] = f"the target would be in frame only {best['visible']:.0%} of the way"
+    return best

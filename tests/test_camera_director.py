@@ -143,6 +143,7 @@ class Vision(unittest.TestCase):
 
 import tempfile
 import camera_director.jobs as J
+import framing
 from camera_director import predict
 
 
@@ -322,6 +323,31 @@ class SimDirector(unittest.TestCase):
             self.assertLess(max(abs(v) for v in res[p]), 0.08, res)
         self.assertEqual(st["calibration"]["presets"], ["top", "wide"])
 
+    def test_9c_scene_glides_around_the_object_and_returns(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        moves = [{"name": "arc", "keyframes": [{"theta": -60, "elev": 50, "dist": 0.18},
+                                               {"theta": -20, "elev": 55, "dist": 0.18}]}]
+        st = self.run_job({"kind": "scene", "moves": moves}, timeout=300)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        done = st["job"]["result"]["moves"][0]
+        self.assertTrue(done["done"], done)
+        # computer vision looked during the move (a lower bound: SIFT can miss a strongly rotated frame)
+        self.assertIsNotNone(done["in_frame"], done)
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
+
+    def test_9d_stop_during_a_computed_path_holds(self):
+        moves = [{"name": "arc", "keyframes": [{"theta": -60, "elev": 50, "dist": 0.18},
+                                               {"theta": 0, "elev": 60, "dist": 0.17}]}]
+        self.assertEqual(http(self.base, "/api/director/job", {"kind": "scene", "moves": moves})[0], 200)
+        wait(lambda: self.state.moving, timeout=60, what="a scene move")
+        status, body = http(self.base, "/api/stop", {})
+        self.assertEqual((status, body["hold"]), (200, "confirmed"), body)
+        self.assertEqual(self.get()["job"]["status"], "STOPPED")
+        st = self.run_job({"kind": "return"}, timeout=120)              # retrace back to the start
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="back at top")
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})
@@ -379,6 +405,34 @@ class RealArmGate(unittest.TestCase):
         self.assertIsNone(d.pullback("top", "wide", gate, than=0.2))            # too far back along the line
         self.assertIsNone(d.pullback("top", "home", gate, than=None))           # home has no direct line
         self.assertIsNone(d.pullback("top", "wide", {"lines": ["left-top"], "max_fraction": 0.35}, than=None))
+
+
+class ComputedPaths(unittest.TestCase):
+    ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
+
+    def test_path_check_refuses_the_desk_jumps_and_ranges(self):
+        env = motion.envelope(self.ranges)
+        top = {m: motion.load_views()["top"][m] for m in motion.MOVABLE}
+        self.assertIsNone(motion.path_problem([top, {**top, 1: top[1] + 100}], self.ranges, env, 1279))
+        self.assertIn("jump", motion.path_problem([top, {**top, 1: top[1] + 600}], self.ranges, env, 1279))
+        self.assertIn("envelope", motion.path_problem([top, {**top, 6: env[6][1] + 50}], self.ranges, env, 1279))
+        low = {**top, 2: top[2] + 380, 3: top[3] - 250}                   # shoulder down: towards the desk
+        steps = [top]
+        while max(abs(low[m] - steps[-1][m]) for m in motion.MOVABLE) > 0:
+            steps.append({m: steps[-1][m] + max(-50, min(50, low[m] - steps[-1][m])) for m in motion.MOVABLE})
+        why = motion.path_problem(steps, self.ranges, env, 1279)
+        self.assertTrue(why and ("desk" in why or "itself" in why or "envelope" in why), why)
+
+    def test_arc_poses_look_at_the_object(self):
+        from camera_director import orbit
+        top = motion.load_views()["top"]
+        arc = orbit.plan_path([0.0, 0.31, 0.0], top, self.ranges, [{"theta": -60, "elev": 50, "dist": 0.18},
+                                                                     {"theta": -30, "elev": 50, "dist": 0.18}])
+        self.assertTrue(arc["ok"], arc)
+        for q in arc["poses"]:
+            uv = framing.project((0.0, 0.31, 0.0), framing.camera_pose(q, self.ranges), 16 / 9)
+            self.assertLess(abs(uv[0] - 0.5) + abs(uv[1] - 0.5), 0.1, uv)
+        self.assertIsNone(motion.path_problem(arc["poses"], self.ranges, motion.envelope(self.ranges), 1279))
 
 
 class Prediction(unittest.TestCase):

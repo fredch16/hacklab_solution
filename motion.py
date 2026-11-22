@@ -603,11 +603,16 @@ def plan_route(present: dict[int, int], target: str, views: dict[str, dict[int, 
 
 ALONG_MAX = 0.35   # a stop part-way along a line (go_to_view along=) is at most this far from its view
 
+# Computed paths (go_through): poses a planner worked out, not taught views.
+PATH_FLOOR_M = 0.04       # no part of the arm below this in the geometry model (or no lower than it is now)
+PATH_STEP_MAX = 400       # steps any joint may change between two consecutive poses of a path
+PATH_CHECKS = 8           # poses checked between two consecutive waypoints
+
 
 def plan_along(present: dict[int, int], view: str, toward: str, s: float, views: dict, links) -> list:
     """The one segment from the measured pose to the pose a fraction `s` of the way along the
     checked direct line (or arc) from `view` to `toward`: a point every move view -> toward already
-    sweeps. The arm must be at `view` or already on that line. Raises MotionError otherwise."""
+    sweeps. The arm must be at `view`, at `toward`, or already on that line. Raises MotionError otherwise."""
     if not 0.0 < s <= ALONG_MAX:
         raise MotionError(f"a stop along a line must be between 0 and {ALONG_MAX} of the way")
     if links is None:
@@ -618,11 +623,145 @@ def plan_along(present: dict[int, int], view: str, toward: str, s: float, views:
     loc = locate(present, views, links, prefer=(view, toward))
     if loc["where"] == "view" and loc["view"] == view:
         s0 = 0.0
+    elif loc["where"] == "view" and loc["view"] == toward:    # entering the same line from its other end
+        s0 = 1.0
     elif loc["where"] == "between" and {loc["view"], loc["to"]} == {view, toward}:
         s0 = loc["s"] if loc["view"] == view else 1.0 - loc["s"]
     else:
         raise MotionError(f"the arm must be at '{view}' or on its line to '{toward}' first (it is {loc})")
     return [_path_segment(views, view, toward, plan["lift"], s0, s)]
+
+
+def path_curve(path: list[dict[int, int]]):
+    """(f(k) -> pose for k in 0..1, total joint distance): a Catmull-Rom spline through every waypoint, so the
+    joints change direction smoothly instead of kinking at each one; k is spread by joint distance."""
+    ids = list(MOVABLE)
+    cum = [0.0]
+    for a, b in zip(path, path[1:]):
+        cum.append(cum[-1] + max(abs(b[m] - a[m]) for m in ids))
+    total = cum[-1] or 1.0
+    ext = [path[0]] + list(path) + [path[-1]]
+
+    def f(k: float) -> dict[int, float]:
+        d = min(max(k, 0.0), 1.0) * total
+        i = max(0, min(len(path) - 2, next((j for j in range(len(cum) - 1) if cum[j + 1] >= d), len(path) - 2)))
+        t = 0.0 if cum[i + 1] == cum[i] else (d - cum[i]) / (cum[i + 1] - cum[i])
+        p0, p1, p2, p3 = ext[i], ext[i + 1], ext[i + 2], ext[i + 3]
+        t2, t3 = t * t, t * t * t
+        return {m: 0.5 * (2 * p1[m] + (p2[m] - p0[m]) * t + (2 * p0[m] - 5 * p1[m] + 4 * p2[m] - p3[m]) * t2
+                          + (3 * p1[m] - p0[m] - 3 * p2[m] + p3[m]) * t3) for m in ids}
+    return f, cum[-1]
+
+
+def path_problem(path: list[dict[int, int]], ranges, env, grip: int) -> str | None:
+    """Why the geometry model does not vouch for a computed path, or None. Every waypoint inside the
+    envelope; neighbouring waypoints at most PATH_STEP_MAX apart; along the smooth curve the arm will follow
+    (path_curve), at PATH_CHECKS poses per waypoint pair and in both of fk's mappings: inside the envelope, no part of the arm below PATH_FLOOR_M (or below where it is at the start)
+    and the arm never closer to itself than DIRECT_SELF_CLEAR_M. Advisory like every fk check: it knows
+    the desk plane, not what lies on it, and not the camera stalk or cables."""
+    import fk
+    for i, q in enumerate(path):
+        for m in MOVABLE:
+            lo, hi = env[m]
+            if not lo <= q[m] <= hi:
+                return f"waypoint {i}: motor {m} at {q[m]} is outside its envelope {lo}..{hi}"
+    for i, (a, b) in enumerate(zip(path, path[1:])):
+        jump = max(abs(b[m] - a[m]) for m in MOVABLE)
+        if jump > PATH_STEP_MAX:
+            return f"waypoints {i}-{i + 1}: a joint would jump {jump} steps"
+    start = {**path[0], GRIPPER: grip}
+    floors = {mp: min(PATH_FLOOR_M, fk.min_height(start, ranges, mapping=mp)[0] - 0.005) for mp in ("viewer", "true_scale")}
+    curve, _ = path_curve(path)
+    n = PATH_CHECKS * (len(path) - 1)
+    for j in range(n + 1):                      # the curve the arm will follow, not just its waypoints
+        i = min(j // PATH_CHECKS, len(path) - 2)
+        q = {**{m: v for m, v in curve(j / n).items()}, GRIPPER: grip}
+        for m in MOVABLE:
+            if not env[m][0] <= q[m] <= env[m][1]:
+                return f"between waypoints {i} and {i + 1}: motor {m} would leave its envelope"
+        for mp in ("viewer", "true_scale"):
+            h, part = fk.min_height(q, ranges, mapping=mp)
+            if h < floors[mp]:
+                return f"between waypoints {i} and {i + 1}: {part} would be {h * 100:.1f} cm above the desk"
+            if fk.self_clearance(q, ranges, mp) < DIRECT_SELF_CLEAR_M:
+                return f"between waypoints {i} and {i + 1}: the arm would come too close to itself"
+    return None
+
+
+class _PolyGoal(dict):
+    """Goal of a computed path segment: the final pose, plus `poly`, the waypoints to follow."""
+    poly: list = []
+
+
+async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_SLOW, label: str = "path") -> dict:
+    """Follow computed poses in one continuous guarded move (the camera director's arcs). The path
+    starts where the arm is; every pose is checked by path_problem() before anything is written.
+    Same result keys and the same guards, Stop and holds as go_to_view."""
+    refused = {"ok": False, "view": label, "duration": 0.0, "route": [], "kind": None, "hold": None}
+    if not poses:
+        return {**refused, "error": "empty path"}
+    if _move_lock.locked():
+        return {**refused, "error": "already moving"}
+    lock_file = None
+    if not getattr(arm, "is_sim", False):
+        lock_file = open(LOCK_PATH, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_file.close()
+            return {**refused, "error": "another program is moving the arm"}
+    try:
+        async with _move_lock:
+            t0 = time.time()
+            stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
+            result = {**refused, "error": None, "route": ["path"], "kind": "path"}
+            status.update(moving=True, view=label, phase="check", phase_index=0, phase_count=1, progress=0.0,
+                          error=None, route=["path"], kind="path", hold=None)
+            ctx = {"wrote": False, "moving": ()}
+            _last.update(wrote=False, driving=(), hold=None, line=())
+            try:
+                info = await _inspect(arm, None)
+                blockers = [b for b in info["blockers"] if "known pose" not in b]
+                if blockers:
+                    raise MotionError(blockers[0])
+                present, env = info["present"], info["env"]
+                path = [{m: present[m] for m in MOVABLE}] + [{m: int(q[m]) for m in MOVABLE} for q in poses]
+                problem = path_problem(path, arm.ranges(), env, present[GRIPPER])
+                if problem:
+                    raise MotionError(f"the computed path is not safe by the model: {problem}")
+                await _fresh_again(arm)
+                goal = _PolyGoal(path[-1])
+                goal.poly = path
+                status.update(phase="path", phase_index=1)
+                ctx["moving"] = _last["driving"] = MOVABLE
+                result["duration"] += await _run_segment(arm, "path", goal, max_speed, env, stats, ctx, {})
+                ctx["moving"] = _last["driving"] = ()
+                result["ok"] = True
+            except asyncio.CancelledError:
+                result["error"] = "stopped"
+                if ctx["wrote"]:
+                    result["hold"] = _last["hold"] = await _abort_hold(arm, RELAX_TOL, ctx["moving"])
+                raise
+            except BlockedError as e:
+                result["error"] = str(e)
+                if ctx["wrote"]:
+                    result["hold"] = _last["hold"] = await _abort_hold(arm, RELAX_TOL, ctx["moving"])
+            except (MotionError, RuntimeError) as e:
+                result["error"] = str(e)
+                if ctx["wrote"]:
+                    result["hold"] = _last["hold"] = await _abort_hold(arm, FREEZE_TOL, ctx["moving"])
+            finally:
+                if result["hold"] == "unconfirmed":
+                    result["error"] = f"{result['error']}; HOLD NOT CONFIRMED"
+                result["duration"] = round(result["duration"], 2)
+                status.update(moving=False, phase=None, error=result["error"], hold=result["hold"],
+                              last_result=dict(result), progress=1.0 if result["ok"] else status["progress"])
+                if not getattr(arm, "is_sim", False):
+                    _log_move({"t": t0, "took": round(time.time() - t0, 2), "speed": max_speed, **result, **stats})
+            return result
+    finally:
+        if lock_file:
+            lock_file.close()
 
 
 # ---------------------------------------------------------------- talking to the arm
@@ -923,7 +1062,18 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
     start = {m: tel[m]["goal"] if abs(tel[m]["goal"] - tel[m]["pos"]) <= HELD_GOAL_TOL else tel[m]["pos"]
              for m in ids}
     path = getattr(goal, "path", None)
-    if path:
+    poly = getattr(goal, "poly", None)
+    if poly:
+        # A computed path (go_through): the smooth curve through checked poses (path_curve, the same curve
+        # path_problem checked), one eased move from end to end. The start offset fades out along the way.
+        off = {m: start[m] - poly[0][m] for m in ids}
+        curve, _ = path_curve(poly)
+
+        def shape(k):
+            q = curve(k)
+            return {m: q[m] + (1.0 - k) * off[m] for m in ids}
+        dist = max(sum(abs(b[m] - a[m]) for a, b in zip(poly, poly[1:])) for m in ids)
+    elif path:
         # A direct line or arc: every joint follows _path_pose(). The arm starts a little off that
         # line (sag, or wherever a Stop left it); the difference fades out along the way.
         pa, pb, phub, lift, s0, s1 = path

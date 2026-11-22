@@ -23,7 +23,10 @@ run on the simulated arm with a rendered camera, labelled SIMULATED.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import concurrent.futures.process
 import json
+import multiprocessing
 import math
 import time
 import uuid
@@ -38,7 +41,7 @@ import framing
 import motion
 from station_arm import logger
 
-from . import predict
+from . import orbit, predict
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,7 +52,8 @@ GRIPPER_CAMERA = "usbvideo/74e4d17bc903e40ebc78117539fca31f"   # docs/HARDWARE.m
 # the bottom of the frame, checked by eye on 22 Nov) is this queue:
 GRIPPER_CAMERAS = (GRIPPER_CAMERA, "usbvideo/dc84eab2202fb0ae9704788db7d9f9a4")
 
-TICK_S = 0.2              # frame sampling / live tracking period
+TICK_S = 0.2              # frame sampling period
+TRACK_S = 0.5             # live tracking period (the overlay); jobs take their own settled looks
 FRAME_CACHE = 60          # frames kept for selection by id (~12 s)
 SELECT_MAX_AGE_S = 600.0  # a box drawn on a frozen frame older than this is refused (the frame is pinned meanwhile)
 FRAME_FRESH_S = 1.0       # a frame older than this is not used for decisions
@@ -84,6 +88,10 @@ class Director:
             self.data = self.data / "sim"
         self.frames: deque = deque(maxlen=FRAME_CACHE)   # (frame_id, monotonic stamp, jpeg)
         self.seq, self._last_jpeg, self.sim_camera = 0, None, None
+        self._tracked_at = 0.0
+        # all image processing runs in this worker process, never on the arm server's event loop
+        self.pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                                                           initializer=V._worker_init)
         self.pinned: dict[int, tuple] = {}             # frames opened for drawing a box: kept until selected
         self.target: dict | None = None
         self.ref: V.Reference | None = None
@@ -98,11 +106,23 @@ class Director:
         self.loc: dict | None = None         # predict.localize() result
         self.calibration = self._load_calibration()
         self.samples: list = []              # frames scored during the last sampled move
+        self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
+        self.reach: dict | None = None       # orbit.reach_map for the current localization
+        self.trail: list = []                # poses driven by the last scene, for "return"
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
         state.loop.call_soon_threadsafe(lambda: setattr(self, "_task", asyncio.ensure_future(self._run())))
 
     # ------------------------------------------------------------ frames and live tracking
+
+    async def vision(self, fn, *args):
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
+        except concurrent.futures.process.BrokenProcessPool:     # the worker died: start a new one, try once more
+            self.note("vision worker restarted")
+            self.pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                                                               initializer=V._worker_init)
+            return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
 
     def note(self, text: str):
         self.events.append({"t": round(time.time(), 2), "text": text})
@@ -112,10 +132,12 @@ class Director:
         while True:
             try:
                 f = await self._grab()
-                if f and self.tracker is not None:
+                # no live tracking while the arm moves: the frames are blurred and the motion loop needs the CPU
+                if (f and self.tracker is not None and not self.state.moving
+                        and time.monotonic() - self._tracked_at >= TRACK_S):
+                    self._tracked_at = time.monotonic()
                     tracker = self.tracker
-                    gray = await asyncio.to_thread(V.decode_gray, f[2])
-                    hit = await asyncio.to_thread(tracker.update, gray, f[0], f[1])
+                    hit = tracker.record(await self.vision(V.look, tracker.ref, f[2], True), f[0], f[1])
                     if tracker is self.tracker:
                         self.obs = hit
             except asyncio.CancelledError:
@@ -339,10 +361,7 @@ class Director:
             frames = await self.fresh_frames(3, timeout_s=4.0)
         except Hold as e:
             return 503, {"ok": False, "error": "no_camera", "detail": str(e)}
-        hits = []
-        for f in frames:
-            gray = await asyncio.to_thread(V.decode_gray, f[2])
-            hits.append(await asyncio.to_thread(V.detect, ref, gray))
+        hits = [await self.vision(V.look, ref, f[2]) for f in frames]
         found = [h for h in hits if h]
         consistent = len(found) >= 2 and V._iou(found[0]["box"], found[-1]["box"]) > 0.5
         if not consistent:
@@ -390,12 +409,7 @@ class Director:
         if ref is None:
             raise Hold("the target was cleared")
         frames = await self.fresh_frames(OBSERVE_FRAMES, after=after)
-        grays, hits = [], []
-        for f in frames:
-            g = await asyncio.to_thread(V.decode_gray, f[2])
-            grays.append(g)
-            hits.append(await asyncio.to_thread(V.detect, ref, g))
-        sc = await asyncio.to_thread(V.score_view, hits, grays)
+        hits, sc = await self.vision(V.look_many, ref, [f[2] for f in frames])
         pick = max(range(len(frames)), key=lambda i: hits[i]["confidence"] if hits[i] else -1)
         label = f"{key}  {sc['score']:.2f}" if sc["valid"] else f"{key}  not seen"
         self.thumbs[key] = self._thumb(frames[pick][2], hits[pick]["box"] if hits[pick] else None, label)
@@ -409,7 +423,7 @@ class Director:
         the motion layer refused before commanding anything; Hold when a move failed part-way. With `sample`,
         frames seen on the way are scored (self.samples) so a better view passed en route can be pulled back to."""
         self.job["moving_to"] = view if not along else f"{view} → {along[0]} {along[1]:.0%}"
-        self._own_move, self.samples = True, []
+        self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
                 await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along)
@@ -419,7 +433,7 @@ class Director:
                 raise Hold(f"move refused: {e}")
             task = self.state.move_task
             while not task.done():
-                await asyncio.wait({task}, timeout=0.25)     # never cancels the move: only STOP does
+                await asyncio.wait({task}, timeout=0.5)      # never cancels the move: only STOP does
                 if sample and not task.done():
                     await self._sample()
             out = self.state.move_outcome or {}
@@ -441,10 +455,10 @@ class Director:
             return
         if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
             return
-        gray = await asyncio.to_thread(V.decode_gray, f[2])
-        hit = await asyncio.to_thread(V.detect, self.ref, gray)
+        self.looks += 1
+        hit = await self.vision(V.look, self.ref, f[2], True)
         if hit:
-            self.samples.append({"joints": joints, "score": V.frame_score(hit, gray), "box": hit["box"]})
+            self.samples.append({"joints": joints, "score": hit["frame_score"], "box": hit["box"]})
 
     def pullback(self, dest: str, start: str | None, gate: dict, than: float | None) -> dict | None:
         """A stop on the line start -> dest, near dest, where the camera saw the target better on the way in
@@ -509,14 +523,15 @@ class Director:
     def start(self, req: dict) -> tuple[int, dict]:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
-                   "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour}
+                   "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
+                   "scene": self._scene, "return": self._return_job}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind != "tour" and self.ref is None:
+        if kind not in ("tour", "return") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -702,33 +717,356 @@ class Director:
         if not ok:
             raise Hold(f"recalled view does not match: score now {look['score']} against {b['score']}")
 
+    # ---- cinematic: seamless glides between verified shots, cuts where no glide keeps the target in frame
+
+    def _shot(self, r: dict) -> dict:
+        b = r["best"]
+        return {"id": r["preset"], "preset": r["preset"], "toward": b.get("toward"), "s": b.get("s") or 0.0,
+                "score": b["score"], "thumb": b["thumb"]}
+
+    def _transitions(self, shots: list[dict], gate: dict) -> dict:
+        ranges, grip = self.state.arm.ranges(), self.state.arm.joints()[motion.GRIPPER]
+        lines, views = predict.checked_lines(ranges, grip, gate if gate["moves"] else {"lines": None})
+        out = {}
+        for a in shots:
+            for b in shots:
+                if a is not b:
+                    out[(a["id"], b["id"])] = predict.best_transition(a, b, lines, views, self.loc, ranges,
+                                                                      self._aspect(), self.calibration, grip)
+        return out
+
+    @staticmethod
+    def _local_order(shots: list[dict], trans: dict) -> list[str]:
+        """The order with the most seamless transitions, then the most time in frame, then the best shots first."""
+        import itertools
+        best = None
+        for order in itertools.permutations([s["id"] for s in shots]):
+            steps = [trans[(a, b)] for a, b in zip(order, order[1:])]
+            key = (sum(t["seamless"] for t in steps), sum(t["visible"] for t in steps),
+                   -sum(i * next(s["score"] for s in shots if s["id"] == sid) for i, sid in enumerate(order)))
+            if best is None or key > best[0]:
+                best = (key, list(order))
+        return best[1]
+
+    def _claude_order(self, shots: list[dict], trans: dict) -> tuple[list[str], dict[str, float], str]:
+        """Claude as planner only: it picks the order and hold times from the shot list and the transition table
+        (no images, no joints). The plan is validated here; anything unknown or malformed raises ValueError."""
+        import anthropic
+        from claude_config import claude_api_key, load_env
+        load_env(ROOT / ".env")
+        key = claude_api_key()
+        if not key:
+            raise ValueError("no Claude key (CLAUDE_API_KEY in .env)")
+        table = {"shots": [{"id": s["id"], "position": s["preset"] if not s["toward"] else
+                            f"{s['s']:.0%} of the way from {s['preset']} toward {s['toward']}", "score": s["score"]} for s in shots],
+                 "transitions": [{"from": a, "to": b, "seamless": t["seamless"], "target_in_frame_share": t["visible"]}
+                                 for (a, b), t in trans.items()]}
+        ids = [s["id"] for s in shots]
+        schema = {"type": "object", "additionalProperties": False, "required": ["order", "hold_seconds", "reason"],
+                  "properties": {"order": {"type": "array", "items": {"type": "string", "enum": ids}},
+                                 "hold_seconds": {"type": "array", "items": {"type": "number"}},
+                                 "reason": {"type": "string"}}}
+        client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
+        response = client.beta.messages.create(
+            model="claude-opus-5-5", max_tokens=2000,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            system=("You plan a short robot-arm camera take of one object. The local controller has already verified "
+                    "every shot and every move; you only choose the order and how long to hold each shot. Prefer "
+                    "seamless transitions (the camera glides and keeps the object in frame); a non-seamless one "
+                    "becomes a cut. Use each shot at most once, start with a strong establishing shot, and hold "
+                    "each shot 2 to 6 seconds. Answer with the JSON only."),
+            messages=[{"role": "user", "content": json.dumps(table)}])
+        if response.stop_reason == "refusal":
+            raise ValueError("Claude declined to plan")
+        data = json.loads(next(b.text for b in response.content if b.type == "text"))
+        order = [o for o in data["order"] if o in ids]
+        if not order or len(set(order)) != len(order):
+            raise ValueError(f"unusable order from Claude: {data['order']}")
+        holds = {sid: max(2.0, min(6.0, float(h))) for sid, h in zip(order, data["hold_seconds"])}
+        return order, holds, str(data.get("reason", ""))[:300]
+
+    async def _glide(self, segments: list) -> None:
+        """Move along the planned glide: each segment ends at a preset or a stop along its line."""
+        for line, _f0, f1 in segments:
+            x, y = sorted(line)
+            if f1 <= 1e-6:
+                ok = await self.move(x)
+            elif f1 >= 1 - 1e-6:
+                ok = await self.move(y)
+            elif f1 <= motion.ALONG_MAX:
+                ok = await self.move(x, (y, round(f1, 3)))
+            elif 1 - f1 <= motion.ALONG_MAX:
+                ok = await self.move(y, (x, round(1 - f1, 3)))
+            else:
+                raise Hold("the glide ends too far from a preset")
+            if not ok:
+                raise Hold(f"the glide along {x}-{y} was refused")
+
     async def _cinematic(self, req: dict, gate: dict):
-        shots = self._shots(req)
-        board = [{"preset": s["preset"], "toward": s["best"].get("toward"), "s": s["best"].get("s"),
-                  "score": s["best"]["score"], "thumb": s["best"]["thumb"]} for s in shots]
-        self.job["result"] = {**(self.job["result"] or {}), "storyboard": board, "shots": []}
+        shots = [self._shot(r) for r in self._shots(req)]
         if not shots:
             raise Hold("no verified best shots yet: run Optimize all views first")
+        if self.loc is None:
+            raise Hold("the target is not localized; run Optimize all views first")
+        trans = await asyncio.to_thread(self._transitions, shots, gate)
+        planner, holds, reason = "local", {}, ""
+        if req.get("planner") == "claude":
+            try:
+                order, holds, reason = await asyncio.to_thread(self._claude_order, shots, trans)
+                planner = "claude"
+            except Exception as e:      # Claude is optional: the local plan always works
+                self.note(f"Claude planner unavailable ({type(e).__name__}: {e}); using the local plan")
+                order, reason = self._local_order(shots, trans), f"local plan (Claude: {e})"
+        else:
+            order = self._local_order(shots, trans)
+        by_id = {s["id"]: s for s in shots}
+        plan = []
+        for i, sid in enumerate(order):
+            t = trans.get((order[i - 1], sid)) if i else None
+            plan.append({**by_id[sid], "hold_s": holds.get(sid, SHOT_HOLD_S),
+                         "transition": None if t is None else {"seamless": t["seamless"], "visible": t["visible"],
+                                                                "why": t.get("why")}})
+        self.job["result"] = {**(self.job["result"] or {}), "planner": planner, "plan_reason": reason,
+                              "storyboard": [{k: p[k] for k in ("preset", "toward", "s", "score", "thumb", "hold_s", "transition")}
+                                             for p in plan], "shots": []}
         if not gate["moves"]:
             self.job.update(status="BLOCKED", reason="physical moves not approved: storyboard only (no moving take)")
             return
-        self.job["phase"] = "cinematic"
-        for i, s in enumerate(shots, 1):
-            self.step(f"shot {i} of {len(shots)}: {s['preset']}", shot_index=i, shot_count=len(shots), preset=s["preset"])
-            b = s["best"]
-            look = await self.go_shot(s["preset"], b.get("toward"), b.get("s", 0.0), f"{s['preset']}/shot")
+        for i, p in enumerate(plan, 1):
+            t = trans.get((order[i - 2], p["id"])) if i > 1 else None
+            if t and t["seamless"]:
+                self.job["phase"] = "cinematic"          # the glide is part of the take
+                self.step(f"shot {i} of {len(plan)}: gliding to {p['preset']} (in frame {t['visible']:.0%})",
+                          shot_index=i, shot_count=len(plan), preset=p["preset"])
+                await self._glide(t["segments"])
+                joints, tt = await self.settle()
+                look = await self.observe(f"{p['preset']}/shot", joints, tt)
+            else:
+                self.job["phase"] = "reposition"         # a cut: the recording pauses while the arm repositions
+                self.step(f"shot {i} of {len(plan)}: repositioning to {p['preset']} (cut)",
+                          shot_index=i, shot_count=len(plan), preset=p["preset"])
+                look = await self.go_shot(p["preset"], p["toward"], p["s"], f"{p['preset']}/shot")
+                self.job["phase"] = "cinematic"
             if not look["valid"]:
-                raise Hold(f"target lost at shot {i} ({s['preset']}): {look['reason']}")
-            self.step(f"shot {i} of {len(shots)}: holding {s['preset']}")
-            misses, end = 0, time.monotonic() + SHOT_HOLD_S
+                raise Hold(f"target lost at shot {i} ({p['preset']}): {look['reason']}")
+            self.step(f"shot {i} of {len(plan)}: holding {p['preset']}")
+            misses, end = 0, time.monotonic() + p["hold_s"]
             while time.monotonic() < end:
                 await asyncio.sleep(0.5)
                 f = (await self.fresh_frames(1))[0]
-                hit = await asyncio.to_thread(V.detect, self.ref, await asyncio.to_thread(V.decode_gray, f[2]))
+                hit = await self.vision(V.look, self.ref, f[2])
                 misses = 0 if hit else misses + 1
                 if misses >= 2:
-                    raise Hold(f"target lost while holding shot {i} ({s['preset']})")
-            self.job["result"]["shots"].append({"preset": s["preset"], "score": look["score"]})
+                    raise Hold(f"target lost while holding shot {i} ({p['preset']})")
+            self.job["result"]["shots"].append({"preset": p["preset"], "score": look["score"],
+                                                "arrived_by": "glide" if t and t["seamless"] else "cut"})
+
+    # ---- free camera scenes: moves generated around the object (arcs, cranes, push-ins, mixes)
+
+    async def move_path(self, poses: list[dict], label: str, sample: bool = False) -> None:
+        """One continuous computed move (motion.go_through) through the command owner, frames scored if `sample`."""
+        self.job["moving_to"] = label
+        self._own_move, self.samples, self.looks = True, [], 0
+        try:
+            try:
+                await self.state.start_path(poses, label, gen=self.job_gen)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                raise Hold(f"move refused: {e}")
+            task = self.state.move_task
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.4)
+                if sample and not task.done():
+                    await self._sample()
+            out = self.state.move_outcome or {}
+        finally:
+            self._own_move = False
+            self.job["moving_to"] = None
+        if not out.get("ok"):
+            raise Hold(f"{label} did not finish: {out.get('error')}")
+
+    @staticmethod
+    def _bridge(a: dict, b: dict, step: int = 200) -> list[dict]:
+        """Joint-space waypoints from a to b at most `step` apart (the path check then vouches for each)."""
+        n = max(1, int(math.ceil(max(abs(b[m] - a[m]) for m in motion.MOVABLE) / step)))
+        return [{m: int(round(a[m] + (b[m] - a[m]) * k / n)) for m in motion.MOVABLE} for k in range(1, n + 1)]
+
+    async def ensure_reach(self) -> dict:
+        if self.reach is None or self.reach.get("point") != self.loc["point_m"]:
+            self.step("mapping where the camera can go around the object")
+            views = motion.load_views()
+            seeds = tuple(views[n] for n in ("wide", "left", "right", "top") if n in views)
+            m = await self.vision(orbit.reach_map, self.loc["point_m"], self.state.arm.joints(), self.state.arm.ranges(), seeds)
+            self.reach = {**m, "point": self.loc["point_m"]}
+        return self.reach
+
+    def _local_scene(self, reach: dict) -> list[dict]:
+        """A contextual default scene from the reach map: a wide establishing arc at the elevation and distance
+        with the widest continuous reach, craning up through the front, then a push-in at the end."""
+        best = None
+        for key, ths in reach["ok"].items():
+            e, d = (float(v) for v in key.split("|"))
+            runs, run = [], []
+            for t in reach["thetas"]:
+                if t in ths:
+                    run.append(t)
+                else:
+                    if run:
+                        runs.append(run)
+                    run = []
+            if run:
+                runs.append(run)
+            for r in runs:
+                span = r[-1] - r[0]
+                if best is None or (span, -abs((r[0] + r[-1]) / 2), e) > best[0]:
+                    best = ((span, -abs((r[0] + r[-1]) / 2), e), e, d, r)
+        if best is None or best[0][0] <= 0:
+            raise Hold("the reach map shows no arc around the object; try another object position")
+        _, e, d, r = best
+        mid = (r[0] + r[-1]) / 2
+        return [{"name": "establishing arc with a crane", "keyframes": [
+                    {"theta": r[0], "elev": e, "dist": d},
+                    {"theta": mid, "elev": min(e + 10, 75), "dist": d},
+                    {"theta": r[-1], "elev": e, "dist": d}]},
+                {"name": "push in", "keyframes": [
+                    {"theta": r[-1], "elev": e, "dist": d},
+                    {"theta": r[-1] - 15 if r[-1] > mid else r[-1] + 15, "elev": min(e + 10, 75), "dist": max(0.14, d - 0.04)}]}]
+
+    def _claude_scene(self, reach: dict) -> tuple[list[dict], str]:
+        """Claude as scene planner: designs moves (keyframes) from the reach map. Validated and executed locally."""
+        import anthropic
+        from claude_config import claude_api_key, load_env
+        load_env(ROOT / ".env")
+        key = claude_api_key()
+        if not key:
+            raise ValueError("no Claude key (CLAUDE_API_KEY in .env)")
+        kf = {"type": "object", "additionalProperties": False, "required": ["theta", "elev", "dist"],
+              "properties": {"theta": {"type": "number"}, "elev": {"type": "number"}, "dist": {"type": "number"}}}
+        schema = {"type": "object", "additionalProperties": False, "required": ["moves", "reason"],
+                  "properties": {"reason": {"type": "string"},
+                                 "moves": {"type": "array", "items": {
+                                     "type": "object", "additionalProperties": False, "required": ["name", "keyframes"],
+                                     "properties": {"name": {"type": "string"}, "keyframes": {"type": "array", "items": kf}}}}}}
+        brief = {"object": {"label": self.target["label"], "size_cm": round(self.loc["size_m"] * 100, 1)},
+                 "camera_space": "theta = azimuth around the object in degrees (0 = from the robot's base side, +90 = "
+                                 "from the right, -90 = from the left); elev = degrees above the desk; dist = metres "
+                                 "from the object",
+                 "reachable": {k: v for k, v in reach["ok"].items()}}
+        client = anthropic.Anthropic(api_key=key, timeout=40.0, max_retries=1)
+        response = client.beta.messages.create(
+            model="claude-opus-5-5", max_tokens=4000,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
+            system=("You are the director of a robot camera arm filming one small object on a desk for a video. Design "
+                    "2 to 4 camera moves that make good footage: arcs around the object, crane moves up or down, "
+                    "push-ins and pull-outs, and combinations. Each move is a list of keyframes the camera glides "
+                    "through. Use only theta/elev/dist combinations listed as reachable (key 'elev|dist' -> reachable "
+                    "thetas); keyframes between listed values are fine if both neighbours are reachable. Keep each "
+                    "move continuous (neighbouring keyframes close in the reachable set). Answer with the JSON only."),
+            messages=[{"role": "user", "content": json.dumps(brief)}])
+        if response.stop_reason == "refusal":
+            raise ValueError("Claude declined to plan")
+        data = json.loads(next(b.text for b in response.content if b.type == "text"))
+        moves = []
+        for mv in data["moves"][:4]:
+            frames = [{"theta": max(-170.0, min(170.0, float(k["theta"]))), "elev": max(20.0, min(80.0, float(k["elev"]))),
+                       "dist": max(0.13, min(0.3, float(k["dist"])))} for k in mv["keyframes"][:8]]
+            if len(frames) >= 2:
+                moves.append({"name": str(mv["name"])[:60], "keyframes": frames})
+        if not moves:
+            raise ValueError("Claude returned no usable move")
+        return moves, str(data.get("reason", ""))[:400]
+
+    async def _scene(self, req: dict, gate: dict):
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        w = self.where()
+        if w.get("where") not in ("view", "between"):
+            raise Hold("start the scene from a saved view (or a stop on a checked line)")
+        self.job["phase"] = "estimate"
+        if self.loc is None:
+            await self.localize()
+        home_pose = self.state.arm.joints(max_age_s=motion.STALE_S)
+        planner, reason = "request", ""
+        moves = req.get("moves")
+        reach = None if moves else await self.ensure_reach()
+        if not moves and req.get("planner") == "claude":
+            try:
+                moves, reason = await asyncio.to_thread(self._claude_scene, reach)
+                planner = "claude"
+            except Exception as e:
+                self.note(f"Claude scene planner unavailable ({type(e).__name__}: {e}); using the local scene")
+                reason = f"local scene (Claude: {e})"
+        if not moves:
+            moves, planner = self._local_scene(reach), ("local" if planner != "claude" else planner)
+        bias = predict.bias_for(w, self.calibration)
+        views = motion.load_views()
+        seeds = tuple(views[n] for n in ("wide", "left", "right", "top") if n in views)
+        self.job["result"] = {"planner": planner, "plan_reason": reason, "moves": [], "reach": reach and reach["ok"]}
+        here = home_pose
+        trail = self.trail = [{m: home_pose[m] for m in motion.MOVABLE}]   # every pose driven, to retrace later
+        await self._scene_moves(moves, here, trail, bias, seeds)
+        self.job["phase"] = "reposition"
+        await self._return(trail)
+
+    async def _return(self, trail: list[dict]):
+        """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
+        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        i = min(range(len(trail)), key=lambda k: max(abs(trail[k][m] - now[m]) for m in motion.MOVABLE))
+        gap = max(abs(trail[i][m] - now[m]) for m in motion.MOVABLE)
+        if gap > motion.PATH_STEP_MAX:
+            raise Hold(f"the arm is {gap} steps from the path it came along; recover with Arm controls")
+        back = list(reversed(trail[:i + 1]))
+        if len(back) > 1 or gap > motion.SKIP_TOL:
+            self.step("returning to the start pose along the path it came")
+            await self.move_path(back, "return")
+        self.trail = []
+
+    async def _return_job(self, req: dict, gate: dict):
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        if not self.trail:
+            raise Hold("no scene path to retrace")
+        await self._return(self.trail)
+
+    async def _scene_moves(self, moves, here, trail, bias, seeds):
+        for i, mv in enumerate(moves, 1):
+            self.step(f"move {i} of {len(moves)}: planning {mv['name']}", shot_index=i, shot_count=len(moves))
+            plan = await self.vision(orbit.plan_path, self.loc["point_m"], here, self.state.arm.ranges(),
+                                     mv["keyframes"], bias, self._aspect(), seeds)
+            if not plan["ok"]:
+                self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": plan["reason"]})
+                continue
+            self.job["phase"] = "reposition"
+            self.step(f"move {i} of {len(moves)}: getting into position for {mv['name']}")
+            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            approach = self._bridge(now, plan["poses"][0])
+            await self.move_path(approach, f"approach {mv['name']}")
+            trail.extend(approach)
+            joints, t = await self.settle()
+            look = await self.observe(f"scene/{i}-start", joints, t)
+            if look["valid"]:          # measure the aim from the real camera and replan with it
+                c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
+                bias = (bias[0] + c[0] - 0.5, bias[1] + c[1] - 0.5)
+                plan2 = await self.vision(orbit.plan_path, self.loc["point_m"], joints, self.state.arm.ranges(),
+                                          mv["keyframes"], bias, self._aspect(), seeds)
+                if plan2["ok"]:
+                    plan = plan2
+            self.job["phase"] = "cinematic"
+            self.step(f"move {i} of {len(moves)}: {mv['name']}")
+            now = self.state.arm.joints(max_age_s=motion.STALE_S)
+            path = self._bridge(now, plan["poses"][0]) + plan["poses"][1:]
+            await self.move_path(path, mv["name"], sample=True)
+            trail.extend(path)
+            await asyncio.sleep(1.0)            # a beat at the end of the move
+            seen = len(self.samples) / self.looks if self.looks else None
+            here = self.state.arm.joints(max_age_s=motion.STALE_S)
+            self.job["result"]["moves"].append({"name": mv["name"], "done": True, "complete": plan["complete"],
+                                                "why": plan["reason"], "poses": len(plan["poses"]),
+                                                "in_frame": None if seen is None else round(seen, 2),
+                                                "aim_bias": [round(v, 3) for v in bias]})
 
     async def _tour(self, req: dict, gate: dict):
         if self.ref is None:
@@ -747,7 +1085,7 @@ class Director:
 
     async def _look(self) -> dict | None:
         f = (await self.fresh_frames(1))[0]
-        return await asyncio.to_thread(V.detect, self.ref, await asyncio.to_thread(V.decode_gray, f[2]))
+        return await self.vision(V.look, self.ref, f[2])
 
     def _shot_of(self, p: str) -> dict | None:
         r = self.catalogue.get(p) or {}
@@ -866,7 +1204,7 @@ class Director:
         wh = framing.jpeg_size(f[2]) or (4, 3)
         bbox = {"cx": (b[0] + b[2]) / 2, "cy": (b[1] + b[3]) / 2, "w": b[2] - b[0], "h": b[3] - b[1]}
         try:
-            plan = await asyncio.to_thread(framing.plan, joints, bbox, "center", 0.1, wh[0] / wh[1], ranges)
+            plan = await self.vision(framing.plan, joints, bbox, "center", 0.1, wh[0] / wh[1], ranges)
         except framing.FramingError as e:
             plan = e.body()
         err = [round(bbox["cx"] - 0.5, 3), round(bbox["cy"] - 0.5, 3)]

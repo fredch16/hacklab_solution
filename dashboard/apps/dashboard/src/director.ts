@@ -141,12 +141,16 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const buttons = el("div", "controls");
   const b = (text: string, cls = "btn") => { const x = el("button", cls, text); buttons.append(x); return x; };
   const select = b("Select object", "btn primary"), autofind = b("Auto-find sticker"), keep = b("Keep in frame"),
-    watch = b("Keep in view"), optimize = b("Optimize all views"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
+    watch = b("Keep in view"), optimize = b("Optimize all views"), scene = b("Scene", "btn primary"), back = b("Return"), cinema = b("Cinematic"), tour = b("Director Tour", "btn primary"), stop = b("STOP", "btn stop");
   const recLabel = el("label", "small");
   const rec = el("input");
   rec.type = "checkbox";
   recLabel.append(rec, " Record the shots (cinematic and keep-in-view holds only, never the estimating)");
-  buttons.append(recLabel);
+  const claudeLabel = el("label", "small");
+  const useClaude = el("input");
+  useClaude.type = "checkbox";
+  claudeLabel.append(useClaude, " Plan with Claude (planner only; the local director moves the arm)");
+  buttons.append(recLabel, claudeLabel);
   const confirm = el("div", "controls director-confirm");
   confirm.hidden = true;
   const name = el("input", "director-name");
@@ -291,7 +295,9 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   keep.onclick = job("center");
   watch.onclick = job("watch");
   optimize.onclick = job("survey");
-  cinema.onclick = job("cinematic");
+  cinema.onclick = () => job("cinematic", useClaude.checked ? { planner: "claude" } : {})();
+  scene.onclick = () => job("scene", useClaude.checked ? { planner: "claude" } : {})();
+  back.onclick = job("return");
   tour.onclick = job("tour");
   stop.onclick = async () => {
     try {
@@ -336,7 +342,12 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       return c;
     }));
     const board = (s.job?.result as any)?.storyboard as { preset: string; score: number; thumb: string }[] | undefined;
+    const moves = (s.job?.result as any)?.moves as { name: string; done: boolean; complete?: boolean; in_frame?: number | null; why?: string | null }[] | undefined;
     story.replaceChildren();
+    if (s.job?.kind === "scene" && moves?.length) {
+      story.append(el("h4", "", `Scene (${(s.job.result as any).planner} plan)`));
+      for (const m of moves) story.append(el("p", "small", `${m.name}: ${m.done ? `${m.complete ? "full move" : "shortened"} · object in frame ${m.in_frame == null ? "–" : Math.round(m.in_frame * 100) + "%"}` : "not possible"}${m.why ? ` · ${m.why}` : ""}`));
+    }
     if (board?.length) {
       story.append(el("h4", "", s.job?.status === "BLOCKED" ? "Storyboard (still montage — no moving take: motion not approved)" : "Storyboard"));
       const row = el("div", "shots");
@@ -372,7 +383,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       (s.arm.joints ? ` · measured ${Object.entries(s.arm.joints).map(([m, v]) => `${m}:${v}`).join(" ")}` : "") +
       (s.gate.moves ? "" : ` · ${s.gate.reasons[0] ?? ""}`);
     const running = s.job?.status === "RUNNING";
-    for (const x of [autofind, select, keep, watch, optimize, cinema, tour]) x.disabled = running || !!picking;
+    for (const x of [autofind, select, keep, watch, optimize, cinema, scene, back, tour]) x.disabled = running || !!picking;
     autofind.hidden = !s.sticker_reference;
     renderGallery(s);
     // Record only deliberate shots: the cinematic phase and keep-in-view holds, never estimating or verifying.

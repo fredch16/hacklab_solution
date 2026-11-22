@@ -26,12 +26,25 @@ LOST_AFTER = 5            # consecutive misses before the tracker reports TARGET
 COVERED_RATIO = 0.5       # at a fixed pose: fewer than this share of the settled inlier count = partly covered
 PATCH_MIN_SIDE = 200      # small crops are upscaled to this before feature extraction
 
+cv2.setNumThreads(1)      # OpenCV otherwise spreads SIFT over every core and starves Station and the motion loop
 _sift = cv2.SIFT_create()
 _matcher = cv2.BFMatcher(cv2.NORM_L2)
 
 
-def decode_gray(jpeg: bytes) -> np.ndarray:
-    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
+MAX_W = 960               # every frame is downscaled to at most this width before recognition
+OVERLAY_W = 640           # ...and the live overlay works on this width
+
+
+def decode_gray(jpeg: bytes, reduced: bool = False) -> np.ndarray:
+    """Grayscale frame downscaled to MAX_W (OVERLAY_W with `reduced`). 720p is not needed for recognition;
+    at 640 px the small far-away sticker (wide, home) lost too many features on the real arm, so scored looks keep 960."""
+    import framing
+    wh = framing.jpeg_size(jpeg)
+    limit = OVERLAY_W if reduced else MAX_W
+    flag = cv2.IMREAD_REDUCED_GRAYSCALE_2 if wh and wh[0] >= 2 * limit else cv2.IMREAD_GRAYSCALE
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), flag)
+    if img is not None and img.shape[1] > limit:
+        img = cv2.resize(img, (limit, round(img.shape[0] * limit / img.shape[1])), interpolation=cv2.INTER_AREA)
     if img is None:
         raise ValueError("not a decodable JPEG")
     return img
@@ -159,7 +172,10 @@ class Tracker:
     history: list = field(default_factory=list)   # last observations (dicts), newest last
 
     def update(self, gray: np.ndarray, frame_id: int, stamp: float) -> dict | None:
-        hit = detect(self.ref, gray)
+        return self.record(detect(self.ref, gray), frame_id, stamp)
+
+    def record(self, hit: dict | None, frame_id: int, stamp: float) -> dict | None:
+        """Book-keeping for a detection made elsewhere (the vision worker process)."""
         if hit is None:
             self.misses += 1
             return None
@@ -226,3 +242,31 @@ def score_view(observations: list[dict | None], grays: list[np.ndarray]) -> dict
             "center": comps[0]["center"], "occupancy": float(np.median([c["occupancy"] for c in comps])),
             "inliers": int(np.median([o["inliers"] or 0 for o, _ in seen])),
             "method": best["method"], "evidence": best["evidence"]}
+
+
+# ---------------------------------------------------------------- vision worker process entry points
+# The arm server runs these in a separate process so image processing never delays its event loop
+# (Station joint data and the 30 Hz motion commands share that loop).
+
+def _worker_init():
+    import os
+    try:
+        os.nice(5)
+    except OSError:
+        pass
+
+
+def look(ref: Reference, jpeg: bytes, reduced: bool = False) -> dict | None:
+    """Detect in one JPEG; with `reduced`, also attach a single-frame score."""
+    gray = decode_gray(jpeg, reduced)
+    hit = detect(ref, gray)
+    if hit is not None:
+        hit["frame_score"] = frame_score(hit, gray)
+    return hit
+
+
+def look_many(ref: Reference, jpegs: list[bytes]) -> tuple[list, dict]:
+    """Settled frames at full size: the detections and the view score."""
+    grays = [decode_gray(j) for j in jpegs]
+    hits = [detect(ref, g) for g in grays]
+    return hits, score_view(hits, grays)

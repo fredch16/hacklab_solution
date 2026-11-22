@@ -898,10 +898,31 @@ class State:
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
 
-    async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None):
+    async def start_path(self, poses: list, label: str, gen: int | None = None) -> dict:
+        """Start motion.go_through (a computed, model-checked path from the camera director) like start_move."""
+        gen = self.gen if gen is None else gen
+
+        async def body():
+            if self.torque_doubt:
+                raise Refused(self.torque_doubt + "; press Hold here or STOP to find out, then try again")
+            if self.note_data()[1]:
+                raise Refused("no arm data: check the arm's USB cable and power. Nothing moves until it is back", 503)
+            self.move_view, self.move_outcome = label, None
+            self.move_started, self.move_speed = time.time(), (DEFAULT_SPEED, SPEEDS[DEFAULT_SPEED])
+            self._forget_where()
+            self.move_task = asyncio.create_task(self._run_move(label, SPEEDS[DEFAULT_SPEED], False, path=poses))
+            self.move_task.add_done_callback(lambda _: self.refresh_where())
+            return {"ok": True, "started": True, "view": label, "generation": gen}
+        return await self.command(body, gen=gen)
+
+    async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None,
+                        path: list | None = None):
         try:
-            result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
-                                             along=along)
+            if path is not None:
+                result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view)
+            else:
+                result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
+                                                 along=along)
             self._finish({"view": view, **result})
             if result.get("hold") or result.get("ok"):  # a refusal commanded nothing and says nothing about holding
                 self.hold_state = result.get("hold") or "confirmed"

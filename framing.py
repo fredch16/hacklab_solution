@@ -151,9 +151,10 @@ def _solve(a: list[list[float]], b: list[float]) -> list[float]:
 
 
 def solve_pose(start: dict, target_pos, target_axis, target_right, ranges=None,
-               iterations: int = 150) -> tuple[dict, float, float]:
+               iterations: int = 150, limits: dict | None = None) -> tuple[dict, float, float]:
     """Joints (steps, motors 1-7 varied) whose camera reaches the target pose; damped least
-    squares from `start`. Returns (joints, position error m, direction error deg)."""
+    squares from `start`. Returns (joints, position error m, direction error deg).
+    `limits` {motor: (lo, hi)}: every step is clamped inside them (otherwise the solver may leave a range)."""
     q = {m: float(p) for m, p in start.items()}
     lam, h = 1e-6, 2.0
     err = _residual(q, target_pos, target_axis, target_right, ranges)
@@ -173,6 +174,8 @@ def solve_pose(start: dict, target_pos, target_axis, target_right, ranges=None,
         trial = dict(q)
         for a, m in enumerate(MOVABLE):
             trial[m] += max(-150.0, min(150.0, dq[a]))
+            if limits and m in limits:
+                trial[m] = min(max(trial[m], limits[m][0]), limits[m][1])
         e_new = _residual(trial, target_pos, target_axis, target_right, ranges)
         c_new = _dot3(e_new)
         if c_new < cost:

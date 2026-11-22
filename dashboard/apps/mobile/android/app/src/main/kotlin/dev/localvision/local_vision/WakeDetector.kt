@@ -55,7 +55,7 @@ internal class WakeDetector(private val assets: AssetManager) {
                 maxActivePaths = if (usePhones) 12 else 4,
                 numTrailingBlanks = if (usePhones) 0 else 1,
                 keywordsScore = if (usePhones) 3.0f else 2.5f,   // generous: the owner prefers a false wake over a missed one (far from the mic)
-                keywordsThreshold = if (usePhones) 0.08f else 0.12f,
+                keywordsThreshold = if (usePhones) 0.06f else 0.10f,
             ))
             phoneme = usePhones
         }
@@ -69,10 +69,12 @@ internal class WakeDetector(private val assets: AssetManager) {
         stream = active?.createStream(spec)
     }
 
+    private val gain = WakeGain()
+
     fun accept(samples: FloatArray): Boolean {
         val k = active ?: return false
         val s = stream ?: return false
-        s.acceptWaveform(samples, 16000)
+        s.acceptWaveform(gain.process(samples), 16000)
         while (k.isReady(s)) {
             k.decode(s)
             if (k.getResult(s).keyword == TAG) return true
@@ -157,5 +159,20 @@ internal class WakeDetector(private val assets: AssetManager) {
         stop()
         active?.release()
         active = null
+    }
+}
+
+/** Automatic gain for the keyword spotter only: a voice across the room reaches it as loud as one at the mic. */
+internal class WakeGain(private val target: Float = 0.1f, private val maxGain: Float = 10f) {
+    private var level = target          // decaying peak of the chunk RMS
+
+    fun process(f: FloatArray): FloatArray {
+        if (f.isEmpty()) return f
+        var sum = 0.0
+        for (x in f) sum += x * x
+        val rms = kotlin.math.sqrt(sum / f.size).toFloat()
+        level = maxOf(rms, level * 0.995f, 1e-4f)   // fast attack, slow release: no pumping within a word
+        val g = (target / level).coerceIn(1f, maxGain)
+        return FloatArray(f.size) { (f[it] * g).coerceIn(-1f, 1f) }
     }
 }

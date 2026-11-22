@@ -158,4 +158,17 @@ class VoiceLogicTest {
         replay.clear()
         assertTrue(replay.samples().isEmpty())
     }
+
+    @Test
+    fun wakeGainLiftsQuietSpeechAndLeavesLoudSpeech() {
+        fun tone(amp: Float) = FloatArray(512) { (amp * sin(2 * PI * 440 * it / 16000)).toFloat() }
+        fun rms(f: FloatArray) = kotlin.math.sqrt(f.sumOf { (it * it).toDouble() } / f.size)
+        val far = WakeGain()
+        var out = tone(0.01f)
+        repeat(1000) { out = far.process(tone(0.01f)) }
+        assertTrue(rms(out) > 0.05)                       // a distant voice is lifted ~10x
+        val near = WakeGain()
+        val loud = near.process(tone(0.5f))
+        assertTrue(abs(rms(loud) - rms(tone(0.5f))) < 1e-6)   // a close voice is not boosted or clipped
+    }
 }

@@ -315,7 +315,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   };
   watch.onclick = job("watch");
   optimize.onclick = job("survey");
-  cinema.onclick = () => job("cinematic", useClaude.checked ? { planner: "claude" } : {})();
+  // One "Cinematic": the film-grammar take (establish, push in, arc, pull out). Replaying a survey's shots is part of
+  // Director Tour; Director Show and Scene were the same take under other names, Return only served free-camera scenes.
+  cinema.onclick = job("show");
+  show.hidden = scene.hidden = back.hidden = true;
   scene.onclick = () => job("scene", useClaude.checked ? { planner: "claude" } : {})();
   back.onclick = job("return");
   show.onclick = job("show");

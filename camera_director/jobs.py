@@ -85,6 +85,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
+SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 HOLD_LOAD_OK = 200        # a locked pose must hold motor 2 below this (0-1000; the servo trips above 250 for 2 s)
 HOLD_LOAD_LOOK_S = 0.8    # ...measured over this long at rest
 
@@ -536,14 +537,14 @@ class Director:
         kind = req.get("kind")
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
-                   "scene": self._scene, "return": self._return_job}
+                   "scene": self._scene, "return": self._return_job, "snap": self._snap}
         if kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if self.busy():
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind not in ("tour", "return") and self.ref is None:
+        if kind not in ("tour", "return", "snap") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -1103,6 +1104,21 @@ class Director:
             await self.move_path(back, "return", load_guard=False)
         self.trail = []
         self._save_trail([])
+
+    async def _snap(self, req: dict, gate: dict):
+        """Back onto the nearest saved view with one short checked move, when the arm stopped close to it
+        (instead of the motion layer's lift to transit). Only within SNAP_MAX steps on every joint."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        now = self.state.arm.joints(max_age_s=motion.STALE_S)
+        views = motion.load_views()
+        name, gap = min(((n, max(abs(v[m] - now[m]) for m in motion.MOVABLE)) for n, v in views.items()),
+                        key=lambda x: x[1])
+        if gap > SNAP_MAX:
+            raise Hold(f"the nearest view ({name}) is {gap} steps away; use Recover (lift to transit) instead")
+        self.step(f"snapping back onto {name} ({gap} steps)")
+        await self.move_path(self._bridge(now, {m: views[name][m] for m in motion.MOVABLE}, step=100), f"snap to {name}")
+        self.job["result"] = {"view": name, "gap_steps": gap}
 
     async def _return_job(self, req: dict, gate: dict):
         if not gate["moves"] or not gate.get("computed"):

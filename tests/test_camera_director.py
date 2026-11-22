@@ -369,6 +369,18 @@ class SimDirector(unittest.TestCase):
         wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="home at the end")
         self.assertEqual(http(self.base, "/api/state")[1]["blockers"], [])
 
+    def test_9f_snap_back_onto_a_nearby_view(self):
+        self.goto("top")
+        top = motion.load_views()["top"]
+        near = [{**{m: top[m] for m in motion.MOVABLE}, 3: top[3] + 90, 4: top[4] + 60}]
+        self.state.call(self.state.start_path(near, "nudge"))
+        wait(lambda: not self.state.moving, what="nudge")
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("where"), "unknown")
+        st = self.run_job({"kind": "snap"}, timeout=60)
+        self.assertEqual((st["job"]["status"], st["job"]["result"]["view"]), ("DONE", "top"), st["job"])
+        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="snapped onto top")
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

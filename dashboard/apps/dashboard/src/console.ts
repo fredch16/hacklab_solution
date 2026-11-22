@@ -219,6 +219,25 @@ export function mountConsole(robotCard: HTMLElement, phoneNodes: HTMLElement[]) 
     else setOrb("thinking", heard || v.title);
   });
 
+  // ---- choosing the object: the menu gets out of the way, the confirm bar floats on the camera picture ----
+  let confirmHome: ParentNode | null = null;
+  document.addEventListener("peter-picking", (e) => {
+    const d = (e as CustomEvent).detail as { on: boolean; chosen?: boolean; confirm: HTMLElement };
+    if (d.on) {
+      if (feedMode === "phone") showFeed("robot");
+      setOpen(false);
+      confirmHome = d.confirm.parentNode;
+      d.confirm.classList.add("s-pickbar");
+      feed.append(d.confirm);
+      setOrb("listening", "Drag a box around the object to film, then press Use this object.");
+    } else {
+      d.confirm.classList.remove("s-pickbar");
+      if (confirmHome) confirmHome.append(d.confirm);
+      if (d.chosen) setOrb("done", "Got it. I'll keep that object in the shot.", 4000); else setOrb("idle");
+      openTab("director"); setOpen(true);
+    }
+  });
+
   // ---- camera switch: the robot's camera, or the phone's WebRTC stream in the same panel ----
   let feedMode: "robot" | "phone" = "robot";
   let videoHome: ParentNode | null = null;

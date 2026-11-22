@@ -175,9 +175,9 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const asSticker = el("input");
   asSticker.type = "checkbox";
   stickerLabel.append(asSticker, " Save as Hack Lab sticker");
-  const ok = el("button", "btn primary", "Confirm box"), redo = el("button", "btn", "Reselect"), cancel = el("button", "btn", "Cancel");
+  const ok = el("button", "btn primary", "Use this object"), redo = el("button", "btn", "Reselect"), cancel = el("button", "btn", "Cancel");
   const hint = el("span", "muted small", "Drag a box around the object on the frozen frame.");
-  confirm.append(hint, name, stickerLabel, ok, redo, cancel);
+  confirm.append(hint, name, stickerLabel, redo, cancel, ok);
   const note = el("p", "small");
   note.setAttribute("role", "status");
   const locLine = el("p", "small muted");
@@ -270,9 +270,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     draw();
   });
 
-  function endPicking() {
+  function endPicking(chosen = false) {
     picking = null; still.hidden = true; confirm.hidden = true; canvas.classList.remove("picking");
     draw();
+    document.dispatchEvent(new CustomEvent("peter-picking", { detail: { on: false, chosen, confirm } }));
   }
   async function startPicking() {
     const fid = st?.camera.frame_id;
@@ -283,16 +284,17 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     still.hidden = false; confirm.hidden = false; ok.disabled = true; asSticker.checked = !st?.sticker_reference;
     hint.textContent = "Drag a box around the object on the frozen frame.";
     canvas.classList.add("picking");
+    document.dispatchEvent(new CustomEvent("peter-picking", { detail: { on: true, confirm } }));   // the studio shows it on the camera
   }
   select.onclick = () => void startPicking();
   redo.onclick = () => { if (picking) { picking.box = null; ok.disabled = true; draw(); } };
-  cancel.onclick = endPicking;
+  cancel.onclick = () => endPicking();
   ok.onclick = async () => {
     if (!picking?.box) return;
     ok.disabled = true;
     const r = await call("select", { frame_id: picking.frameId, box: picking.box, label: name.value, as_sticker: asSticker.checked });
     note.textContent = r.status === 200 ? `Tracking ${r.data.target.label}.` : (r.data.error ?? "Selection failed.");
-    if (r.status === 200) endPicking(); else ok.disabled = false;
+    if (r.status === 200) endPicking(true); else ok.disabled = false;
     await poll();
   };
   autofind.onclick = async () => {

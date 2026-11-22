@@ -610,7 +610,8 @@ PATH_CHECKS = 8           # poses checked between two consecutive waypoints
 # Station sets every ST3215 to trip its own overload protection when its load stays above 25 % for 2 s
 # (norma-core presets.rs: DEFAULT_OVERLOAD_TORQUE = 25; protection time 2 s). On the ElRobot the shoulder
 # reached that during computed moves. During computed paths we stop well before: load above this, this long.
-PATH_TRIP_GUARD = {2: (200, 0.6)}   # motor: (load 0-1000, seconds)
+PATH_TRIP_GUARD = {2: (230, 1.2)}   # motor: (load 0-1000, seconds); starting a move briefly loads the shoulder
+                                    # above 20 % (seen on the real arm), so: 23 % sustained 1.2 s, 0.8 s before the servo
 
 
 class LoadGuardError(MotionError):

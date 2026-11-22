@@ -85,7 +85,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
-HOLD_LOAD_OK = 180        # a locked pose must hold motor 2 below this (0-1000; the servo trips above 250 for 2 s)
+HOLD_LOAD_OK = 200        # a locked pose must hold motor 2 below this (0-1000; the servo trips above 250 for 2 s)
 HOLD_LOAD_LOOK_S = 0.8    # ...measured over this long at rest
 
 
@@ -1050,6 +1050,7 @@ class Director:
 
     async def _hold_load(self) -> float:
         """Motor 2's mean load over HOLD_LOAD_LOOK_S with the arm at rest."""
+        await asyncio.sleep(0.5)         # let the stop's own transient decay first
         vals, end = [], time.monotonic() + HOLD_LOAD_LOOK_S
         while time.monotonic() < end:
             try:

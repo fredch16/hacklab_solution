@@ -96,6 +96,7 @@ class Director:
         self.catalogue: dict[str, dict] = {}
         self.sightings: list = []            # (measured joints, box) from settled views of this target
         self.loc: dict | None = None         # predict.localize() result
+        self.calibration = self._load_calibration()
         self.samples: list = []              # frames scored during the last sampled move
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
@@ -189,6 +190,61 @@ class Director:
         frac = min(float(approval.get("max_fraction") or 0.0), motion.ALONG_MAX) if approval else 0.0
         return {"mode": "DRY RUN" if reasons else "PHYSICAL", "moves": not reasons, "reasons": reasons,
                 "lines": sorted(lines), "max_fraction": frac}
+
+    # ------------------------------------------------------------ per-preset camera correction
+
+    def _calibration_path(self) -> Path:
+        return self.data / "camera_calibration.json"
+
+    def _load_calibration(self) -> dict:
+        try:
+            return json.loads(self._calibration_path().read_text())
+        except (OSError, ValueError):
+            return {"bias": {}}
+
+    async def calibrate(self, req: dict) -> tuple[int, dict]:
+        """The object is lying at a tape-measured desk point [x, y] m (x right, y ahead of the base, seen from
+        behind the arm): record this preset's camera correction from a settled look."""
+        if self.busy():
+            return 409, {"ok": False, "error": "a director job is running; press STOP first"}
+        pt = req.get("point_m")
+        if not (isinstance(pt, list) and len(pt) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in pt)
+                and -0.8 < pt[0] < 0.8 and 0.0 < pt[1] < 0.9):
+            return 400, {"ok": False, "error": "point_m must be [x, y] in metres on the desk (x right, y ahead of the base)"}
+        if self.ref is None:
+            return 409, {"ok": False, "error": "no target: mark the object first"}
+        w = self.where()
+        if w.get("where") != "view":
+            return 409, {"ok": False, "error": "move the arm to a saved view first (calibration is per preset)"}
+        self.job = {"id": uuid.uuid4().hex[:8], "kind": "calibrate", "mode": self.gate()["mode"], "status": "RUNNING",
+                    "phase": None, "step": "looking", "progress": {}, "reason": None, "result": None, "moving_to": None,
+                    "started_at": round(time.time(), 2), "ended_at": None}
+        try:
+            joints, t = await self.settle()
+            obs = await self.observe(f"{w['view']}/calibration", joints, t)
+        except Hold as e:
+            self.job.update(status="HOLD", reason=str(e), ended_at=round(time.time(), 2))
+            return 409, {"ok": False, "error": str(e)}
+        if not obs["valid"]:
+            self.job.update(status="HOLD", reason=obs["reason"], ended_at=round(time.time(), 2))
+            return 409, {"ok": False, "error": f"the object is not visible here: {obs['reason']}"}
+        point = [float(pt[0]), float(pt[1]), framing.TABLE_Z]
+        try:
+            bias = predict.measured_bias(joints, obs["box"], point, self.state.arm.ranges(), self._aspect())
+        except ValueError as e:
+            return 409, {"ok": False, "error": str(e)}
+        self.calibration.setdefault("bias", {})[w["view"]] = list(bias)
+        self.calibration.setdefault("records", {})[w["view"]] = {
+            "point_m": point, "box": obs["box"], "measured_joints": {str(m): v for m, v in joints.items()},
+            "at": round(time.time(), 1)}
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
+        self.sightings = []          # earlier sightings were cast without this correction
+        self.loc = None
+        self.job.update(status="DONE", step="done", result={"preset": w["view"], "bias": bias}, ended_at=round(time.time(), 2))
+        self.note(f"camera correction for {w['view']}: {bias} (image fractions) from the point {point[:2]} m")
+        return 200, {"ok": True, "preset": w["view"], "bias": bias,
+                     "bias_px": [round(bias[0] * 1280), round(bias[1] * 720)]}
 
     # ------------------------------------------------------------ target
 
@@ -492,9 +548,10 @@ class Director:
         return self.loc
 
     def _add_sighting(self, joints: dict, box: list):
-        far = all(max(abs(joints[m] - j[m]) for m in motion.MOVABLE) > 40 for j, _ in self.sightings)
+        far = all(max(abs(joints[m] - s[0][m]) for m in motion.MOVABLE) > 40 for s in self.sightings)
         if far:
-            self.sightings = (self.sightings + [(dict(joints), list(box))])[-8:]
+            bias = predict.bias_for(self.where(), self.calibration)
+            self.sightings = (self.sightings + [(dict(joints), list(box), bias)])[-8:]
 
     def predict_all(self, gate: dict) -> dict[str, dict]:
         """Predicted best shot per checked preset from the current localization."""
@@ -508,7 +565,9 @@ class Director:
             f = self.frame()
             wh = framing.jpeg_size(f[2]) if f else None
             for c in cands:
-                pv = predict.predict_view(c["joints"], self.loc, ranges, aspect, image_w=wh[0] if wh else predict.IMAGE_W)
+                bias = predict.bias_for({"preset": p, "toward": c["toward"], "s": c["s"]}, self.calibration)
+                pv = predict.predict_view(c["joints"], self.loc, ranges, aspect, image_w=wh[0] if wh else predict.IMAGE_W,
+                                          bias=bias)
                 preds.append({k: v for k, v in c.items() if k != "joints"} | pv)
             vis = [x for x in preds if x["visible"]]
             out[p] = {"best": max(vis, key=lambda x: x["score"]) if vis else None, "count": len(preds),
@@ -817,6 +876,7 @@ class Director:
                       "observation": None if obs is None else {k: obs[k] for k in ("box", "quad", "confidence", "method", "evidence", "frame_id", "stable")} | {"age_s": age}}
         order = motion.view_names()
         return {"ok": True, "gate": self.gate(), "camera": cam, "target": target, "localization": self.loc,
+                "calibration": {"presets": sorted((self.calibration.get("bias") or {}))},
                 "sticker_reference": (self.data / "sticker.png").exists(),
                 "arm": {"joints": joints, "where": self.where(), "moving": self.state.moving, "generation": self.state.gen},
                 "presets": [{"name": p, "checked": motion.view_checked(p)} for p in order],
@@ -842,7 +902,7 @@ class Director:
         if method == "POST":
             if name == "sim/hand" and st.sim:   # tests and demos without hardware: put a "hand" over the target
                 return 200, st.call(self._on_loop(lambda: self._sim_hand(req))), "application/json"
-            handlers = {"select": lambda: self.select(req), "autofind": self.autofind,
+            handlers = {"select": lambda: self.select(req), "autofind": self.autofind, "calibrate": lambda: self.calibrate(req),
                         "clear": lambda: self._on_loop(self.clear), "job": lambda: self._on_loop(lambda: self.start(req))}
             if name in handlers:
                 status, body = st.call(handlers[name](), timeout=20)

@@ -33,6 +33,38 @@ IMAGE_W = 960                   # default pixels across a frame (for MIN_BOX_PX)
 W_PRED = {"composition": 0.30, "edge_clearance": 0.25, "target_size": 0.20, "legibility": 0.15, "stability": 0.10}
 
 
+# ---------------------------------------------------------------- per-preset camera correction
+#
+# fk.py's absolute joint angles are off by pose-dependent amounts (on the real arm, 22 Nov: no single
+# camera tilt/offset explained both home and top). With an object at a tape-measured desk point, each
+# preset gets the image offset between where the model puts that point and where the camera sees it;
+# localization removes it from a sighting, prediction adds it back. Stops along a line blend the two ends.
+
+def bias_for(where: dict | None, calibration: dict | None) -> tuple[float, float]:
+    """Image offset (du, dv) for a pose described like motion.locate(): a view or a stop between two views."""
+    b = (calibration or {}).get("bias") or {}
+    if not where:
+        return (0.0, 0.0)
+    if where.get("toward") is not None or where.get("where") == "between":
+        a, q = where.get("view") or where.get("preset"), where.get("to") or where.get("toward")
+        s = where.get("s", 0.0)
+        ba, bq = b.get(a), b.get(q)
+        if ba and bq:
+            return (ba[0] + (bq[0] - ba[0]) * s, ba[1] + (bq[1] - ba[1]) * s)
+        return tuple(ba or bq or (0.0, 0.0))
+    return tuple(b.get(where.get("view") or where.get("preset"), (0.0, 0.0)))
+
+
+def measured_bias(joints: dict, box: list, point_m: list, ranges, aspect: float) -> tuple[float, float]:
+    """Observed box centre minus where the model projects the tape-measured point, as image fractions."""
+    pose = tuple(map(tuple, _pose(joints, ranges)))
+    uv = framing.project(tuple(point_m), pose, aspect)
+    if uv is None:
+        raise ValueError("the measured point is behind the camera in the model")
+    cu, cv = _centre(box)
+    return (round(cu - uv[0], 4), round(cv - uv[1], 4))
+
+
 def _pose(joints: dict, ranges) -> tuple:
     return tuple(np.array(v) for v in framing.camera_pose({int(m): int(p) for m, p in joints.items()}, ranges))
 
@@ -62,9 +94,12 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
     also triangulated freely, as a calibration check only: for an object on the desk the triangulated
     height should be ~0, and the per-view desk points should agree within their uncertainties."""
     rays = []
-    for joints, box in sightings:
+    for sighting in sightings:
+        joints, box = sighting[0], sighting[1]
+        du, dv = sighting[2] if len(sighting) > 2 else (0.0, 0.0)     # per-preset correction, see bias_for
         cam, axis, right, down = _pose(joints, ranges)
-        d = np.array(framing.ray(*_centre(box), (tuple(cam), tuple(axis), tuple(right), tuple(down)), aspect))
+        cu, cv = _centre(box)
+        d = np.array(framing.ray(cu - du, cv - dv, (tuple(cam), tuple(axis), tuple(right), tuple(down)), aspect))
         rays.append((cam, d, axis, box))
     if not rays:
         return {"ok": False, "reason": "no sightings"}
@@ -107,15 +142,17 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
     return out
 
 
-def predict_view(joints: dict, target: dict, ranges, aspect: float, image_w: int = 960) -> dict:
-    """How the localized target would appear from `joints`: box, components, score (0..1) or not visible."""
+def predict_view(joints: dict, target: dict, ranges, aspect: float, image_w: int = 960,
+                 bias: tuple[float, float] = (0.0, 0.0)) -> dict:
+    """How the localized target would appear from `joints`: box, components, score (0..1) or not visible.
+    `bias`: the pose's camera correction (bias_for), added to the model's projection."""
     cam, axis, right, down = pose = _pose(joints, ranges)
     p, r = np.array(target["point_m"]), target["size_m"] / 2
     ring = [p + r * np.array([math.cos(a), math.sin(a), 0.0]) for a in np.linspace(0, 2 * math.pi, 16, endpoint=False)]
     uv = [framing.project(tuple(q), tuple(map(tuple, pose)), aspect) for q in ring]
     if any(v is None for v in uv):
         return {"visible": False, "score": None, "reason": "the target is behind the camera"}
-    us, vs = [v[0] for v in uv], [v[1] for v in uv]
+    us, vs = [v[0] + bias[0] for v in uv], [v[1] + bias[1] for v in uv]
     box = [min(us), min(vs), max(us), max(vs)]
     cx, cy = _centre(box)
     if box[2] < 0 or box[0] > 1 or box[3] < 0 or box[1] > 1:

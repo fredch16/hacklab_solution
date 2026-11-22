@@ -395,6 +395,22 @@ class Prediction(unittest.TestCase):
         self.assertLess(np.linalg.norm(np.array(one["point_m"]) - self.target["point_m"]), 0.005)
         self.assertAlmostEqual(one["size_m"], 0.08, delta=0.01)
 
+    def test_per_preset_correction_from_a_measured_point(self):
+        joints, box = self.sighting("top")
+        shifted = [box[0], box[1] + 0.1, box[2], box[3] + 0.1]            # the camera sees it lower than the model says
+        raw = predict.localize([(joints, shifted)], self.ranges, 4 / 3)
+        self.assertGreater(np.linalg.norm(np.array(raw["point_m"]) - self.target["point_m"]), 0.01)
+        bias = predict.measured_bias(joints, shifted, self.target["point_m"], self.ranges, 4 / 3)
+        self.assertAlmostEqual(bias[1], 0.1, delta=0.01)
+        cal = {"bias": {"top": list(bias), "wide": [0.0, 0.0]}}
+        fixed = predict.localize([(joints, shifted, predict.bias_for({"where": "view", "view": "top"}, cal))], self.ranges, 4 / 3)
+        self.assertLess(np.linalg.norm(np.array(fixed["point_m"]) - self.target["point_m"]), 0.003)
+        half = predict.bias_for({"preset": "top", "toward": "wide", "s": 0.5}, cal)
+        self.assertAlmostEqual(half[1], bias[1] / 2, places=4)
+        self.assertEqual(predict.bias_for({"where": "view", "view": "left"}, cal), (0.0, 0.0))
+        pv = predict.predict_view(joints, self.target, self.ranges, 4 / 3, bias=bias)
+        self.assertAlmostEqual((pv["box"][1] + pv["box"][3]) / 2, (shifted[1] + shifted[3]) / 2, delta=0.01)
+
     def test_prediction_refuses_unrecognisable_views(self):
         views = motion.load_views()
         self.assertTrue(predict.predict_view(views["top"], self.target, self.ranges, 4 / 3)["visible"])

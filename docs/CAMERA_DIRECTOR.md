@@ -65,3 +65,9 @@ Write it only after watching each listed line run on the real arm with the desk 
 .venv/bin/python -m unittest tests/test_camera_director.py      # vision, selection, survey, recall, cinematic, STOP, gate (~2 min)
 (cd dashboard/apps/dashboard && npm run build && npm test)       # box mapping for contain/cover/rotation/mirror/resize
 ```
+
+## Free camera (scenes) and the ElRobot shoulder
+
+**Scene** moves the camera around the marked object instead of between saved views: each move is keyframes in azimuth, elevation and distance, solved by IK on the ElRobot model, checked along the whole curve (envelope, 4 cm desk floor, self-clearance, step size) and run as one continuous move. Claude can design the moves (Plan with Claude; planner only, validated locally); otherwise a local scenemaker uses the reach map. **Return** retraces a scene's path; **Snap** puts the arm back onto a saved view it stopped within 200 steps of, with one short move instead of lifting to transit.
+
+On the real arm (22 Nov) scenes are **off** (`computed_paths: false` in `director_safety.json`). Station writes every ST3215 at each calibration freeze with norma-core's defaults (`software/drivers/st3215/src/presets.rs`): overload torque 25 %, protection time 2 s, max torque and torque limit 50 %. The shoulder (motor 2) carries the whole arm and tripped that protection (status 0x20) during computed approaches from `top`, even with the gripper closed and at first-run speed (load 28-32 %). A shoulder-load guard (23 % for 1.2 s) stops computed moves and locks at the last pose the shoulder can hold, but a stop at a heavy pose can still trip on the way back. Scenes need either motor 2's overload threshold raised (an EEPROM change, overwritten at the next calibration freeze) or less load on the shoulder. Everything between saved views (survey, recall, cinematic glides on checked lines) runs within the limit.

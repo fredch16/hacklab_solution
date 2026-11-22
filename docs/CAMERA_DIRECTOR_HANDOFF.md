@@ -1,5 +1,15 @@
 # Camera director: agent handoff (22–23 Nov 2026)
 
+## Latest continuation
+
+- **Film with Claude** accepts a free-form brief in the laptop dashboard and as `director_job(kind="film", brief="…")`. Its measured scene context and local IK allow new pan, composition and roll paths with the heavy joints parked. The separate computed-path opt-in permits changes in elevation and distance. Physical validation is pending.
+- **Keep in view** pauses recording when the target is persistently obscured, attempts at most one checked cut per obstruction, and resumes after a clear observation streak. A clear fallback stays in use. With computed paths approved it can evaluate a new angle locally when a suitable preset is unavailable.
+- The shoulder guard now ends jobs at the confirmed HOLD. Scene, Show and filmed takes no longer automatically proceed after the guard fires. Small-object tracking tries a 2× region near the last position. [New test and hardware preflight evidence](evidence/camera-director-2026-11-22.md#agentic-filming-continuation)
+- Physical sequence remains owner-operated. Run the director, motion and MCP simulator suites before each run. First run Self-calibrate and inspect `rms_after`, then move and reselect the target and verify localization with a prediction-only survey. Only then try one short free arc while monitoring motor 2. The existing approval still has `computed_paths: false`.
+- The updated capture and MCP services are running. Station, the voice bridge and laptop gateway kept running through the reload. The arm stayed at `wide`, and Auto-find restored the selected sticker.
+
+## Previous handoff
+
 Branch **`beta/ai-camera-director`**, created from `main` at `8d06da1` (main untouched, nothing pushed). 20 commits, newest first in `git log --oneline main..HEAD`. One agent did all the work, no subagents. The owner was present for every real-arm move and gave full permission to test.
 
 Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (controls, approval file, scoring) → [implementation map](IMPLEMENTATION_MAP.md) (where things live, safety gate) → [evidence](evidence/camera-director-2026-11-22.md) → [demo spec](AI_CAMERA_DIRECTOR_DEMO_SPEC.md) and [plan](superpowers/plans/2026-11-22-ai-camera-director-demo.md) (the original brief) → repo [AGENTS.md](../AGENTS.md) and [AGENT_HANDOFF.md](AGENT_HANDOFF.md) (baseline system).

@@ -120,7 +120,10 @@ export function describe(s: DirectorState): string {
   return j ? `${j.kind} finished` : `Tracking ${s.target.label}`;
 }
 
-export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLImageElement, startRecording: () => Promise<unknown>, stopRecording: () => Promise<unknown>, isRecording: () => boolean): void {
+type RecordingResult = { ok: boolean; error?: string | null; message?: string | null };
+
+export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLImageElement, startRecording: () => Promise<RecordingResult>,
+  stopRecording: () => Promise<RecordingResult>, isRecording: () => boolean): void {
   frame.classList.add("director-frame");
   const still = el("img", "director-still");
   still.alt = "Frozen robot camera frame for drawing a box";
@@ -146,12 +149,23 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const recLabel = el("label", "small");
   const rec = el("input");
   rec.type = "checkbox";
-  recLabel.append(rec, " Record the shots (cinematic and keep-in-view holds only, never the estimating)");
+  recLabel.append(rec, " Record the shots");
   const claudeLabel = el("label", "small");
   const useClaude = el("input");
   useClaude.type = "checkbox";
   claudeLabel.append(useClaude, " Plan with Claude (planner only; the local director moves the arm)");
   buttons.append(recLabel, claudeLabel);
+  const briefing = el("form", "controls");
+  const briefLabel = el("label", "small", "Filming brief");
+  const brief = el("input", "director-name");
+  brief.size = 37;
+  brief.maxLength = 500;
+  brief.required = true;
+  brief.placeholder = "Ease left and leave room on the right";
+  briefLabel.append(brief);
+  const film = el("button", "btn primary", "Film with Claude");
+  film.type = "submit";
+  briefing.append(briefLabel, film);
   const confirm = el("div", "controls director-confirm");
   confirm.hidden = true;
   const name = el("input", "director-name");
@@ -169,12 +183,13 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
   const locLine = el("p", "small muted");
   const gallery = el("div", "director-gallery");
   const story = el("div", "director-story");
-  panel.append(head, line, sub, buttons, confirm, note, locLine, gallery, story);
+  panel.append(head, line, sub, briefing, buttons, confirm, note, locLine, gallery, story);
   card.append(panel);
 
   let st: DirectorState | null = null, off = false;
   let picking: { frameId: number; box: Box | null } | null = null, drag: [number, number] | null = null;
   let recordingFor: string | null = null;   // job id whose shot phase this tab is recording
+  let polling = false;
 
   const shown = () => (picking ? still : live);
   // The shown image's geometry, plus where its element box sits inside the frame (the canvas covers the frame).
@@ -294,6 +309,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     await poll();
   };
   keep.onclick = job("center");
+  briefing.onsubmit = event => {
+    event.preventDefault();
+    if (brief.value.trim() && !film.disabled) void job("film", { brief: brief.value.trim() })();
+  };
   watch.onclick = job("watch");
   optimize.onclick = job("survey");
   cinema.onclick = () => job("cinematic", useClaude.checked ? { planner: "claude" } : {})();
@@ -354,9 +373,10 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       story.append(el("h4", "", "Director Show"));
       for (const x of showShots) story.append(el("p", "small", `${x.shot}${x.skipped ? ` · skipped: ${x.skipped}` : x.in_frame != null ? ` · object in frame ${Math.round(x.in_frame * 100)}%` : x.steady === false ? " · object left the picture" : ""}`));
     }
-    if (s.job?.kind === "scene" && moves?.length) {
-      story.append(el("h4", "", `Scene (${(s.job.result as any).planner} plan)`));
-      for (const m of moves) story.append(el("p", "small", `${m.name}: ${m.done ? `${m.complete ? "full move" : "shortened"} · object in frame ${m.in_frame == null ? "–" : Math.round(m.in_frame * 100) + "%"}` : "not possible"}${m.why ? ` · ${m.why}` : ""}`));
+    if (s.job?.kind === "scene" || s.job?.kind === "film") {
+      const reason = s.job.result?.plan_reason;
+      if (typeof reason === "string" && reason) story.append(el("p", "small", reason));
+      for (const m of moves ?? []) story.append(el("p", "small", `${m.name}: ${m.done ? `${m.complete ? "full move" : "shortened"} · object in frame ${m.in_frame == null ? "–" : Math.round(m.in_frame * 100) + "%"}` : "not possible"}${m.why ? ` · ${m.why}` : ""}`));
     }
     if (board?.length) {
       story.append(el("h4", "", s.job?.status === "BLOCKED" ? "Storyboard (still montage — no moving take: motion not approved)" : "Storyboard"));
@@ -366,8 +386,7 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
     }
   }
 
-  async function poll() {
-    if (document.hidden) return;
+  async function refresh() {
     const r = await call("state");
     if (r.status === 404) {
       off = true;
@@ -393,14 +412,28 @@ export function directorPanel(card: HTMLElement, frame: HTMLElement, live: HTMLI
       (s.arm.joints ? ` · measured ${Object.entries(s.arm.joints).map(([m, v]) => `${m}:${v}`).join(" ")}` : "") +
       (s.gate.moves ? "" : ` · ${s.gate.reasons[0] ?? ""}`);
     const running = s.job?.status === "RUNNING";
-    for (const x of [autofind, select, keep, watch, optimize, cinema, scene, back, tour, show, gimbal, snap, selfcal]) x.disabled = running || !!picking;
+    for (const x of [autofind, select, keep, watch, optimize, cinema, scene, back, tour, show, gimbal, snap, selfcal, film]) x.disabled = running || !!picking;
+    film.disabled ||= !s.target || !s.gate.moves;
     autofind.hidden = !s.sticker_reference;
     renderGallery(s);
     // Record only deliberate shots: the cinematic phase and keep-in-view holds, never estimating or verifying.
-    const shooting = running && s.gate.moves && (s.job?.phase === "cinematic" || s.job?.phase === "watch");
-    if (shooting && rec.checked && !recordingFor && !isRecording()) { recordingFor = s.job!.id; await startRecording(); }
-    else if (recordingFor && !(shooting && s.job?.id === recordingFor)) { recordingFor = null; if (isRecording()) await stopRecording(); }
+    const shooting = rec.checked && running && s.gate.moves && (s.job?.phase === "cinematic" || s.job?.phase === "watch");
+    if (recordingFor && (!shooting || s.job?.id !== recordingFor)) {
+      const result = await stopRecording();
+      if (result.ok || result.error === "NOT_RECORDING") recordingFor = null;
+      else note.textContent = result.message ?? "Could not pause the recorder.";
+    } else if (shooting && !recordingFor && !isRecording()) {
+      const result = await startRecording();
+      if (result.ok) recordingFor = s.job!.id;
+      else note.textContent = result.message ?? "Could not start the recorder.";
+    }
     draw();
+  }
+  async function poll() {
+    if (polling || document.hidden) return;
+    polling = true;
+    try { await refresh(); }
+    finally { polling = false; }
   }
   new ResizeObserver(() => draw()).observe(frame);
   live.addEventListener("load", () => { if (!picking) draw(); });

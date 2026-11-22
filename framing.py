@@ -135,10 +135,10 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
 
 # ---------------------------------------------------------------- inverse kinematics
 
-def _residual(steps: dict, target_pos, target_axis, target_right, ranges) -> list[float]:
+def _residual(steps: dict, target_pos, target_axis, target_right, ranges, roll_weight: float) -> list[float]:
     pos, axis, right, _ = camera_pose(steps, ranges)
     # 1 cm of position weighs like ~2 degrees of viewing direction; image roll matters least
-    return [*_sub(pos, target_pos), *_mul(_sub(axis, target_axis), 0.3), *_mul(_sub(right, target_right), 0.05)]
+    return [*_sub(pos, target_pos), *_mul(_sub(axis, target_axis), 0.3), *_mul(_sub(right, target_right), roll_weight)]
 
 
 def _solve(a: list[list[float]], b: list[float]) -> list[float]:
@@ -162,19 +162,19 @@ def _solve(a: list[list[float]], b: list[float]) -> list[float]:
 
 
 def solve_pose(start: dict, target_pos, target_axis, target_right, ranges=None,
-               iterations: int = 150, limits: dict | None = None) -> tuple[dict, float, float]:
+               iterations: int = 150, limits: dict | None = None, roll_weight: float = 0.05) -> tuple[dict, float, float]:
     """Joints (steps, motors 1-7 varied) whose camera reaches the target pose; damped least
     squares from `start`. Returns (joints, position error m, direction error deg).
     `limits` {motor: (lo, hi)}: every step is clamped inside them (otherwise the solver may leave a range)."""
     q = {m: float(p) for m, p in start.items()}
     lam, h = 1e-6, 2.0
-    err = _residual(q, target_pos, target_axis, target_right, ranges)
+    err = _residual(q, target_pos, target_axis, target_right, ranges, roll_weight)
     cost = _dot3(err)
     for _ in range(iterations):
         jac = []
         for m in MOVABLE:
             qq = dict(q); qq[m] += h
-            e2 = _residual(qq, target_pos, target_axis, target_right, ranges)
+            e2 = _residual(qq, target_pos, target_axis, target_right, ranges, roll_weight)
             jac.append([(e2[i] - err[i]) / h for i in range(len(err))])
         # (J^T J + lam I) dq = -J^T e, with a small pull towards the start pose
         n = len(MOVABLE)
@@ -187,7 +187,7 @@ def solve_pose(start: dict, target_pos, target_axis, target_right, ranges=None,
             trial[m] += max(-150.0, min(150.0, dq[a]))
             if limits and m in limits:
                 trial[m] = min(max(trial[m], limits[m][0]), limits[m][1])
-        e_new = _residual(trial, target_pos, target_axis, target_right, ranges)
+        e_new = _residual(trial, target_pos, target_axis, target_right, ranges, roll_weight)
         c_new = _dot3(e_new)
         if c_new < cost:
             q, err, cost, lam = trial, e_new, c_new, lam * 0.3

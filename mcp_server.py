@@ -374,11 +374,12 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
                           "object the user marked in the dashboard. survey = localize it and verify the best view "
                           "near every approved preset; cinematic = play the verified best views; tour = survey then "
                           "cinematic; watch = keep it in view, cutting away when a hand covers it; recall = return "
-                          "to one preset's verified best view (give preset). Returns at once; poll director_status. "
+                          "to one preset's verified best view (give preset); film = plan and film a natural-language "
+                          "camera brief using Claude and checked local motion (give brief). Returns at once; poll director_status. "
                           "Use stop to end any job.")
-    async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall"],
-                           preset: Optional[str] = None) -> dict[str, Any]:
-        body = {"kind": kind, **({"preset": preset} if preset else {})}
+    async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall", "film"],
+                           preset: Optional[str] = None, brief: Optional[str] = None) -> dict[str, Any]:
+        body = {"kind": kind, **({"preset": preset} if preset else {}), **({"brief": brief} if brief is not None else {})}
         try:
             r = await control.call("POST", "/api/director/job", body)
         except ControlError as e:

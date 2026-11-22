@@ -108,6 +108,14 @@ class Vision(unittest.TestCase):
         self.assertAlmostEqual(cy, 200 / 480, delta=0.02)
         self.assertEqual(hit["method"], "features")
 
+    def test_small_target_is_reacquired_near_the_last_box(self):
+        gray = tag_image(scale=0.25, at=(344, 221), angle=24, seed=7)
+        hit = V.detect(self.ref, gray, [329 / 640, 206 / 480, 359 / 640, 236 / 480])
+        self.assertIsNotNone(hit)
+        self.assertGreater(hit["confidence"], 0.60)
+        self.assertAlmostEqual((hit["box"][0] + hit["box"][2]) / 2, 344 / 640, delta=0.01)
+        self.assertAlmostEqual((hit["box"][1] + hit["box"][3]) / 2, 221 / 480, delta=0.01)
+
     def test_rejects_absent_target_and_a_similar_looking_label(self):
         self.assertIsNone(V.detect(self.ref, tag_image(text=("", ""), seed=3)))
         self.assertIsNone(V.detect(self.ref, tag_image(text=("MAKE", "BAR"), seed=4)))
@@ -142,6 +150,7 @@ class Vision(unittest.TestCase):
 # ------------------------------------------------------------------ director on the simulated arm
 
 import tempfile
+from unittest.mock import patch
 import camera_director.jobs as J
 import framing
 from camera_director import predict
@@ -289,27 +298,28 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(self.get()["job"]["reason"], "manual control took over")
         wait(lambda: not self.state.moving and not self.state.stopping, timeout=10, what="arm idle")
 
-    def test_9a_keep_in_view_cuts_away_from_a_hand_and_pulls_back(self):
-        saved = (J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S)
-        J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S = 3.0, 8.0, 6.0, 0.3
+    def test_9a_keep_in_view_pauses_for_the_cut_and_stays_on_a_clear_fallback(self):
+        saved = (J.MIN_DWELL_S, J.ANNOUNCE_S)
+        J.MIN_DWELL_S, J.ANNOUNCE_S = 3.0, 1.0
         try:
             self.assertEqual(http(self.base, "/api/director/job", {"kind": "watch"})[0], 200)
             wait(lambda: self.get()["job"]["phase"] == "watch" and "holding" in self.get()["job"]["step"], timeout=60, what="watching")
             preferred = self.get()["job"]["result"]["preferred"]
             time.sleep(J.MIN_DWELL_S)
             http(self.base, "/api/director/sim/hand", {"on": True, "dy": 0.04, "z": 0.10})
+            wait(lambda: self.get()["job"]["phase"] == "occluded", timeout=15, what="recording pause before a cut")
             wait(lambda: self.get()["job"]["result"]["moves"], timeout=40, what="a cut away from the hand")
             cut = self.get()["job"]["result"]["moves"][0]
             self.assertEqual((cut["from"], cut["why"], cut["seen"]), (preferred, "covered", True), cut)
             self.assertNotEqual(cut["to"], preferred)
+            wait(lambda: self.get()["job"]["phase"] == "watch", timeout=10, what="clear shot recording")
             http(self.base, "/api/director/sim/hand", {"on": False})
-            wait(lambda: len(self.get()["job"]["result"]["moves"]) >= 2, timeout=40, what="pull back")
-            back = self.get()["job"]["result"]["moves"][1]
-            self.assertEqual((back["to"], back["why"], back["seen"]), (preferred, "pull back", True), back)
+            time.sleep(J.MIN_DWELL_S + 1)
+            self.assertEqual(self.get()["job"]["result"]["moves"], [cut])
             self.assertEqual(http(self.base, "/api/stop", {})[0], 200)
             self.assertEqual(self.get()["job"]["status"], "STOPPED")
         finally:
-            J.MIN_DWELL_S, J.NO_RETURN_S, J.PULL_BACK_S, J.ANNOUNCE_S = saved
+            J.MIN_DWELL_S, J.ANNOUNCE_S = saved
             http(self.base, "/api/director/sim/hand", {"on": False})
 
     def test_9b_calibration_tour_records_near_zero_corrections_in_the_sim(self):
@@ -350,6 +360,9 @@ class SimDirector(unittest.TestCase):
 
     def test_9e_shoulder_load_guard_locks_at_the_limit_instead_of_faulting(self):
         self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})[0], 200)
         saved = dict(motion.PATH_TRIP_GUARD)
         motion.PATH_TRIP_GUARD.clear()
         motion.PATH_TRIP_GUARD[2] = (-1, 0.1)             # any load counts: the guard must fire on the first move
@@ -360,14 +373,15 @@ class SimDirector(unittest.TestCase):
         finally:
             motion.PATH_TRIP_GUARD.clear()
             motion.PATH_TRIP_GUARD.update(saved)
-        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertEqual(st["job"]["status"], "HOLD", st["job"])
         mv = next(m for m in st["job"]["result"]["moves"] if "shoulder" in (m.get("why") or ""))
         self.assertEqual((mv["done"], mv["complete"]), (True, False), mv)      # locked where it stopped
         self.assertIn("stopped at the shoulder's limit", mv["why"])
         limit = self.state.director.calibration.pop("shoulder_reach_limit_m")  # learned (and reset for later tests)
         self.assertGreater(limit, 0.05)
-        wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "top"}, timeout=10, what="home at the end")
-        self.assertEqual(http(self.base, "/api/state")[1]["blockers"], [])
+        self.assertEqual(self.state.move_outcome["hold"], "confirmed")
+        self.assertTrue(self.state.move_outcome["load_guard"], self.state.move_outcome)
+        self.assertFalse(self.state.moving)
 
     def test_9f_snap_back_onto_a_nearby_view(self):
         self.goto("top")
@@ -391,8 +405,28 @@ class SimDirector(unittest.TestCase):
         self.assertLess(res["rms_after"], 0.03, res)       # the sim camera is the model: it fits closely
         self.assertEqual(st["calibration"]["presets"], st["calibration"]["presets"])
         self.state.director.calibration.pop("model", None)  # leave the model uncalibrated for later tests
-        import framing as _f
-        _f.CAMERA_CAL = None
+        framing.CAMERA_CAL = None
+
+    def test_9z_filming_brief_uses_the_measured_view_and_parks_the_shoulder(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})[0], 200)
+        director = self.state.director
+        gate = {**director.gate(), "computed": False}
+        shot = {"name": "Opening reveal", "hold": 2,
+                "keyframes": [{"pan": 0, "u": 0.64, "v": 0.44, "roll": 0},
+                              {"pan": 7, "u": 0.52, "v": 0.42, "roll": 4}]}
+        before = self.get()["arm"]["joints"]
+        with patch.object(director, "gate", return_value=gate), patch.object(
+                J.brief, "plan", return_value={"reason": "Measured opening", "shots": [shot]}) as planner:
+            self.assertEqual(http(self.base, "/api/director/job", {"kind": "film", "brief": " "})[0], 400)
+            st = self.run_job({"kind": "film", "brief": "Reveal it from the right edge with a gentle tilt."})
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertFalse(planner.call_args.args[2])
+        self.assertLess(abs(int(st["arm"]["joints"]["2"]) - int(before["2"])), 15)
+        self.assertGreater(abs(int(st["arm"]["joints"]["1"]) - int(before["1"])), 50)
+        self.assertTrue(st["job"]["result"]["moves"][0]["complete"])
 
     def test_9h_director_show_follows_film_grammar(self):
         self.goto("top")
@@ -446,6 +480,12 @@ class RealArmGate(unittest.TestCase):
         self.assertEqual((g["mode"], g["moves"]), ("DRY RUN", False))
         self.assertIn("director_safety.json", g["reasons"][0])
 
+    def test_malformed_approval_remains_dry_run(self):
+        for approval in ({}, []):
+            with self.subTest(approval=approval):
+                g = self.director(approval).gate()
+                self.assertEqual((g["mode"], g["moves"]), ("DRY RUN", False))
+
     def test_approval_must_name_this_camera_and_arm(self):
         ok = {"physical_motion": True, "approved_by": "owner", "approved_at": "2026-11-23", "bus": "5B79016329",
               "camera_queue": J.GRIPPER_CAMERA, "lines": ["top-wide"], "max_fraction": 0.12}
@@ -453,7 +493,8 @@ class RealArmGate(unittest.TestCase):
         self.assertEqual((g["mode"], g["moves"], g["lines"], g["max_fraction"]), ("PHYSICAL", True, ["top-wide"], 0.12))
         self.assertFalse(g["computed"])                                    # computed poses need their own opt-in
         self.assertTrue(self.director({**ok, "computed_paths": True}).gate()["computed"])
-        for change in ({"camera_queue": "usbvideo/other"}, {"bus": "X"}, {"physical_motion": False}, {"approved_by": ""}):
+        for change in ({"camera_queue": "usbvideo/other"}, {"bus": "X"}, {"physical_motion": False}, {"approved_by": ""},
+                       {"lines": [1]}, {"max_fraction": "0.2"}, {"max_fraction": float("nan")}):
             self.assertFalse(self.director({**ok, **change}).gate()["moves"], change)
 
     def test_physical_candidates_only_on_approved_lines(self):
@@ -521,6 +562,67 @@ class ComputedPaths(unittest.TestCase):
             uv = framing.project((0.0, 0.31, 0.0), framing.camera_pose(q, self.ranges), 16 / 9)
             self.assertLess(abs(uv[0] - 0.5) + abs(uv[1] - 0.5), 0.1, uv)
         self.assertIsNone(motion.path_problem(arc["poses"], self.ranges, motion.envelope(self.ranges), 1279))
+
+    def test_composed_takes_keep_the_target_in_frame_and_park_heavy_joints(self):
+        from camera_director import orbit
+        view = motion.load_views()["top"]
+        point = (0.0, 0.31, 0.0)
+        start = framing.camera_pose(view, self.ranges)
+        aspect = 16 / 9
+        for u_end, v_end, roll in ((1 / 3, 1 / 3, 0), (0.5, 0.5, 12), (2 / 3, 1 / 3, -8)):
+            with self.subTest(u=u_end, v=v_end, roll=roll):
+                frames = [{"pan": 0, "u": 0.76, "v": 0.48, "roll": 0},
+                          {"pan": 3, "u": u_end, "v": v_end, "roll": roll}]
+                shot = orbit.composed_take(point, view, self.ranges, frames, (0, 0), aspect, (0.04, 0.04))
+                self.assertTrue(shot["ok"], shot)
+                self.assertTrue(all((q[2], q[3]) == (view[2], view[3]) for q in shot["path"]))
+                for q in shot["path"]:
+                    u, v = framing.project(point, framing.camera_pose(q, self.ranges), aspect)
+                    self.assertTrue(0.12 <= u <= 0.88 and 0.12 <= v <= 0.88, (u, v))
+                end = framing.camera_pose(shot["path"][-1], self.ranges)
+                u, v = framing.project(point, end, aspect)
+                self.assertAlmostEqual(u, u_end, delta=0.04)
+                self.assertAlmostEqual(v, v_end, delta=0.04)
+                if roll:
+                    self.assertGreater(abs(sum(a * b for a, b in zip(end[2], start[3]))), 0.09)
+                staged = framing.camera_pose(shot["stage"][-1], self.ranges)
+                u0, _ = framing.project(point, staged, aspect)
+                self.assertAlmostEqual(u0, 0.76, delta=0.04)
+
+    def test_brief_bounds_reject_non_finite_or_out_of_range_camera_goals(self):
+        from camera_director import brief
+        frame = {"pan": 5, "u": 0.4, "v": 0.4, "roll": 4}
+        plan = {"reason": "reveal", "shots": [{"name": "reveal", "hold": 3, "keyframes": [frame.copy(), frame]}]}
+        brief.validate(plan, brief.PARKED)
+        for field, value in (("pan", 40), ("roll", float("nan")), ("u", True)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                plan["shots"][0]["keyframes"][1] = {**frame, field: value}
+                brief.validate(plan, brief.PARKED)
+
+    def test_occlusion_fallback_finds_parallax_from_the_current_pose(self):
+        from camera_director import orbit
+        view = motion.load_views()["top"]
+        point = (0.0, 0.31, 0.0)
+        aspect = 16 / 9
+        u, v = framing.project(point, framing.camera_pose(view, self.ranges), aspect)
+        path = orbit.occlusion_cut(point, view, self.ranges, aspect, [u - .05, v - .05, u + .05, v + .05], None)
+        self.assertTrue(path)
+        self.assertTrue(all(q[2] == view[2] and q[3] == view[3] for q in path))
+        self.assertGreater(abs(path[-1][1] - view[1]), 100)
+
+    def test_free_camera_keyframes_can_move_and_recompose_together(self):
+        from camera_director import orbit
+        views = motion.load_views()
+        point = (0.0, 0.31, 0.0)
+        frames = [{"theta": -45, "elev": 48, "dist": .18, "u": .5, "v": .5, "roll": 0},
+                  {"theta": -38, "elev": 51, "dist": .18, "u": .55, "v": .44, "roll": 5}]
+        path = orbit.plan_path(point, views["top"], self.ranges, frames,
+                               seeds=tuple(views[name] for name in ("wide", "left", "right")))
+        self.assertTrue(path["complete"], path)
+        q = {**path["poses"][-1], 8: views["top"][8]}
+        u, v = framing.project(point, framing.camera_pose(q, self.ranges), 16 / 9)
+        self.assertAlmostEqual(u, .55, delta=.035)
+        self.assertAlmostEqual(v, .44, delta=.035)
 
 
 class Prediction(unittest.TestCase):

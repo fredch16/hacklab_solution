@@ -122,7 +122,7 @@ input.txt{flex:1 1 160px;min-width:0;min-height:44px;background:var(--ink950);co
 .badge.dry,.badge.warn,.badge.dry_run,.badge.unverified{color:var(--warn);border-color:var(--warn)}
 .badge.skipped,.badge.blocked{color:var(--danger);border-color:var(--danger)}
 .btn.stop{background:var(--danger);border-color:var(--danger);color:var(--ink950);font-weight:800;min-width:96px}
-.director-confirm input.director-name{min-height:40px;border-radius:9px;border:1px solid var(--ink700);background:var(--ink800);color:var(--t1);padding:0 10px}
+.director input.director-name{min-height:40px;max-width:100%;border-radius:9px;border:1px solid var(--ink700);background:var(--ink800);color:var(--t1);padding:0 10px}
 .director-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:12px}
 .preset-card{background:var(--ink800);border:1px solid var(--ink700);border-radius:12px;padding:10px}
 .preset-card p{margin:6px 0}

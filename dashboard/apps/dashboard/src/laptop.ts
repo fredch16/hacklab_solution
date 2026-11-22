@@ -159,7 +159,15 @@ export function robotCard(): HTMLElement {
     void poll();
   }, 1000);
   // Camera director (capture_server.py --director). Its cinematic take uses this card's own robot recorder.
-  directorPanel(card, frame, image, () => laptopRecord("robot", "start").then(poll), () => laptopRecord("robot", "stop").then(poll),
+  directorPanel(card, frame, image, async () => {
+    const result = await laptopRecord("robot", "start");
+    void poll();
+    return result;
+  }, async () => {
+    const result = await laptopRecord("robot", "stop");
+    void poll();
+    return result;
+  },
     () => !!robot?.recording);
   return card;
 }

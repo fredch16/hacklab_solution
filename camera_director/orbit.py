@@ -24,7 +24,8 @@ STEP_DEG = 10.0     # azimuth between solved poses
 MAX_JUMP = 250      # steps: neighbouring poses further apart get a pose solved half-way between
 
 
-def camera_goal(point, theta: float, elev: float, dist: float, bias=(0.0, 0.0), aspect: float = 16 / 9):
+def camera_goal(point, theta: float, elev: float, dist: float, bias=(0.0, 0.0), aspect: float = 16 / 9,
+                composition=(0.5, 0.5, 0.0)):
     """(camera position, viewing axis, image right) to see `point` from (theta, elev, dist), with the aim
     shifted so that a camera whose image is offset by `bias` (real minus model) still centres it."""
     p = np.array(point, float)
@@ -34,10 +35,14 @@ def camera_goal(point, theta: float, elev: float, dist: float, bias=(0.0, 0.0), 
     right = np.cross(axis, [0.0, 0.0, 1.0])
     right /= np.linalg.norm(right)
     down = np.cross(axis, right)
+    u, v, roll = composition
+    r = math.radians(roll)
+    right = math.cos(r) * right + math.sin(r) * down
+    down = np.cross(axis, right)
     th, tv = framing._tans(aspect)
-    q = p + right * bias[0] * 2 * th * dist + down * bias[1] * 2 * tv * dist
+    q = p + right * (bias[0] + .5 - u) * 2 * th * dist + down * (bias[1] + .5 - v) * 2 * tv * dist
     axis = (q - c) / np.linalg.norm(q - c)
-    right = np.cross(axis, [0.0, 0.0, 1.0])
+    right = right - axis * (right @ axis)
     right /= np.linalg.norm(right)
     return tuple(c), tuple(axis), tuple(right)
 
@@ -49,9 +54,14 @@ def _limits(ranges) -> dict:
     return {m: (lo + LIMIT_MARGIN, hi - LIMIT_MARGIN) for m, (lo, hi) in motion.envelope(ranges).items()}
 
 
-def _solve(guess: dict, goal, ranges, limits) -> tuple[dict, bool]:
-    q, pe, ae = framing.solve_pose(guess, *goal, ranges, iterations=200, limits=limits)
-    return q, pe <= POS_TOL and ae <= AXIS_TOL
+def _solve(guess: dict, goal, ranges, limits, check_roll=False) -> tuple[dict, bool]:
+    q, pe, ae = framing.solve_pose(guess, *goal, ranges, iterations=200, limits=limits,
+                                   roll_weight=0.15 if check_roll else 0.05)
+    ok = pe <= POS_TOL and ae <= AXIS_TOL
+    if ok and check_roll:
+        right = framing.camera_pose(q, ranges)[2]
+        ok = float(np.dot(right, goal[2])) >= math.cos(math.radians(6))
+    return q, ok
 
 
 def plan_arc(point, start: dict, ranges, *, elev: float, dist: float, theta_from: float, theta_to: float,
@@ -118,17 +128,20 @@ SAMPLE_DEG = 6.0          # angular spacing of solved poses along a path
 SAMPLE_M = 0.015          # ...or this much change in distance
 
 
-def _interpolate(keyframes: list[dict]) -> list[tuple[float, float, float]]:
+def _interpolate(keyframes: list[dict]) -> list[tuple]:
     pts = []
+    fields = ("theta", "elev", "dist", "u", "v", "roll")
+    keyframes = [{"u": .5, "v": .5, "roll": 0, **k} for k in keyframes]
     for a, b in zip(keyframes, keyframes[1:]):
         span = max(abs(b["theta"] - a["theta"]) / SAMPLE_DEG, abs(b["elev"] - a["elev"]) / SAMPLE_DEG,
-                   abs(b["dist"] - a["dist"]) / SAMPLE_M, 1)
+                   abs(b["dist"] - a["dist"]) / SAMPLE_M, abs(b["roll"] - a["roll"]) / 3,
+                   abs(b["u"] - a["u"]) / .035, abs(b["v"] - a["v"]) / .035, 1)
         n = int(math.ceil(span))
         for i in range(n):
             f = i / n
-            pts.append(tuple(a[k] + (b[k] - a[k]) * f for k in ("theta", "elev", "dist")))
+            pts.append(tuple(a[k] + (b[k] - a[k]) * f for k in fields))
     k = keyframes[-1]
-    pts.append((k["theta"], k["elev"], k["dist"]))
+    pts.append(tuple(k[field] for field in fields))
     return pts
 
 
@@ -142,10 +155,11 @@ def plan_path(point, start: dict, ranges, keyframes: list[dict], bias=(0.0, 0.0)
     start = {int(m): int(v) for m, v in start.items()}
     grip = start.get(motion.GRIPPER, 1279)
     samples = _interpolate(keyframes)
+    composed = any("roll" in k for k in keyframes)
     best = None
     for seed in (start, *seeds):
         q, ok = _solve({**{int(m): int(v) for m, v in seed.items()}, motion.GRIPPER: grip},
-                       camera_goal(point, *samples[0], bias, aspect), ranges, limits)
+                       camera_goal(point, *samples[0][:3], bias, aspect, samples[0][3:]), ranges, limits, composed)
         if ok:
             travel = max(abs(q[m] - start[m]) for m in motion.MOVABLE)
             if best is None or travel < best[1]:
@@ -154,14 +168,15 @@ def plan_path(point, start: dict, ranges, keyframes: list[dict], bias=(0.0, 0.0)
         return {"ok": False, "poses": [], "samples": [], "reason": f"the first keyframe {samples[0]} is out of reach"}
     poses, done, reason = [best[0]], [samples[0]], None
     for s in samples[1:]:
-        q, ok = _solve(poses[-1], camera_goal(point, *s, bias, aspect), ranges, limits)
+        goal = camera_goal(point, *s[:3], bias, aspect, s[3:])
+        q, ok = _solve(poses[-1], goal, ranges, limits, composed)
         if not ok or max(abs(q[m] - poses[-1][m]) for m in motion.MOVABLE) > MAX_JUMP:
             reason = f"the move ends early: theta {s[0]:.0f}, elev {s[1]:.0f}, {s[2] * 100:.0f} cm is out of reach"
             break
         poses.append(q)
         done.append(s)
     return {"ok": len(poses) >= 2, "poses": [{m: int(q[m]) for m in motion.MOVABLE} for q in poses],
-            "samples": [[round(v, 3) for v in s] for s in done], "complete": reason is None, "reason": reason}
+            "samples": [[round(v, 3) for v in s[:3]] for s in done], "complete": reason is None, "reason": reason}
 
 
 def reach_map(point, start: dict, ranges, seeds: tuple = (), elevs=(30, 45, 60, 75), dists=(0.16, 0.2, 0.25),
@@ -211,7 +226,7 @@ def _bridge(a: dict, b: dict, step: int = 200) -> list[dict]:
 
 
 def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.0, 0.0), aspect: float = 16 / 9,
-              seeds: tuple = (), learned_limit: float | None = None) -> dict:
+              seeds: tuple = (), learned_limit: float | None = None, target: dict | None = None) -> dict:
     """plan_path, made safe: the approach from a start pose and the move itself must pass motion.path_problem.
     If not, the whole move is raised and pulled back in small steps (keeping its shape). Starts are tried in
     order (where the arm is, then transit). -> plan_path result + {start_index, adjusted, approach}"""
@@ -228,7 +243,7 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
         grip = start.get(motion.GRIPPER, 1279)
         best = None
         for de, dd in ADJUST:
-            frames = [{"theta": k["theta"], "elev": min(80.0, k["elev"] + de), "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
+            frames = [{**k, "elev": min(80.0, k["elev"] + de), "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
             plan = plan_path(point, start, ranges, frames, bias, aspect, seeds)
             if not plan["ok"]:
                 first_reason = first_reason or plan["reason"]
@@ -240,7 +255,14 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
             if problem:
                 first_reason = first_reason or problem
                 continue
-            reach = max(shoulder_reach(q, ranges, grip) for q in plan["poses"])
+            if target is not None:
+                from .predict import predict_view
+                boxes = [predict_view({**q, motion.GRIPPER: grip}, target, ranges, aspect, bias=bias)
+                         for q in plan["poses"]]
+                if not plan["complete"] or any(not b["visible"] or b["components"]["edge_clearance"] < 0.35 for b in boxes):
+                    first_reason = first_reason or "the requested move does not keep the whole object in frame"
+                    continue
+            reach = max(shoulder_reach(q, ranges, grip) for q in (approach if target is not None else []) + plan["poses"])
             if limit is not None and reach > limit:
                 first_reason = first_reason or (f"the arm would reach {reach * 100:.0f} cm from the shoulder, further than "
                                                 f"at {REACH_LIMIT_VIEW} ({limit * 100:.0f} cm)")
@@ -267,7 +289,7 @@ GIMBAL_PITCH_MAX = 400     # steps motor 4 may move away from the preset (it shi
 GIMBAL_AIM_TOL = 6.0       # deg: the object stays well inside the frame (about a tenth of the width from centre)
 
 
-def _aim_residual(q, ranges, target, roll_deg, aspect, bias):
+def _aim_residual(q, ranges, target, roll_deg, aspect, bias, roll_axis):
     cam, axis, right, down = (np.array(v) for v in framing.camera_pose(q, ranges))
     th, tv = framing._tans(aspect)
     d = np.array(target) - cam
@@ -277,22 +299,23 @@ def _aim_residual(q, ranges, target, roll_deg, aspect, bias):
     # target at 0.5 - bias, i.e. the axis points past it by +bias (the same convention as camera_goal)
     want = want + right * bias[0] * 2 * th + down * bias[1] * 2 * tv
     want /= np.linalg.norm(want)
-    roll_err = float(right @ np.array([0.0, 0.0, 1.0])) - math.sin(math.radians(roll_deg))
+    roll_err = float(right @ roll_axis) - math.sin(math.radians(roll_deg))
     return np.concatenate([(axis - want), [0.3 * roll_err]])
 
 
 def aim(q0: dict, ranges, target, *, roll_deg: float = 0.0, aspect: float = 16 / 9, bias=(0.0, 0.0),
-        joints=GIMBAL_JOINTS, limits: dict | None = None, pitch_ref: int | None = None, iterations: int = 60):
+        joints=GIMBAL_JOINTS, limits: dict | None = None, pitch_ref: int | None = None, iterations: int = 60,
+        roll_axis=(0.0, 0.0, 1.0)):
     """Point the camera at `target` by moving only `joints` (damped least squares, numeric Jacobian)."""
     q = {m: float(v) for m, v in q0.items()}
     lam, h = 1e-4, 3.0
-    err = _aim_residual(q, ranges, target, roll_deg, aspect, bias)
+    err = _aim_residual(q, ranges, target, roll_deg, aspect, bias, roll_axis)
     for _ in range(iterations):
         J = []
         for m in joints:
             qq = dict(q)
             qq[m] += h
-            J.append((_aim_residual(qq, ranges, target, roll_deg, aspect, bias) - err) / h)
+            J.append((_aim_residual(qq, ranges, target, roll_deg, aspect, bias, roll_axis) - err) / h)
         J = np.array(J).T
         dq = np.linalg.solve(J.T @ J + lam * np.eye(len(joints)), -J.T @ err)
         trial = dict(q)
@@ -302,7 +325,7 @@ def aim(q0: dict, ranges, target, *, roll_deg: float = 0.0, aspect: float = 16 /
                 trial[m] = min(max(trial[m], limits[m][0]), limits[m][1])
             if m == 4 and pitch_ref is not None:
                 trial[m] = min(max(trial[m], pitch_ref - GIMBAL_PITCH_MAX), pitch_ref + GIMBAL_PITCH_MAX)
-        e2 = _aim_residual(trial, ranges, target, roll_deg, aspect, bias)
+        e2 = _aim_residual(trial, ranges, target, roll_deg, aspect, bias, roll_axis)
         if e2 @ e2 < err @ err:
             q, err, lam = trial, e2, lam * 0.3
             if err @ err < 1e-7:
@@ -313,6 +336,69 @@ def aim(q0: dict, ranges, target, *, roll_deg: float = 0.0, aspect: float = 16 /
                 break
     ang = math.degrees(float(np.linalg.norm(err[:3])))
     return {m: int(round(v)) for m, v in q.items()}, ang
+
+
+def composed_take(point, start: dict, ranges, keyframes: list[dict], bias, aspect, half_box, limit=None) -> dict:
+    """Translate image composition and camera pan keyframes into one checked path with the shoulder parked."""
+    env, limits = motion.envelope(ranges), _limits(ranges)
+    roll_axis = framing.camera_pose(start, ranges)[3]
+    grip = start[motion.GRIPPER]
+    view = {m: start[m] for m in motion.MOVABLE}
+    samples = [keyframes[0]]
+    for a, b in zip(keyframes, keyframes[1:]):
+        steps = max(1, math.ceil(max(abs(b["pan"] - a["pan"]) / 2, abs(b["roll"] - a["roll"]) / 3,
+                                     abs(b["u"] - a["u"]) / .035, abs(b["v"] - a["v"]) / .035)))
+        samples.extend({k: a[k] + (b[k] - a[k]) * i / steps for k in a} for i in range(1, steps + 1))
+    q, path = start, []
+    margins = [max(0.10, span + 0.05) for span in half_box]
+    for s in samples:
+        yaw = start[1] + round(s["pan"] * 4096 / 360)
+        if not limits[1][0] <= yaw <= limits[1][1]:
+            return {"ok": False, "reason": "the requested pan is beyond the available base rotation"}
+        q, err = aim({**q, 1: yaw}, ranges, point, roll_deg=s["roll"], aspect=aspect,
+                     bias=(bias[0] + .5 - s["u"], bias[1] + .5 - s["v"]),
+                     limits=limits, pitch_ref=start[4], roll_axis=roll_axis)
+        pose = framing.camera_pose(q, ranges)
+        uv = framing.project(point, pose, aspect)
+        if (err > GIMBAL_AIM_TOL or uv is None
+                or any(not m <= p + b <= 1 - m for p, b, m in zip(uv, bias, margins))
+                or abs(float(np.dot(pose[2], roll_axis)) - math.sin(math.radians(s["roll"]))) > 0.08):
+            return {"ok": False, "reason": "the wrist cannot deliver the requested composition within the frame"}
+        path.append({m: q[m] for m in motion.MOVABLE})
+    stage = _bridge(view, path[0], step=100)
+    if limit is not None:
+        bound = max(limit, shoulder_reach(start, ranges, grip))
+        if any(shoulder_reach(q, ranges, grip) > bound for q in stage + path[1:]):
+            return {"ok": False, "reason": "the shot would extend beyond the learned shoulder limit"}
+    problem = motion.path_problem([view] + stage + path[1:], ranges, env, grip)
+    if problem:
+        return {"ok": False, "reason": problem}
+    return {"ok": True, "stage": stage, "path": path}
+
+
+def occlusion_cut(point, start, ranges, aspect, box, limit) -> list[dict] | None:
+    """Look for parallax around a blocked ray, with every candidate evaluated off-arm."""
+    pose = framing.camera_pose(start, ranges)
+    uv = framing.project(point, pose, aspect)
+    if uv is None:
+        return None
+    u, v = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    half_box = ((box[2] - box[0]) / 2, (box[3] - box[1]) / 2)
+    bias = (u - uv[0], v - uv[1])
+    source = np.asarray(pose[0]) - point
+    start_frame = {"pan": 0, "u": u, "v": v, "roll": 0}
+    best, best_angle = None, math.radians(12)
+    for pan in (-22, 22, -14, 14):
+        shot = composed_take(point, start, ranges, [start_frame, {**start_frame, "pan": pan}], bias, aspect, half_box, limit)
+        if not shot["ok"]:
+            continue
+        grip = start[motion.GRIPPER]
+        path = shot["stage"] + shot["path"][1:]
+        ray = np.asarray(framing.camera_pose({**path[-1], motion.GRIPPER: grip}, ranges)[0]) - point
+        angle = math.atan2(float(np.linalg.norm(np.cross(source, ray))), float(source @ ray))
+        if angle > best_angle:
+            best, best_angle = path, angle
+    return best
 
 
 def plan_gimbal(point, start: dict, ranges, *, yaw_from: int, yaw_to: int, roll_from: float = 0.0,

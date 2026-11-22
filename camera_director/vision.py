@@ -32,6 +32,7 @@ _sift_frame = cv2.SIFT_create(nfeatures=1500)          # frames: the strongest f
 _matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=4), dict(checks=32))   # approximate NN: much faster
 ROI_SCALE = 2.2           # live tracking searches a window this much larger than the last box first
 ROI_MIN_PX = 160
+ROI_SMALL_PX = 96
 
 
 MAX_W = 960               # every frame is downscaled to at most this width before recognition
@@ -158,6 +159,10 @@ def _full(ref: Reference, gray: np.ndarray) -> dict | None:
     return hit if hit and hit["confidence"] >= MIN_CONFIDENCE else None
 
 
+def _small_box(box, w, h):
+    return max((box[2] - box[0]) * w, (box[3] - box[1]) * h) <= ROI_SMALL_PX
+
+
 def detect(ref: Reference, gray: np.ndarray, hint: list | None = None) -> dict | None:
     """The target in this frame, or None. {box, quad, confidence, method, evidence}.
     `hint`: the last box (0..1); the window around it is searched first, the whole frame only if that fails."""
@@ -169,7 +174,14 @@ def detect(ref: Reference, gray: np.ndarray, hint: list | None = None) -> dict |
         x1, x2 = int(max(0, cx - half_w)), int(min(w, cx + half_w))
         y1, y2 = int(max(0, cy - half_h)), int(min(h, cy + half_h))
         if x2 - x1 >= 32 and y2 - y1 >= 32 and (x2 - x1) * (y2 - y1) < 0.8 * w * h:
-            hit = _full(ref, gray[y1:y2, x1:x2])
+            roi = gray[y1:y2, x1:x2]
+            hit = None
+            if _small_box(hint, w, h):
+                enlarged = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                hit = _features(ref, enlarged)
+                if hit:
+                    hit["evidence"] += " (2× region)"
+            hit = hit or _full(ref, roi)
             if hit is not None:
                 bw, bh = (x2 - x1) / w, (y2 - y1) / h
                 hit["box"] = [x1 / w + hit["box"][0] * bw, y1 / h + hit["box"][1] * bh,
@@ -287,14 +299,19 @@ def _worker_init():
 
 def look(ref: Reference, jpeg: bytes, reduced: bool = False, hint: list | None = None) -> dict | None:
     """Detect in one JPEG (near `hint` first); also attach a single-frame score."""
-    gray = decode_gray(jpeg, reduced)
+    import framing
+
+    size = framing.jpeg_size(jpeg) if hint is not None else None
+    native = size is not None and _small_box(hint, *size)
+    gray = decode_gray(jpeg, reduced, full=native)
     hit = detect(ref, gray, hint)
-    if hit is None:            # small / far away: try again at the camera's full resolution
+    if hit is None and not native:
         gray = decode_gray(jpeg, full=True)
         hit = detect(ref, gray, hint)
-        if hit is not None:
-            hit["evidence"] += " (full resolution)"
+        native = True
     if hit is not None:
+        if native:
+            hit["evidence"] += " (full resolution)"
         hit["frame_score"] = frame_score(hit, gray)
     return hit
 

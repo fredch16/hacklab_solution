@@ -1,12 +1,10 @@
-"""Camera director: target selection, per-preset best-view survey, recall and cinematic, inside
-capture_server.py (started with --director). Local only: frames come from the capture server's own
-Station camera reader, all vision is camera_director/vision.py, Claude is not involved.
+"""Camera director inside capture_server.py (--director). Station supplies the frames and local
+vision tracks the selected object. Claude can propose camera-space plans from a filming brief.
 
-Who moves the arm: only State.start_move (the capture server's single command owner), with the
+Who moves the arm: State.start_move and State.start_path share the capture server's command owner and the
 stop generation from when the job started, so a STOP from anywhere refuses every later move of the
 job; STOP and any person's command also cancel the job (State.command / State._stop_cleanup).
-Every move is to a saved view or to a stop part-way along a checked line between two checked views
-(motion.plan_along): no computed poses.
+Saved views use motion.plan_along. Computed shots use orbit.py and the motion layer's path checks.
 
 A director, not a search: the arm does not sweep candidate poses with the camera rolling. The target
 is localized on the desk from settled sightings (measured servo positions + live calibration through
@@ -41,7 +39,7 @@ import framing
 import motion
 from station_arm import logger
 
-from . import orbit, predict, selfcal
+from . import brief, orbit, predict, selfcal
 from . import vision as V
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,7 +66,6 @@ PREDICTED_DISCOUNT = 0.9  # a predicted (unvisited) shot counts for a bit less t
 WATCH_LOOK_S = 0.5        # keep in view: one look this often
 MIN_DWELL_S = 8.0         # ...stay at least this long after any move
 NO_RETURN_S = 30.0        # ...do not go back to a view left because it was covered for this long
-PULL_BACK_S = 15.0        # ...after this long at a fallback view, try the preferred view once
 ANNOUNCE_S = 2.0          # ...every automatic move is announced this long before it starts
 MIN_ANGLE_DEG = 20.0      # ...an alternative must look at the target from at least this different a direction
 RECHECK_RATIO = 0.85      # a best view counts as verified when a fresh look scores at least this share
@@ -86,8 +83,6 @@ class TooHeavy(Hold):
 
 
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
-HOLD_LOAD_OK = 200        # a locked pose must hold motor 2 below this (0-1000; the servo trips above 250 for 2 s)
-HOLD_LOAD_LOOK_S = 0.8    # ...measured over this long at rest
 
 
 class Director:
@@ -154,7 +149,7 @@ class Director:
                         and time.monotonic() - self._tracked_at >= TRACK_S):
                     self._tracked_at = time.monotonic()
                     tracker = self.tracker
-                    hit = tracker.record(await self.vision(V.look, tracker.ref, f[2], True), f[0], f[1])
+                    hit = tracker.record(await self.vision(V.look, tracker.ref, f[2], True, tracker.hint()), f[0], f[1])
                     if tracker is self.tracker:
                         self.obs = hit
             except asyncio.CancelledError:
@@ -209,14 +204,15 @@ class Director:
                     "computed": True}
         reasons, approval = [], {}
         try:
-            approval = json.loads(self.safety_path.read_text())
-            if not isinstance(approval, dict):
+            config = json.loads(self.safety_path.read_text())
+            if not isinstance(config, dict):
                 raise ValueError("not an object")
+            approval = config
         except FileNotFoundError:
             reasons.append("the operator has not approved physical director moves (no director_safety.json)")
         except (OSError, ValueError) as e:
             reasons.append(f"director_safety.json is unreadable: {e}")
-        if approval:
+        if not reasons:
             if approval.get("physical_motion") is not True:
                 reasons.append("director_safety.json does not set physical_motion: true")
             for key in ("approved_by", "approved_at"):
@@ -226,10 +222,16 @@ class Director:
                 reasons.append(f"the approved camera {approval.get('camera_queue')} is not the selected camera {self.state.cam_queue}")
             if self.state.arm is None or approval.get("bus") != self.state.arm.bus_serial:
                 reasons.append("the approved follower bus is not the connected arm")
-        lines = approval.get("lines") if isinstance(approval.get("lines"), list) else []
-        frac = min(float(approval.get("max_fraction") or 0.0), motion.ALONG_MAX) if approval else 0.0
+        lines = approval.get("lines", [])
+        if not isinstance(lines, list) or any(not isinstance(line, str) or line.count("-") != 1 for line in lines):
+            reasons.append("director_safety.json lines must be a list of preset pairs")
+            lines = []
+        frac = approval.get("max_fraction", 0.0)
+        if type(frac) not in (int, float) or not 0.0 <= frac <= 1.0:
+            reasons.append("director_safety.json max_fraction must be between 0 and 1")
+            frac = 0.0
         return {"mode": "DRY RUN" if reasons else "PHYSICAL", "moves": not reasons, "reasons": reasons,
-                "lines": sorted(lines), "max_fraction": frac,
+                "lines": sorted(lines), "max_fraction": min(frac, motion.ALONG_MAX),
                 # moves to computed poses (scene, return): a separate opt-in; on the real arm the shoulder servo's
                 # overload protection tripped three times during them (22 Nov)
                 "computed": not reasons and approval.get("computed_paths") is True}
@@ -468,18 +470,19 @@ class Director:
             return False
         raise Hold(f"the move to {view} did not finish: {out.get('error')}")
 
-    async def _sample(self):
+    async def _sample(self) -> bool:
         f = self.frame()
         try:
             joints = self.state.arm.joints(max_age_s=motion.STALE_S)
         except RuntimeError:
-            return
+            return False
         if f is None or time.monotonic() - f[1] > 0.3 or self.ref is None:
-            return
+            return False
         self.looks += 1
         hit = await self.vision(V.look, self.ref, f[2], True, self._hint())
         if hit:
             self.samples.append({"joints": joints, "score": hit["frame_score"], "box": hit["box"]})
+        return hit is not None
 
     def pullback(self, dest: str, start: str | None, gate: dict, than: float | None) -> dict | None:
         """A stop on the line start -> dest, near dest, where the camera saw the target better on the way in
@@ -546,9 +549,11 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal, "show": self._show}
-        if kind not in runners:
+                   "selfcal": self._selfcal, "show": self._show, "film": self._film}
+        if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
+        if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
+            return 400, {"ok": False, "error": "enter a filming brief of 1–500 characters"}
         if self.busy():
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
@@ -886,28 +891,32 @@ class Director:
 
     # ---- free camera scenes: moves generated around the object (arcs, cranes, push-ins, mixes)
 
-    async def move_path(self, poses: list[dict], label: str, sample: bool = False, load_guard: bool = True) -> None:
+    async def move_path(self, poses: list[dict], label: str, sample: bool = False, require_visible: bool = False) -> None:
         """One continuous computed move (motion.go_through) through the command owner, frames scored if `sample`."""
         self.job["moving_to"] = label
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
-                await self.state.start_path(poses, label, gen=self.job_gen, load_guard=load_guard)
+                await self.state.start_path(poses, label, gen=self.job_gen)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 raise Hold(f"move refused: {e}")
             task = self.state.move_task
+            misses = 0
             while not task.done():
                 await asyncio.wait({task}, timeout=0.4)
                 if sample and not task.done():
-                    await self._sample()
+                    misses = 0 if await self._sample() else misses + 1
+                    if require_visible and misses >= 3 and not task.done():
+                        self.job["phase"] = "occluded"
+                        await self.state.stop("subject lost during the take")
             out = self.state.move_outcome or {}
         finally:
             self._own_move = False
             self.job["moving_to"] = None
         if not out.get("ok"):
-            if out.get("load_guard"):
+            if out.get("load_guard") and out.get("hold") == "confirmed":
                 raise TooHeavy(f"{label}: {out.get('error')}")
             raise Hold(f"{label} did not finish: {out.get('error')}")
 
@@ -1046,6 +1055,109 @@ class Director:
             self.step(f"back to {self._lifted_from}")
             await self.move(self._lifted_from)
 
+    async def _film(self, req: dict, gate: dict):
+        """Film a free-form brief using fresh measured framing and a locally checked camera path."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "estimate"
+        joints, stamp = await self.settle()
+        look = await self.observe("film/start", joints, stamp)
+        if not look["valid"]:
+            raise Hold("the marked subject is not visible")
+        self.sightings, self.loc = [], None
+        self._add_sighting(joints, look["box"])
+        await self.localize(look=False)
+        ranges, aspect, point = self.state.arm.ranges(), self._aspect(), self.loc["point_m"]
+        pose = framing.camera_pose(joints, ranges)
+        x, y, z = np.asarray(pose[0]) - point
+        context = {"subject": self.target["label"], "box": look["box"],
+                   "camera": {"theta": round(math.degrees(math.atan2(x, -y)), 1),
+                              "elev": round(math.degrees(math.atan2(z, math.hypot(x, y))), 1),
+                              "dist": round(math.sqrt(x*x + y*y + z*z), 3)}}
+        computed = gate["computed"]
+        if computed:
+            context["reachable"] = (await self.ensure_reach())["ok"]
+
+        async def ask():
+            self.step("Claude is planning the shot")
+            try:
+                return await asyncio.to_thread(brief.plan, req["brief"].strip(), context, computed)
+            except ValueError as e:
+                raise Hold(str(e)) from e
+            except Exception as e:
+                raise Hold(f"Claude planning failed ({type(e).__name__})") from e
+
+        plan = await ask()
+        if not plan["shots"]:
+            raise Hold(plan["reason"][:400])
+        self.job["result"] = {"planner": "Claude", "plan_reason": plan["reason"][:400], "moves": []}
+        if computed:
+            trail = self.trail = [{m: joints[m] for m in motion.MOVABLE}]
+            views = motion.load_views()
+            seeds = tuple(views[n] for n in ("wide", "left", "right", "top") if n in views)
+            await self._scene_moves(plan["shots"], joints, trail, predict.bias_for(self.where(), self.calibration),
+                                    seeds, filming=True)
+            if not any(m["done"] for m in self.job["result"]["moves"]):
+                raise Hold("no locally feasible camera path for this brief")
+            return
+        retry = True
+        i = 0
+        while i < len(plan["shots"]):
+            shot = plan["shots"][i]
+            self.job["phase"] = "estimate"
+            self.step(f"checking {shot['name'][:60]}", shot_index=i + 1, shot_count=len(plan["shots"]))
+            if i:
+                joints, stamp = await self.settle()
+                look = await self.observe("film/start", joints, stamp)
+                if not look["valid"]:
+                    raise Hold("subject lost before the next shot")
+            box = look["box"]
+            centre = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+            model = framing.project(point, framing.camera_pose(joints, ranges), aspect)
+            if model is None:
+                raise Hold("the camera model places the subject behind the camera")
+            bias = tuple(a - b for a, b in zip(centre, model))
+            half_box = ((box[2] - box[0]) / 2, (box[3] - box[1]) / 2)
+            path = await self.vision(orbit.composed_take, point, joints, ranges, shot["keyframes"], bias, aspect, half_box,
+                                     self.calibration.get("shoulder_reach_limit_m"))
+            if not path["ok"]:
+                if i == 0 and retry:
+                    retry = False
+                    context["local_rejection"] = path["reason"]
+                    plan = await ask()
+                    if not plan["shots"]:
+                        raise Hold(plan["reason"][:400])
+                    self.job["result"]["plan_reason"] = plan["reason"][:400]
+                    continue
+                raise Hold(f"the brief cannot be filmed here: {path['reason']}")
+            name = shot["name"][:60]
+            trail = [{m: joints[m] for m in motion.MOVABLE}]
+            self.trail = trail + path["stage"] + path["path"][1:]
+            self._save_trail(self.trail)
+            self.job["phase"] = "reposition"
+            try:
+                await self.move_path(path["stage"], f"set up {name}")
+            except TooHeavy as e:
+                self._lock_at_limit(trail + path["stage"], name, str(e))
+            joints, stamp = await self.settle()
+            ready = await self.observe("film/ready", joints, stamp)
+            if not ready["valid"]:
+                raise Hold("marked subject is not visible in the opening position")
+            self.job["phase"] = "cinematic"
+            if not await self._hold_shot(2.0, f"opening {name}"):
+                raise Hold("marked subject left the opening shot")
+            self.step(name)
+            try:
+                await self.move_path(path["path"][1:], name, sample=True, require_visible=True)
+            except TooHeavy as e:
+                self._lock_at_limit(trail + path["stage"] + path["path"][1:], name, str(e))
+            seen = round(len(self.samples) / self.looks, 2) if self.looks else None
+            steady = await self._hold_shot(shot["hold"], name)
+            self.job["result"]["moves"].append({"name": name, "done": True, "complete": steady, "in_frame": seen})
+            if not steady:
+                raise Hold("marked subject left the closing shot")
+            i += 1
+
     def _trail_path(self) -> Path:
         return self.data / "trail.json"
 
@@ -1062,34 +1174,13 @@ class Director:
         except OSError:
             pass
 
-    async def _hold_load(self) -> float:
-        """Motor 2's mean load over HOLD_LOAD_LOOK_S with the arm at rest."""
-        await asyncio.sleep(0.5)         # let the stop's own transient decay first
-        vals, end = [], time.monotonic() + HOLD_LOAD_LOOK_S
-        while time.monotonic() < end:
-            try:
-                vals.append(self.state.arm.telemetry(max_age_s=motion.STALE_S)[2]["load"])
-            except (RuntimeError, KeyError):
-                pass
-            await asyncio.sleep(0.1)
-        return sum(vals) / len(vals) if vals else 1000.0
-
-    async def _lock_at_limit(self, path: list[dict], mv: dict, why: str) -> list[dict]:
-        """The shoulder-load guard stopped a move: stay where it stopped, as the boundary of what this shoulder
-        can do. If the shoulder still carries too much there at rest (the servo would trip in 2 s), ease back
-        only one waypoint at a time along the path just driven until it holds comfortably. Learns that reach as
-        the shoulder's limit. Returns the part of the path that was driven (the trail goes on from there)."""
+    def _lock_at_limit(self, trail: list[dict], name: str, why: str) -> None:
+        """Remember the measured boundary and stop this job while motion's hold stays in effect."""
         now = self.state.arm.joints(max_age_s=motion.STALE_S)
-        i = min(range(len(path)), key=lambda k: max(abs(path[k][m] - now[m]) for m in motion.MOVABLE))
-        self.step(f"{mv['name']}: at the shoulder's limit, holding here")
-        load = await self._hold_load()
-        while load > HOLD_LOAD_OK and i > 0:
-            i -= 1
-            self.step(f"{mv['name']}: easing back one step (shoulder load {load / 10:.0f}%)")
-            await self.move_path([path[i]], "ease back", load_guard=False)
-            load = await self._hold_load()
-        here = self.state.arm.joints(max_age_s=motion.STALE_S)
-        reach = orbit.shoulder_reach(here, self.state.arm.ranges(), here[motion.GRIPPER])
+        i = min(range(len(trail)), key=lambda k: max(abs(trail[k][m] - now[m]) for m in motion.MOVABLE))
+        self.trail = trail[:i + 1]
+        self._save_trail(self.trail)
+        reach = orbit.shoulder_reach(now, self.state.arm.ranges(), now[motion.GRIPPER])
         old = self.calibration.get("shoulder_reach_limit_m")
         limit = round(reach - 0.005, 3) if old is None else round(min(old, reach - 0.005), 3)
         self.calibration["shoulder_reach_limit_m"] = limit
@@ -1097,12 +1188,13 @@ class Director:
             self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
         except OSError:
             pass
-        self.note(f"shoulder limit: {why}; holding at {reach * 100:.1f} cm reach (load {load / 10:.0f}%), "
+        self.note(f"shoulder limit: {why}; holding at {reach * 100:.1f} cm reach, "
                   f"limit now {limit * 100:.1f} cm")
-        self.job["result"]["moves"].append({"name": mv["name"], "done": True, "complete": False,
-                                            "why": f"stopped at the shoulder's limit (load {load / 10:.0f}% holding)",
+        self.job["result"] = self.job["result"] or {}
+        self.job["result"].setdefault("moves", []).append({"name": name, "done": True, "complete": False,
+                                            "why": "stopped at the shoulder's limit",
                                             "shoulder_reach_limit_m": limit})
-        return path[:i + 1]
+        raise TooHeavy(f"{name}: holding at the shoulder's limit")
 
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
@@ -1114,7 +1206,7 @@ class Director:
         back = list(reversed(trail[:i + 1]))
         if len(back) > 1 or gap > motion.SKIP_TOL:
             self.step("returning to the start pose along the path it came")
-            await self.move_path(back, "return", load_guard=False)
+            await self.move_path(back, "return")
         self.trail = []
         self._save_trail([])
 
@@ -1150,14 +1242,13 @@ class Director:
             raise Hold(f"no gimbal take from {w['view']}: {shot['reason']}")
         self.job["phase"] = "cinematic"
         self.step(f"gimbal take from {w['view']}: yaw {shot['yaw_range'][0]:+d}..{shot['yaw_range'][1]:+d} steps")
-        self._save_trail([{m: joints[m] for m in motion.MOVABLE}] + shot["path"])
+        path = self._bridge(joints, shot["path"][0], step=100) + shot["path"][1:]
+        trail = [{m: joints[m] for m in motion.MOVABLE}] + path
+        self._save_trail(trail)
         try:
-            await self.move_path(self._bridge(joints, shot["path"][0], step=100) + shot["path"][1:], "gimbal take", sample=True)
+            await self.move_path(path, "gimbal take", sample=True)
         except TooHeavy as e:
-            self.trail = [{m: joints[m] for m in motion.MOVABLE}] + shot["path"]
-            self.job["result"] = self.job["result"] or {"moves": []}
-            moved = await self._lock_at_limit(shot["path"], {"name": "gimbal take"}, str(e))
-            return {"view": w["view"], "stopped": "shoulder limit", "driven_poses": len(moved)}
+            self._lock_at_limit(trail, "gimbal take", str(e))
         seen = len(self.samples) / self.looks if self.looks else None
         self.job["phase"] = "reposition"
         await self.snap_home(w["view"])
@@ -1212,8 +1303,9 @@ class Director:
         try:
             take = await self._gimbal_take(close, int(req.get("yaw", 500)))
             shots.append({"shot": f"arc around the object at {close}", **take})
-        except (Hold, TooHeavy) as e:
-            shots.append({"shot": "arc", "skipped": str(e)})
+        except Hold:
+            self.job["result"] = {**(self.job["result"] or {}), "shots": shots}
+            raise
         self.job["phase"] = "cinematic"
         shots.append({"shot": f"after the arc ({close})", "steady": await self._hold_shot(hold * 0.7, close)})
         self.step(f"pull out: {close} -> {wide}")
@@ -1227,8 +1319,7 @@ class Director:
         now = self.state.arm.joints(max_age_s=motion.STALE_S)
         v = motion.load_views()[view]
         if max(abs(v[m] - now[m]) for m in motion.MOVABLE) > 15:
-            await self.move_path(self._bridge(now, {m: v[m] for m in motion.MOVABLE}, step=100), f"back onto {view}",
-                                 load_guard=False)
+            await self.move_path(self._bridge(now, {m: v[m] for m in motion.MOVABLE}, step=100), f"back onto {view}")
 
     async def _selfcal(self, req: dict, gate: dict):
         """Calibrate the camera model from the arm's own joint readings and camera images of the marked object
@@ -1313,7 +1404,7 @@ class Director:
             raise Hold("no scene path to retrace")
         await self._return(self.trail)
 
-    async def _scene_moves(self, moves, here, trail, bias, seeds):
+    async def _scene_moves(self, moves, here, trail, bias, seeds, filming=False):
         views = motion.load_views()
         transit = {**views[motion.TRANSIT], motion.GRIPPER: here[motion.GRIPPER]}
         for i, mv in enumerate(moves, 1):
@@ -1322,9 +1413,11 @@ class Director:
             starts = [now] + ([transit] if len(trail) == 1 and self.where().get("where") == "view" else [])
             plan = await self.vision(orbit.plan_shot, self.loc["point_m"], starts, self.state.arm.ranges(),
                                      mv["keyframes"], bias, self._aspect(), seeds,
-                                     self.calibration.get("shoulder_reach_limit_m"))
+                                     self.calibration.get("shoulder_reach_limit_m"), self.loc if filming else None)
             if not plan["ok"]:
                 self.job["result"]["moves"].append({"name": mv["name"], "done": False, "why": plan["reason"]})
+                if filming:
+                    raise Hold(f"{mv['name'][:60]}: {plan['reason']}")
                 continue
             self.job["phase"] = "reposition"
             if plan["start_index"] == 1:          # the direct approach would dip: up to transit by the normal route
@@ -1340,31 +1433,38 @@ class Director:
             try:
                 await self.move_path(approach, f"approach {mv['name']}")
             except TooHeavy as e:
-                trail.extend(await self._lock_at_limit(approach, mv, str(e)))
-                continue                       # the shot's start is beyond the shoulder's limit: next shot
+                self._lock_at_limit(trail + approach, mv["name"], str(e))
             trail.extend(approach)
             joints, t = await self.settle()
             look = await self.observe(f"scene/{i}-start", joints, t)
+            if filming and not look["valid"]:
+                raise Hold("marked subject is not visible in the opening position")
             if look["valid"]:          # measure the aim from the real camera and replan the move with it
                 c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
-                aim = (bias[0] + c[0] - 0.5, bias[1] + c[1] - 0.5)
+                first = plan["keyframes"][0]
+                aim = (bias[0] + c[0] - first.get("u", .5), bias[1] + c[1] - first.get("v", .5))
                 plan2 = await self.vision(orbit.plan_shot, self.loc["point_m"], [joints], self.state.arm.ranges(),
                                           plan["keyframes"], aim, self._aspect(), seeds,
-                                          self.calibration.get("shoulder_reach_limit_m"))
+                                          self.calibration.get("shoulder_reach_limit_m"), self.loc if filming else None)
                 if plan2["ok"] and len(plan2["poses"]) >= len(plan["poses"]) - 1:
                     plan, bias = plan2, aim
             self.job["phase"] = "cinematic"
+            if filming and not await self._hold_shot(2.0, "opening"):
+                raise Hold("marked subject left the opening shot")
             self.step(f"move {i} of {len(moves)}: {mv['name']}")
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
             path = self._bridge(now, plan["poses"][0]) + plan["poses"][1:]
             self._save_trail(trail + path)
             try:
-                await self.move_path(path, mv["name"], sample=True)
+                await self.move_path(path, mv["name"], sample=True, require_visible=filming)
             except TooHeavy as e:
-                trail.extend(await self._lock_at_limit(path, mv, str(e)))
-                continue                       # the shot ends at the shoulder's limit: footage up to here stands
+                self._lock_at_limit(trail + path, mv["name"], str(e))
             trail.extend(path)
-            await asyncio.sleep(1.0)            # a beat at the end of the move
+            if filming:
+                if not await self._hold_shot(mv["hold"], mv["name"]):
+                    raise Hold("marked subject left the closing shot")
+            else:
+                await asyncio.sleep(1.0)            # a beat at the end of the move
             seen = len(self.samples) / self.looks if self.looks else None
             self.job["result"]["moves"].append({"name": mv["name"], "done": True, "complete": plan["complete"],
                                                 "why": plan["reason"], "adjusted": plan["adjusted"],
@@ -1413,75 +1513,87 @@ class Director:
             self.job["phase"] = "estimate"
             self.step("localizing the target")
             await self.localize()
+        if not self.catalogue:
             self._predict_into_catalogue(motion.view_names(), gate)
         shots = [s for s in (self._shot_of(p) for p in motion.view_names()) if s]
-        if not shots:
-            raise Hold("no view is known or predicted to see the target")
-        preferred = max(shots, key=lambda s: s["score"])
-        current = None
+        preferred = max(shots, key=lambda s: s["score"], default=None)
         w = self.where()
         here = next((s for s in shots if w.get("where") == "view" and w.get("view") == s["preset"] and not s["toward"]), None)
-        if here is None and gate["moves"]:
+        if here is None and preferred and gate["moves"] and w.get("where") in ("view", "between"):
+            self.job["phase"] = "reposition"
             self.step(f"going to the preferred view ({preferred['preset']})")
             await self.go_shot(preferred["preset"], preferred["toward"], preferred["s"], f"{preferred['preset']}/watch")
-            current = preferred
-        else:
-            current = here or preferred
-        self.job["phase"] = "watch"
-        joints, t = await self.settle()
-        clear = await self.observe("watch/settled", joints, t)
-        base = clear.get("inliers") or None
+            here = preferred
+        current = here or {"preset": "current framing", "toward": None}
+        self.job["phase"] = "occluded"
         looks: deque = deque(maxlen=4)
         arrived, left = time.monotonic(), {}
-        self.job["result"] = {"preferred": preferred["preset"], "moves": []}
+        base, tried, clear_box = None, False, None
+        self.job["result"] = {"preferred": current["preset"], "moves": []}
+
+        def covered_by(hit):
+            return not hit or bool(base and hit.get("inliers") is not None and hit["inliers"] < base * V.COVERED_RATIO)
+
         while True:
             await asyncio.sleep(WATCH_LOOK_S)
             hit = await self._look()
-            ratio = None if hit is None or not base or hit.get("inliers") is None else round(hit["inliers"] / base, 2)
-            covered = hit is None or (ratio is not None and ratio < V.COVERED_RATIO)
+            covered = covered_by(hit)
             looks.append(covered)
-            self.job["progress"].update(preset=current["preset"], visible_share=ratio if hit else 0.0)
             now = time.monotonic()
             label = current["preset"] + (f" ({current['s']:.0%} toward {current['toward']})" if current["toward"] else "")
-            if len(looks) == 4 and sum(looks) >= 3 and now - arrived >= MIN_DWELL_S:
-                alt = self._alternative(current, shots, left, now)
-                if alt is None:
-                    self.step(f"covered at {label}: no other approved view is expected to see it; holding")
+            ratio = None if not hit or not base or hit.get("inliers") is None else min(1.0, hit["inliers"] / base)
+            self.job["progress"].update(preset=current["preset"], visible_share=ratio if ratio is not None else float(not covered))
+            if len(looks) >= 3 and not any(list(looks)[-3:]):
+                self.job["phase"] = "watch"
+                base = max(base or 0, hit.get("inliers") or 0)
+                clear_box = hit["box"]
+                tried = False
+            if len(looks) == 4 and sum(looks) >= 3:
+                self.job["phase"] = "occluded"
+                self.step(f"subject obscured at {label}. Recording paused.")
+                if tried or now - arrived < MIN_DWELL_S:
                     continue
                 if not gate["moves"]:
-                    self.step(f"covered at {label}: would cut to {alt['preset']} (physical moves not approved)")
                     continue
-                self.step(f"covered at {label}: cutting to {alt['preset']} in {ANNOUNCE_S:.0f} s (STOP cancels)")
+                alt = self._alternative(current, shots, left, now) if current["preset"] != "current framing" else None
+                path = None
+                if alt is None and gate["computed"] and clear_box:
+                    tried = True
+                    self.step("checking a new angle around the obstruction")
+                    joints, _ = await self.settle()
+                    path = await self.vision(orbit.occlusion_cut, self.loc["point_m"], joints, self.state.arm.ranges(),
+                                             self._aspect(), clear_box, self.calibration.get("shoulder_reach_limit_m"))
+                if alt is None and path is None:
+                    self.step(f"subject obscured at {label}. Holding for a clear view.")
+                    continue
+                dest = alt["preset"] if alt else "a new angle"
+                self.step(f"subject obscured at {label}. Cutting to {dest} in {ANNOUNCE_S:.0f} s.")
                 await asyncio.sleep(ANNOUNCE_S)
-                left[current["preset"]] = now
-                obs = await self.go_shot(alt["preset"], alt["toward"], alt["s"], f"{alt['preset']}/watch", sample=True)
-                self.job["result"]["moves"].append({"from": current["preset"], "to": alt["preset"], "why": "covered",
+                if not covered_by(await self._look()):
+                    looks.clear()
+                    continue
+                self.job["phase"] = "reposition"
+                left[current["preset"]] = time.monotonic()
+                if path is not None:
+                    try:
+                        await self.move_path(path, "occlusion cut")
+                    except TooHeavy as e:
+                        self._lock_at_limit([{m: joints[m] for m in motion.MOVABLE}] + path, "occlusion cut", str(e))
+                    joints, stamp = await self.settle()
+                    obs = await self.observe("watch/new-angle", joints, stamp)
+                else:
+                    obs = await self.go_shot(alt["preset"], alt["toward"], alt["s"], f"{alt['preset']}/watch")
+                self.job["result"]["moves"].append({"from": current["preset"], "to": dest, "why": "covered",
                                                     "seen": obs["valid"], "t": round(time.time(), 1)})
-                current, arrived, base = alt, time.monotonic(), (obs.get("inliers") or base)
-                looks.clear()
-                if not obs["valid"]:      # covered here too: the next look round picks another view, not the one left
-                    left[alt["preset"]] = time.monotonic()
-                    arrived -= MIN_DWELL_S
-                    looks.extend([True] * 4)
-                continue
-            if (current is not preferred and not covered and now - arrived >= PULL_BACK_S
-                    and now - left.get(preferred["preset"], -1e9) >= NO_RETURN_S and gate["moves"]):
-                self.step(f"trying to pull back to the preferred view ({preferred['preset']}) in {ANNOUNCE_S:.0f} s")
-                await asyncio.sleep(ANNOUNCE_S)
-                prev = current
-                obs = await self.go_shot(preferred["preset"], preferred["toward"], preferred["s"], f"{preferred['preset']}/watch")
-                self.job["result"]["moves"].append({"from": prev["preset"], "to": preferred["preset"], "why": "pull back",
-                                                    "seen": obs["valid"], "t": round(time.time(), 1)})
-                if obs["valid"]:
-                    current, base = preferred, obs.get("inliers") or base
-                else:      # still covered there: back to the view that worked, and wait longer before trying again
-                    left[preferred["preset"]] = time.monotonic()
-                    obs = await self.go_shot(prev["preset"], prev["toward"], prev["s"], f"{prev['preset']}/watch")
-                    current, base = prev, obs.get("inliers") or base
-                arrived = time.monotonic()
+                current = alt or {"preset": "current framing", "toward": None}
+                arrived, base, tried, clear_box = time.monotonic(), None, True, None
+                self.job["phase"] = "occluded"
                 looks.clear()
                 continue
-            self.step(f"holding {label}" + (" (partly covered)" if covered else ""))
+            if self.job["phase"] == "watch":
+                self.step(f"holding {label}" + (" (partly obscured)" if covered else ""))
+            else:
+                self.step(f"waiting for a clear view at {label}")
 
     def _alternative(self, current: dict, shots: list[dict], left: dict, now: float) -> dict | None:
         """The best other shot that looks at the target from a clearly different direction."""
@@ -1493,7 +1605,7 @@ class Director:
             d = self._direction(s)
             if d is None or (here is not None and math.degrees(math.acos(float(np.clip(d @ here, -1, 1)))) < MIN_ANGLE_DEG):
                 continue
-            if best is None or s["score"] > best["score"]:
+            if best is None or (s["status"] == "VALID", s["score"]) > (best["status"] == "VALID", best["score"]):
                 best = s
         return best
 

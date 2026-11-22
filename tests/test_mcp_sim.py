@@ -229,10 +229,15 @@ async def director():
         st = data(await client.call_tool("director_status", {}))
         assert st["mode"] == "SIMULATED" and st["job"] is None and st["target"] is None, st
         refused = data(await client.call_tool("director_job", {"kind": "survey"}))
-        assert "no target" in refused["_error"], refused        # nothing marked in the dashboard yet
+        assert "no target" in refused["_error"], refused
+        refused = data(await client.call_tool("director_job", {"kind": "film", "brief": " "}))
+        assert "filming brief" in refused["_error"], refused
         state.director.ref = object()                            # a marked object, as the dashboard would set
         state.director.target = {"id": "t", "label": "mug"}
-        state.director.localize = None                           # keeps the job from moving; STOP (or the HOLD) ends it
+        async def waiting_for_vision():
+            await asyncio.sleep(15)
+
+        state.director.localize = waiting_for_vision
         started = data(await client.call_tool("director_job", {"kind": "watch"}))
         assert started["started"] and started["mode"] == "SIMULATED", started
         await client.call_tool("stop", {})

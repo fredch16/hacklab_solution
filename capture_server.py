@@ -979,21 +979,21 @@ class State:
             logger.error("hold failed: %s", e)
             return "unconfirmed", f"could not confirm the hold: {e or type(e).__name__}"
 
-    async def stop(self) -> dict:
+    async def stop(self, reason: str = "STOP pressed") -> dict:
         """STOP: take the arm away from whatever owns it, then hold. Works any time, never queues.
 
         Single-flight: while one cleanup runs, every further STOP joins it and returns the same result,
         and nothing else is admitted until it has finished, hold confirmation included."""
         generation = self.bump()  # (the HTTP handler has already bumped once, before even reading the request)
         if not self.stopping:
-            self.stop_task = asyncio.create_task(self._stop_cleanup())
+            self.stop_task = asyncio.create_task(self._stop_cleanup(reason))
         result = await asyncio.shield(self.stop_task)
         return {**result, "generation": max(generation, self.gen)}
 
-    async def _stop_cleanup(self) -> dict:
+    async def _stop_cleanup(self, reason: str) -> dict:
         owned = False
         if self.director is not None:
-            self.director.preempt("STOP pressed")
+            self.director.preempt(reason)
         try:
             task, view, was_moving = self.move_task, self.move_view, self.moving
             if was_moving:

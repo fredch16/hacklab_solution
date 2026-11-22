@@ -507,6 +507,33 @@ class SimDirector(unittest.TestCase):
         st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=300)
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
 
+    def test_9l_gimbal_skips_a_view_whose_approach_strains_the_shoulder(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        d = self.state.director
+        real, tried = d.move, []
+
+        async def strained(view, *a, **k):        # every approach away from top trips the shoulder guard
+            tried.append(view)
+            if view != "top":
+                raise J.Hold(f"the move to {view} did not finish: motor 2 load stayed above 23% for 1.2 s")
+            return await real(view, *a, **k)
+
+        real_vision = d.vision
+
+        async def vision(fn, *args):               # a gimbal take plans from every view but top
+            if fn is J.orbit.gimbal_shot:
+                return {"ok": args[1][1] != motion.load_views()["top"][1]}
+            return await real_vision(fn, *args)
+
+        with patch.object(d, "move", strained), patch.object(d, "vision", vision):
+            st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=120)
+        self.assertEqual(st["job"]["status"], "HOLD", st["job"])
+        self.assertIn("shoulder strains", st["job"]["reason"])
+        self.assertTrue(d.heavy)
+        self.assertIn("top", tried)                          # it went back after each strained approach
+        d.heavy.clear()
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

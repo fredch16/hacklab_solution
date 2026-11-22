@@ -113,6 +113,7 @@ class Director:
         self.samples: list = []              # frames scored during the last sampled move
         self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
         self.reach: dict | None = None       # orbit.reach_map for the current localization
+        self.heavy: set = set()              # views whose approach tripped the shoulder guard: not tried again
         self.trail: list = self._load_trail()   # poses driven by the last scene, for "return" (survives a restart)
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
@@ -1312,22 +1313,34 @@ class Director:
         grip = self.state.arm.joints(max_age_s=motion.STALE_S)[motion.GRIPPER]
         chosen = None
         for cand in dict.fromkeys([view] + ranked):
-            if cand in ("home", motion.TRANSIT) or not motion.view_checked(cand):
+            if cand in ("home", motion.TRANSIT) or cand in self.heavy or not motion.view_checked(cand):
                 continue
             self.step(f"checking a gimbal take from {cand}")
             bias = predict.bias_for({"where": "view", "view": cand}, self.calibration)
             shot = await self.vision(orbit.gimbal_shot, self.loc["point_m"], {**motion.load_views()[cand],
                                      motion.GRIPPER: grip}, self.state.arm.ranges(), yaw, roll, bias, self._aspect())
-            if shot["ok"]:
-                chosen = cand
-                break
+            if not shot["ok"]:
+                continue
+            if cand != self.where().get("view"):
+                self.job["phase"] = "reposition"
+                self.step(f"moving to {cand} for the gimbal take")
+                try:
+                    if not await self.move(cand):
+                        continue
+                except Hold as e:
+                    if "load stayed above" not in str(e):
+                        raise
+                    self.heavy.add(cand)        # the shoulder strains on the way there: back, and try the next view
+                    self.note(f"{cand} skipped: {e}")
+                    self.step(f"the shoulder strains on the way to {cand}; back to {view}")
+                    if not await self.move(view):
+                        raise Hold(f"the route back to {view} was refused") from e
+                    continue
+            chosen = cand
+            break
         if chosen is None:
-            raise Hold("no view gives a gimbal take that keeps the object in frame")
-        if chosen != self.where().get("view"):
-            self.job["phase"] = "reposition"
-            self.step(f"moving to {chosen} for the gimbal take")
-            if not await self.move(chosen):
-                raise Hold(f"the route to {chosen} was refused")
+            raise Hold("no view gives a gimbal take that keeps the object in frame"
+                       + (f" (skipped, the shoulder strains: {', '.join(sorted(self.heavy))})" if self.heavy else ""))
         self.job["result"] = await self._gimbal_take(chosen, yaw, roll)
 
     async def _gimbal_take(self, view: str, yaw: int, roll: float = 0.0) -> dict:

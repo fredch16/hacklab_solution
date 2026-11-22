@@ -58,6 +58,10 @@ Scene (filmed as a Director Show because `computed_paths` is false): establishin
 
 Detection tip measured on the far sticker: SIFT on a 2× upscaled region around the last box gives confidence 0.97 (48 inliers) in 75 ms against 0.60 at full resolution; worth adding to `vision.detect` for small boxes.
 
+## Phone pairing fix (23 Nov)
+
+QR pairing kept failing ("QR expired" on the second scan): the laptop gateway held one pairing proof and every QR request from any open tab replaced it, so the QR being scanned stopped matching. Fixed in `laptop_dashboard.py` (`0260abc`): while a pairing request is pending (< 45 s) every tab gets the same QR. Phone app 0.1.0 (installed 22 Nov 00:34) is current; no APK update was needed. After a gateway restart the phone must pair again.
+
 ## Dashboard buttons and what each does on the real arm (23 Nov)
 
 | Button | Status on the real arm |

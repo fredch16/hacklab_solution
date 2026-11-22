@@ -681,13 +681,15 @@ def path_curve(path: list[dict[int, int]]):
     return f, cum[-1]
 
 
-def path_problem(path: list[dict[int, int]], ranges, env, grip: int, absolute: bool = False) -> str | None:
+def path_problem(path: list[dict[int, int]], ranges, env, grip: int, absolute: bool = False,
+                 floor: float | None = None) -> str | None:
     """Why the geometry model does not vouch for a computed path, or None. Every waypoint inside the
     envelope; neighbouring waypoints at most PATH_STEP_MAX apart; along the smooth curve the arm will follow
     (path_curve), at PATH_CHECKS poses per waypoint pair and in both of fk's mappings: inside the envelope, no part of the arm below PATH_FLOOR_M (or below where it is at the start)
     and the arm never closer to itself than DIRECT_SELF_CLEAR_M. Advisory like every fk check: it knows
     the desk plane, not what lies on it, and not the camera stalk or cables.
-    `absolute`: no allowance for a low first pose (for planned poses the arm is not standing at yet)."""
+    `absolute`: no allowance for a low first pose (for planned poses the arm is not standing at yet).
+    `floor`: a lower desk floor than PATH_FLOOR_M, for the pick job's descent to the object only."""
     import fk
     for i, q in enumerate(path):
         for m in MOVABLE:
@@ -699,7 +701,8 @@ def path_problem(path: list[dict[int, int]], ranges, env, grip: int, absolute: b
         if jump > PATH_STEP_MAX:
             return f"waypoints {i}-{i + 1}: a joint would jump {jump} steps"
     start = {**path[0], GRIPPER: grip}
-    floors = {mp: PATH_FLOOR_M if absolute else min(PATH_FLOOR_M, fk.min_height(start, ranges, mapping=mp)[0] - 0.005)
+    base = PATH_FLOOR_M if floor is None else floor
+    floors = {mp: base if absolute else min(base, fk.min_height(start, ranges, mapping=mp)[0] - 0.005)
               for mp in ("viewer", "true_scale")}
     curve, _ = path_curve(path)
     n = PATH_CHECKS * (len(path) - 1)
@@ -724,7 +727,7 @@ class _PolyGoal(dict):
 
 
 async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_SLOW, label: str = "path",
-                     load_guard: bool = True) -> dict:
+                     load_guard: bool = True, floor: float | None = None) -> dict:
     """Follow computed poses in one continuous guarded move (the camera director's arcs). The path
     starts where the arm is; every pose is checked by path_problem() before anything is written.
     Same result keys and the same guards, Stop and holds as go_to_view."""
@@ -757,7 +760,7 @@ async def go_through(arm, poses: list[dict[int, int]], max_speed: float = SPEED_
                     raise MotionError(blockers[0])
                 present, env = info["present"], info["env"]
                 path = [{m: present[m] for m in MOVABLE}] + [{m: int(q[m]) for m in MOVABLE} for q in poses]
-                problem = path_problem(path, arm.ranges(), env, present[GRIPPER])
+                problem = path_problem(path, arm.ranges(), env, present[GRIPPER], floor=floor)
                 if problem:
                     raise MotionError(f"the computed path is not safe by the model: {problem}")
                 await _fresh_again(arm)

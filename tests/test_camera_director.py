@@ -666,6 +666,17 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         self.assertEqual([h for h in self.state.history if h.get("view") == "wave"][-1]["speed"], motion.SPEED_FAST)
 
+    def test_9p_pick_descends_closes_and_lifts_back(self):
+        """The sim has nothing to grip, so the jaws close fully: the whole sequence runs and it says so."""
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        st = self.run_job({"kind": "pick", "brief": "pick up the sticker"}, timeout=240)
+        self.assertEqual(st["job"]["status"], "HOLD", st["job"])
+        self.assertIn("nothing was gripped", st["job"]["reason"])
+        done = {h["view"]: h for h in self.state.history if h.get("view") in ("above the object", "down to the object", "lift")}
+        self.assertTrue(all(done.get(k, {}).get("ok") for k in ("above the object", "down to the object", "lift")), done)
+        self.assertLess(self.state.arm.joints()[motion.GRIPPER], 1400)                 # it really closed
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

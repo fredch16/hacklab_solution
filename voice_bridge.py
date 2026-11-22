@@ -101,7 +101,8 @@ def match_view(phrase: str, views: list[dict]) -> dict | None:
 
 JOB_NAMES = {"show": "Cinematic show", "gimbal": "Gimbal take", "film": "Claude-planned shot", "tour": "Director tour",
              "watch": "Keep in view", "follow": "Follow object", "selfcal": "Self-calibration", "snap": "Snap to view",
-             "cinematic": "Cinematic shots", "survey": "Survey", "wave": "Wave"}
+             "cinematic": "Cinematic shots", "survey": "Survey", "wave": "Wave",
+             "gesture": "Gesture", "pick": "Pick up", "skill": "Learned move"}
 DIRECTOR_PHRASES = {
     "find the best view": "survey", "find best view": "survey", "optimize all views": "survey",
     "keep in view": "watch", "keep it in view": "watch", "keep the object in view": "watch",

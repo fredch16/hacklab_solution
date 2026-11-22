@@ -615,3 +615,69 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
                 return {"ok": True, "pose": goal, "aim_error_deg": 0.0, "dolly": True, "share": 1.0, "lifted": True}
             problem = lifted
     return {"ok": False, "reason": problem or "already as close as the joints allow"}
+
+
+GRASP_TOL_M = 0.012              # the jaw tips must reach the grasp point this closely by the model
+
+
+def grasp_pose(start: dict, ranges, tip, iterations: int = 120) -> dict:
+    """Joints putting the closed jaw tips at `tip` (m) with the jaws pointing straight down; damped least squares
+    over motors 1-7 on fk's jaw_tip and gripper forward axis. -> {ok, pose, error_m}"""
+    import fk
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    env, limits = motion.envelope(ranges), _limits(ranges)
+    grip = int(start.get(motion.GRIPPER, 1279))
+    tip, down = np.asarray(tip, float), np.array([0.0, 0.0, -1.0])
+    q = {m: float(start[m]) for m in motion.MOVABLE}
+
+    def residual(q):
+        j = {**{m: int(round(v)) for m, v in q.items()}, motion.GRIPPER: grip}
+        return np.concatenate([np.asarray(fk.fk(j, ranges)["jaw_tip"]) - tip,
+                               0.05 * (np.asarray(fk.gripper_frame(j, ranges)[1]) - down)])
+
+    err, lam, h = residual(q), 1e-3, 4.0
+    for _ in range(iterations):
+        J = np.array([(residual({**q, m: q[m] + h}) - err) / h for m in motion.MOVABLE]).T
+        JtJ = J.T @ J                         # damping scaled to the gradient (one step moves the tip ~0.5 mm)
+        dq = np.linalg.solve(JtJ + lam * np.diag(np.maximum(np.diag(JtJ), 1e-12)), -J.T @ err)
+        trial = {m: min(max(q[m] + float(np.clip(d, -120, 120)), limits[m][0]), limits[m][1])
+                 for m, d in zip(motion.MOVABLE, dq)}
+        e2 = residual(trial)
+        if e2 @ e2 < err @ err:
+            q, err, lam = trial, e2, lam * 0.4
+            if np.linalg.norm(err[:3]) < 0.002:
+                break
+        else:
+            lam *= 6
+            if lam > 1e3:
+                break
+    pose = motion.clamp_pose({m: int(round(v)) for m, v in q.items()}, env)
+    miss = float(np.linalg.norm(residual(pose)[:3]))
+    return {"ok": miss < GRASP_TOL_M, "pose": pose, "error_m": round(miss, 4)}
+
+
+def grasp_low(start: dict, ranges, x: float, y: float, z: float, jaw_open: int, clear: float = 0.008) -> dict:
+    """The lowest grasp pose over (x, y) at which every part of the arm, open jaws included, stays `clear` above
+    the desk by the model: jaw-tip heights tried from 2.2 cm up. -> grasp_pose result + {height_m}"""
+    import fk
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    best = None
+    for height in (0.022, 0.028, 0.035, 0.045, 0.06):
+        r = grasp_pose(start, ranges, (x, y, z + height))
+        j = {**r["pose"], motion.GRIPPER: jaw_open}
+        if r["ok"] and min(fk.min_height(j, ranges, mapping=mp)[0] for mp in ("viewer", "true_scale")) >= clear:
+            return {**r, "height_m": height}
+        best = best or {**r, "height_m": height}
+    return {**best, "ok": False}
+
+
+def grasp_descent(above: dict, ranges, x: float, y: float, z: float, top_h: float, low_h: float) -> list[dict]:
+    """A straight vertical descent of the jaw tips over (x, y), from top_h to low_h above z: a solved grasp pose
+    every centimetre, each seeded from the one before (joint interpolation would swing the jaws below the line)."""
+    poses, seed, h = [], dict(above), top_h
+    while h > low_h + 1e-6:
+        h = max(low_h, h - 0.01)
+        r = grasp_pose(seed, ranges, (x, y, z + h))
+        poses.append(r["pose"])
+        seed = {**r["pose"], motion.GRIPPER: seed.get(motion.GRIPPER, 1279)}
+    return poses

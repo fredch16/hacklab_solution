@@ -919,8 +919,13 @@ class State:
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
 
+    async def set_gripper(self, goal: int, speed: int = 300) -> None:
+        """Torque on the gripper (motor 8) and drive it to `goal` (the pick job's open / close)."""
+        await self.arm.set_torque(True, [motion.GRIPPER])
+        await self.arm.write_goals({motion.GRIPPER: int(goal)}, speed=speed)
+
     async def start_path(self, poses: list, label: str, gen: int | None = None, load_guard: bool = True,
-                         speed: float = motion.SPEED_FIRST) -> dict:
+                         speed: float = motion.SPEED_FIRST, floor: float | None = None) -> dict:
         """Start motion.go_through (a computed, model-checked path from the camera director) like start_move."""
         gen = self.gen if gen is None else gen
 
@@ -936,16 +941,18 @@ class State:
             self.move_started, self.move_speed = time.time(), ("first-run" if speed == motion.SPEED_FIRST else "path", speed)
             self._forget_where()
             self.move_task = asyncio.create_task(self._run_move(label, speed, False, path=poses,
-                                                                load_guard=load_guard))
+                                                                load_guard=load_guard, floor=floor))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": label, "generation": gen}
         return await self.command(body, gen=gen)
 
     async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None,
-                        path: list | None = None, load_guard: bool = True, direct_only: bool = False):
+                        path: list | None = None, load_guard: bool = True, direct_only: bool = False,
+                        floor: float | None = None):
         try:
             if path is not None:
-                result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view, load_guard=load_guard)
+                result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view, load_guard=load_guard,
+                                                 floor=floor)
             else:
                 result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
                                                  along=along, load_guard=load_guard, direct_only=direct_only)

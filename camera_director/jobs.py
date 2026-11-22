@@ -95,6 +95,10 @@ SKILL_FILLER = {"hey", "peter", "claude", "please", "can", "could", "you", "do",
 JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
 TAKE_KEEP_HALF = 0.2      # at most this half-size (picture fraction) of the object must stay in frame in a take
 TAKE_LOST_S = 4.0         # a take stops when the object has been out of sight this long
+PICK_ABOVE_M = 0.10       # pick: the jaw tips first go this far above the object...
+# ...then down to the lowest height (orbit.grasp_low, from 2.2 cm) at which the open jaws stay 8 mm off the desk
+PICK_FLOOR_M = 0.002      # the descent may bring a part of the arm this close to the desk (pick only)
+PICK_STALL_STEPS = 60     # jaws that stop this far from fully closed are holding something
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
@@ -655,7 +659,7 @@ class Director:
                    "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
                    "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave, "skill": self._skill,
-                   "gesture": self._gesture}
+                   "gesture": self._gesture, "pick": self._pick}
         if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
@@ -1002,7 +1006,7 @@ class Director:
     # ---- free camera scenes: moves generated around the object (arcs, cranes, push-ins, mixes)
 
     async def move_path(self, poses: list[dict], label: str, sample: bool = False, require_visible: bool = False,
-                        speed: float = motion.SPEED_FIRST) -> None:
+                        speed: float = motion.SPEED_FIRST, floor: float | None = None) -> None:
         """One continuous computed move (motion.go_through) through the command owner, frames scored if `sample`."""
         self.job["moving_to"] = label
         self._own_move, self.samples, self.looks = True, [], 0
@@ -1010,7 +1014,7 @@ class Director:
             try:
                 await self._joints()          # a fresh reading first: a momentary gap would refuse the move ('no arm data')
                 self.state.note_data()
-                await self.state.start_path(poses, label, gen=self.job_gen, speed=speed)
+                await self.state.start_path(poses, label, gen=self.job_gen, speed=speed, floor=floor)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1847,6 +1851,68 @@ class Director:
         saved = self._save_skill(req["brief"], view, poses, JOB_SPEEDS.get(req.get("speed"), motion.SPEED_NORMAL))
         self.job["result"]["learned"] = saved["name"]
         self.note(f"learned a new move: “{saved['name']}” (say it again, or replay it from the menu)")
+
+    async def _pick(self, req: dict, gate: dict):
+        """Pick up the marked object (owner, 22 Nov): the only job allowed down to the table. From a view: open the
+        jaws, move above the object, descend slowly to grip height (desk floor lowered for this path only), close
+        until the jaws stall on it, lift straight back up and hold there. Every path is checked like any other and
+        runs with the shoulder load guard."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "reposition"
+        view = await self.ensure_view()
+        if not view or view == motion.TRANSIT:
+            raise Hold("picking up starts from a saved view")
+        self.job["phase"] = "estimate"
+        self.step("locating the object")
+        st = self.obj.state()
+        if st and st["sigma_m"] < 0.04:
+            x, y, z = (float(v) for v in self.obj.x)
+        else:
+            await self.localize()
+            x, y, z = (float(v) for v in self.loc["point_m"])
+        z = max(0.0, z)
+        ranges = self.state.arm.ranges()
+        lo, hi = ranges[motion.GRIPPER]
+        jaw_open, jaw_closed = int(lo + 0.8 * (hi - lo)), int(lo + 10)
+        now = await self._joints()
+        start = {m: now[m] for m in motion.MOVABLE}
+        above = await self.vision(orbit.grasp_pose, {**start, motion.GRIPPER: jaw_open}, ranges, (x, y, z + PICK_ABOVE_M))
+        low = await self.vision(orbit.grasp_low, {**above["pose"], motion.GRIPPER: jaw_open}, ranges, x, y, z, jaw_open)
+        if not above["ok"] or not low["ok"]:
+            raise Hold(f"the jaws cannot reach the object from above (off by {max(above['error_m'], low['error_m']) * 100:.0f} cm)")
+        approach = self._bridge(start, above["pose"], step=100)
+        down = await self.vision(orbit.grasp_descent, {**above["pose"], motion.GRIPPER: jaw_open}, ranges, x, y, z,
+                                 PICK_ABOVE_M, low["height_m"])
+        self.trail = [start] + approach            # the way back to the view for the next move
+        self._save_trail(self.trail)
+        self.job["phase"] = "cinematic"
+        self.step("opening the jaws")
+        await self.state.set_gripper(jaw_open)
+        await asyncio.sleep(1.0)
+        self.step("moving above the object")
+        await self.move_path(approach, "above the object")
+        self.step("descending to the object")
+        await self.move_path(down, "down to the object", floor=PICK_FLOOR_M)
+        self.step("closing the jaws")
+        await self.state.set_gripper(jaw_closed)
+        last, steady = None, 0
+        for _ in range(20):                        # until the jaws stop: on the object, or fully closed
+            await asyncio.sleep(0.2)
+            pos = (await self._joints())[motion.GRIPPER]
+            steady = steady + 1 if last is not None and abs(pos - last) <= 4 else 0
+            last = pos
+            if steady >= 3:
+                break
+        gripped = last is not None and last > jaw_closed + PICK_STALL_STEPS
+        self.step("lifting")
+        await self.move_path(list(reversed(down[:-1])) + [above["pose"]], "lift", floor=PICK_FLOOR_M)
+        self.job["result"] = {"gripped": gripped, "jaws": last, "object_m": [round(x, 3), round(y, 3), round(z, 3)],
+                              "holding_above": True}
+        self.note("picked it up: holding it above the table" if gripped else
+                  "the jaws closed all the way: nothing was gripped (the object may be elsewhere)")
+        if not gripped:
+            raise Hold("nothing was gripped: the jaws closed all the way")
 
     async def _wave(self, req: dict, gate: dict):
         """Wave hello: from a view, the base sways and the wrist rolls, three times, then back. Shoulder and elbow

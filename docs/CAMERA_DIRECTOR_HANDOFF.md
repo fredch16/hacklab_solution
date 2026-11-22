@@ -56,7 +56,7 @@ Read in this order: this file → [camera director guide](CAMERA_DIRECTOR.md) (c
 - **Gimbal take** (newest working camera move): shoulder and elbow parked at `top`, base yaw ±200 steps, wrist joints keep the framing; one 13 s move, sticker in frame 77 % of sampled frames, shoulder peak load 14 %, no faults, back on `top`.
 - **Snap** back onto a nearby view (144 steps) in 2 s instead of the transit lift.
 - **Director Show** (film grammar, the best demo): establishing hold at `wide` → push-in along the checked wide–top line → gimbal arc at `top` (yaw −325..+350 steps, sticker in frame 77 %) → hold → pull-out to `wide` → closing hold. 66 s end to end, no faults, ends on `wide`. The sticker is too small to recognise from `wide` at its current spot, so the wide holds report `steady: false`. Motor 2 briefly touched load 284 during a move without tripping: close to the limit, watch it.
-- Shoulder-load guard (23 % for 1.2 s) caught real overload build-ups and locked; easing back worked; but a stop at a heavy pose can still trip on the next move (see open issues).
+- Shoulder-load guard (24 % for 1.2 s; was 23 %) caught real overload build-ups and locked; easing back worked; but a stop at a heavy pose can still trip on the next move (see open issues).
 
 ## Latest real-arm result (23 Nov, owner pressed Scene, sticker moved further from the base)
 

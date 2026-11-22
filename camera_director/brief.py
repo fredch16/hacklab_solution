@@ -78,7 +78,9 @@ def plan(text: str, context: dict, computed: bool) -> dict:
                 f"Safety: keep the camera well above the table at all times (dist x sin(elev) at least "
                 f"{MIN_CAMERA_HEIGHT_M:.2f} m); never lower it toward the desk. For a closer shot make the subject "
                 "larger in frame by coming in from above (shorter dist at the same or a higher elev, or tighter u/v "
-                "framing), not by dropping the camera. "
+                "framing), not by dropping the camera. Come only as close as keeps the whole subject comfortably "
+                "inside the frame (at most about 60 percent of the frame's width or height) so it is never cut off "
+                "or lost; if in doubt, stay a little wider. "
                 "For requests that cannot be filmed with these capabilities, return an empty shots list "
                 "and explain the camera interface limitation without assuming which hardware is attached. "
                 "You have no control tools."),

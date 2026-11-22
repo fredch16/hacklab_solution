@@ -761,3 +761,16 @@ class TableClearance(unittest.TestCase):
         finally:
             orbit.MIN_CAMERA_HEIGHT_M = saved
         self.assertFalse(plan["ok"])
+
+    def test_planner_refuses_shots_so_close_the_object_could_be_lost(self):
+        from camera_director import orbit
+        ranges = {int(k): tuple(r) for k, r in motion._read_views_file()["transit"]["ranges"].items()}
+        saved = orbit.MAX_TARGET_FILL
+        orbit.MAX_TARGET_FILL = 0.01                                             # any real view fills more than this
+        try:
+            plan = orbit.plan_shot([0.0, 0.31, 0.0], [motion.load_views()["top"]], ranges,
+                                   [{"theta": -60, "elev": 60, "dist": 0.2}, {"theta": -40, "elev": 60, "dist": 0.2}],
+                                   target={"point_m": [0.0, 0.31, 0.0], "size_m": 0.06})
+        finally:
+            orbit.MAX_TARGET_FILL = saved
+        self.assertFalse(plan["ok"])

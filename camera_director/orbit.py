@@ -23,6 +23,8 @@ AXIS_TOL = 4.0      # deg: and its viewing direction this close
 STEP_DEG = 10.0     # azimuth between solved poses
 MAX_JUMP = 250      # steps: neighbouring poses further apart get a pose solved half-way between
 MIN_FILM_ELEV = 45.0
+MAX_TARGET_FILL = 0.6        # guideline: close enough, but the object may fill at most this share of the frame's
+                             # width/height, so it stays wholly in frame and the tracker does not lose it
 MIN_CAMERA_HEIGHT_M = 0.12   # safety guideline (owner): the camera stays well above the table; "closer" means the
                              # object larger in frame, never the camera lowered toward the desk
 
@@ -270,6 +272,10 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
                          for q in plan["poses"]]
                 if not plan["complete"] or any(not b["visible"] or b["components"]["edge_clearance"] < 0.35 for b in boxes):
                     first_reason = first_reason or "the requested move does not keep the whole object in frame"
+                    continue
+                if any(max(b["box"][2] - b["box"][0], b["box"][3] - b["box"][1]) > MAX_TARGET_FILL for b in boxes):
+                    first_reason = first_reason or ("the camera would get so close that the object fills more than "
+                                                    f"{MAX_TARGET_FILL:.0%} of the frame and could be lost")
                     continue
             if any(viewing_elevation(point, framing.camera_pose({**q, motion.GRIPPER: grip}, ranges)) < MIN_FILM_ELEV
                    for q in plan["poses"]):

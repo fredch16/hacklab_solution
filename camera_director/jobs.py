@@ -543,6 +543,8 @@ class Director:
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
+                await self._joints()          # a fresh reading first: a momentary gap would refuse the move ('no arm data')
+                self.state.note_data()
                 await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along, load_guard=True,
                                             direct_only=self.job["kind"] == "selfcal" and not self.state.sim)
             except asyncio.CancelledError:
@@ -1006,6 +1008,8 @@ class Director:
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
+                await self._joints()          # a fresh reading first: a momentary gap would refuse the move ('no arm data')
+                self.state.note_data()
                 await self.state.start_path(poses, label, gen=self.job_gen, speed=speed)
             except asyncio.CancelledError:
                 raise
@@ -1791,7 +1795,9 @@ class Director:
         env = motion.envelope(ranges)
         start = motion.clamp_pose({m: motion.load_views()[skill["view"]][m] for m in motion.MOVABLE}, env)
         poses = [{int(m): v for m, v in p.items()} for p in skill["poses"]]
-        problem = motion.path_problem([start] + poses + [start], ranges, env, (await self._joints())[motion.GRIPPER])
+        # in the vision worker: thousands of fk checks on this loop would starve the arm's data (a 'no arm data' refusal)
+        problem = await self.vision(motion.path_problem, [start] + poses + [start], ranges, env,
+                                    (await self._joints())[motion.GRIPPER])
         if problem:
             raise Hold(f"“{skill['name']}” no longer passes the checks: {problem}")
         self.job["phase"] = "cinematic"
@@ -1830,7 +1836,7 @@ class Director:
             poses += [{m: round(prev[m] + (k[m] - prev[m]) * i / n) for m in motion.MOVABLE} for i in range(1, n + 1)]
             prev = k
         grip = (await self._joints())[motion.GRIPPER]
-        problem = motion.path_problem([vpose] + poses, ranges, env, grip)
+        problem = await self.vision(motion.path_problem, [vpose] + poses, ranges, env, grip)   # off this loop
         if problem:
             raise Hold(f"that gesture does not fit here: {problem}")
         self.job["result"] = {"planner": "Claude", "plan_reason": plan["reason"][:300], "view": view}
@@ -1859,7 +1865,7 @@ class Director:
                 for p in (motion.clamp_pose({**vpose, 1: vpose[1] + s * WAVE_YAW, 7: vpose[7] + s * WAVE_ROLL}, env),
                           vpose)]
         grip = (await self._joints())[motion.GRIPPER]
-        problem = motion.path_problem([vpose] + sway, ranges, env, grip)
+        problem = await self.vision(motion.path_problem, [vpose] + sway, ranges, env, grip)    # off this loop
         if problem:
             raise Hold(f"no room to wave here: {problem}")
         self.job["phase"] = "cinematic"

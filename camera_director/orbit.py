@@ -502,7 +502,8 @@ def gimbal_shot(point, start: dict, ranges, yaw: int = 500, roll: float = 0.0, b
 
 
 FOLLOW_JOINTS = (1, 4, 5, 6, 7)   # base yaw and the wrist; shoulder and elbow stay where the view holds them
-FOLLOW_YAW_MAX = 600              # steps of base yaw the camera may turn away from its view while following
+FOLLOW_YAW_MAX = 1000             # steps of base yaw the camera may turn away from its view while following
+FOLLOW_SATURATED_DEG = 3.0        # turning alone leaves the object this far off: the whole arm helps aim
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
@@ -543,12 +544,14 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
         point = np.array(pose[0]) + d * depth
     lim = dict(limits)
     lim[1] = (max(lim[1][0], view[1] - FOLLOW_YAW_MAX), min(lim[1][1], view[1] + FOLLOW_YAW_MAX))
-    if three_d:                     # 3-D follow: the camera keeps its offset from the (fused) object position
-        point = fused
+    target_cam = None
+    if three_d:                     # 3-D follow: the camera keeps its offset from the (fused) object position,
+        target_cam = fused + np.asarray(offset, float)
+        point = np.array(pose[0]) + d * float(np.linalg.norm(fused - np.array(pose[0])))   # aimed by this frame
     if three_d or (depth0 and abs(size_ratio - 1.0) > FOLLOW_DIST_DEAD):
         for m in (2, 3):                                     # the dolly stays near the taught view
             lim[m] = (max(lim[m][0], view[m] - FOLLOW_DOLLY_MAX), min(lim[m][1], view[m] + FOLLOW_DOLLY_MAX))
-        cam = point + np.asarray(offset, float) if three_d else point - d * depth0
+        cam = target_cam if three_d else point - d * depth0
         cam[2] = max(cam[2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M)
         axis = (point - cam) / np.linalg.norm(point - cam)
         right = np.array(pose[2]) - axis * float(np.dot(pose[2], axis))
@@ -559,6 +562,15 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
         q, err = aim({**now, motion.GRIPPER: grip}, ranges, point, aspect=aspect, bias=bias, joints=FOLLOW_JOINTS,
                      limits=lim, pitch_ref=view[4])
         joints = FOLLOW_JOINTS
+        if err > FOLLOW_SATURATED_DEG:      # an extreme angle: the wrist and base ran out, the whole arm aims
+            for m in (2, 3):
+                lim[m] = (max(lim[m][0], view[m] - FOLLOW_DOLLY_MAX), min(lim[m][1], view[m] + FOLLOW_DOLLY_MAX))
+            cam = np.array(pose[0])
+            axis = (point - cam) / np.linalg.norm(point - cam)
+            right = np.array(pose[2]) - axis * float(np.dot(pose[2], axis))
+            q, _, err2 = framing.solve_pose({**now, motion.GRIPPER: grip}, tuple(cam), tuple(axis),
+                                            tuple(right / np.linalg.norm(right)), ranges, limits=lim)
+            joints, err = motion.MOVABLE, err2
     goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in joints else now[m]
             for m in motion.MOVABLE}
     goal = motion.clamp_pose(goal, env)

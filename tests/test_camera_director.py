@@ -433,7 +433,7 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         self.assertEqual(st["job"]["result"]["action"], "view:wide")
         self.assertEqual(st["arm"]["where"]["view"], "wide")
-        self.assertNotEqual(self.state.move_outcome["kind"], "path")
+        self.assertTrue(any(h.get("view") == "wide" and h.get("ok") for h in self.state.history))   # a view move
 
     def test_9y2_filming_brief_can_choose_the_gimbal_take(self):
         self.goto("top")

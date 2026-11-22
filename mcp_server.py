@@ -346,7 +346,9 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
         if brief["current_view"] == view:
             return {"started": False, "view": view, "detail": "the camera is already at this view"}
         try:
-            r = await control.call("POST", "/api/goto", {"view": view, "generation": st["generation"]})
+            # frame_object: with a marked object the view ends framed on it (the camera director)
+            r = await control.call("POST", "/api/goto", {"view": view, "generation": st["generation"],
+                                                         "frame_object": True})
         except ControlError as e:
             raise _tool_error(e)
         card = next((c for c in st.get("cards") or [] if c["name"] == view), {})

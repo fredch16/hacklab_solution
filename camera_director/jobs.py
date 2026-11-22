@@ -84,8 +84,11 @@ class TooHeavy(Hold):
 
 
 FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
+CENTER_STEPS = 4          # framing on the object at a view: at most this many follow-sized corrections
+WATCH_FRAME_S = 3.0       # keep in view re-frames on the object at most this often
+CENTER_DEAD = 0.06        # ...until its centre is this close to the picture's centre
 FOLLOW_SPEED = motion.SPEED_NORMAL   # follow's corrections: <= 150 steps of base yaw and wrist, shoulder parked
-FOLLOW_DEAD = 0.08        # follow: the object's centre may be this far from the picture's centre before turning
+FOLLOW_DEAD = 0.06        # follow: the object's centre may be this far from the picture's centre before turning
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 
 
@@ -118,6 +121,8 @@ class Director:
         self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
         self.reach: dict | None = None       # orbit.reach_map for the current localization
         self.obj = fuse.ObjectFilter()       # the object's position, fused over every tracked frame
+        self._framed = False                 # the arm stands next to a view, turned onto the object (trail)
+        self._framed_view = None
         self._fuse_bias = (0.0, 0.0)
         self.heavy: set = set()              # views whose approach tripped the shoulder guard: not tried again
         self.trail: list = self._load_trail()   # poses driven by the last scene, for "return" (survives a restart)
@@ -515,6 +520,9 @@ class Director:
         """One deliberate move through the capture server's command owner. True when it arrived, False when
         the motion layer refused before commanding anything; Hold when a move failed part-way. With `sample`,
         frames seen on the way are scored (self.samples) so a better view passed en route can be pulled back to."""
+        if self._framed and self.where().get("where") != "view":
+            self._framed = False              # the shot was framed on the object: back onto its view first
+            await self._return(self.trail)
         self.job["moving_to"] = view if not along else f"{view} → {along[0]} {along[1]:.0%}"
         self._own_move, self.samples, self.looks = True, [], 0
         try:
@@ -1451,7 +1459,9 @@ class Director:
                 "in_frame": None if seen is None else round(seen, 2), "moves": []}
 
     async def _hold_shot(self, seconds: float, label: str):
-        """A steady held shot: the editor's clean in/out point. Watches that the object stays in the picture."""
+        """A steady held shot: the editor's clean in/out point. Watches that the object stays in the picture.
+        The shot is framed on the object first (the view is where the arm stands; the object is what it films)."""
+        await self._center_on_object()
         self.step(f"holding: {label}")
         end, misses = time.monotonic() + seconds, 0
         while time.monotonic() < end:
@@ -1507,6 +1517,57 @@ class Director:
             raise Hold(f"the pull-out to {wide} was refused")
         shots.append({"shot": f"closing wide ({wide})", "steady": await self._hold_shot(hold, f"closing, {wide}")})
         self.job["result"] = {"shots": shots}
+
+    def _note_once(self, text: str):
+        if getattr(self, "_last_note", None) != text:
+            self._last_note = text
+            self.note(text)
+
+    async def _center_on_object(self):
+        """At a view: turn the camera (base yaw + wrist, shoulder and elbow on the view) until the tracked object is
+        centred, in follow's small checked steps. The steps are saved as the trail, so the next move steps back
+        onto the view first (move(), ensure_view)."""
+        w = self.where()
+        if self.tracker is None:
+            return
+        if w.get("where") == "view" and w.get("view") != motion.TRANSIT:
+            view = w["view"]
+            vpose = {m: motion.load_views()[view][m] for m in motion.MOVABLE}
+            commanded, steps = dict(vpose), []
+        elif self._framed and self.trail:     # already framed next to a view: refine from there
+            view, vpose = self._framed_view, dict(self.trail[0])
+            commanded, steps = dict(self.trail[-1]), list(self.trail[1:])
+        else:
+            return
+        bias = predict.bias_for({"where": "view", "view": view}, self.calibration)
+        ranges, since = self.state.arm.ranges(), (self.frame() or (-1,))[0]
+        for _ in range(CENTER_STEPS):
+            obs = None
+            for _ in range(15):               # a detection from after the last step
+                await asyncio.sleep(0.1)
+                if self.obs is not None and self.obs["frame_id"] > since:
+                    obs = self.obs
+                    break
+            if obs is None or (obs.get("method") == "vit" and obs["confidence"] < V.VIT_MIN):
+                break
+            b = obs["box"]
+            centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+            if abs(centre[0] - 0.5) < CENTER_DEAD and abs(centre[1] - 0.5) < CENTER_DEAD:
+                break
+            grip = (await self._joints())[motion.GRIPPER]
+            step = await self.vision(orbit.follow_step, vpose, {**commanded, motion.GRIPPER: grip}, ranges, centre,
+                                     bias, self._aspect())
+            if not step["ok"]:
+                break
+            self.step(f"framing the object at {view}")
+            await self.move_path([step["pose"]], f"frame the object at {view}", speed=FOLLOW_SPEED)
+            commanded = dict(step["pose"])
+            steps.append(commanded)
+            since = (self.frame() or (since,))[0]
+        if steps:
+            self.trail = [vpose] + steps
+            self._save_trail(self.trail)
+            self._framed, self._framed_view = True, view
 
     async def snap_home(self, view: str):
         """After a take that ended next to its view, put the arm exactly back on it."""
@@ -1609,7 +1670,9 @@ class Director:
             self.step(f"going to {view}")
             if not await self.move(view):
                 raise Hold(f"the route to {view} was refused")
-        self.job["result"] = {"view": view}
+        if req.get("frame_object") and self.ref is not None:
+            await self._center_on_object()
+        self.job["result"] = {"view": view, "framed": self._framed}
 
     async def _return_job(self, req: dict, gate: dict):
         if not gate["moves"] or not gate.get("computed"):
@@ -1745,6 +1808,7 @@ class Director:
         looks: deque = deque(maxlen=4)
         arrived, left = time.monotonic(), {}
         base, tried, clear_box = None, False, None
+        framed_at = 0.0
         self.job["result"] = {"preferred": current["preset"], "moves": []}
 
         def covered_by(hit):
@@ -1764,6 +1828,15 @@ class Director:
                 base = max(base or 0, hit.get("inliers") or 0)
                 clear_box = hit["box"]
                 tried = False
+                b = hit["box"]
+                off = max(abs((b[0] + b[2]) / 2 - 0.5), abs((b[1] + b[3]) / 2 - 0.5)) > 2 * CENTER_DEAD
+                edge = min(b[0], b[1], 1 - b[2], 1 - b[3]) < 0.02
+                if (off or edge) and now - framed_at > WATCH_FRAME_S:
+                    framed_at = now           # keep the whole object in the picture, centred
+                    await self._center_on_object()
+                    base, clear_box = None, None
+                    looks.clear()
+                    continue
             if len(looks) == 4 and sum(looks) >= 3:
                 self.job["phase"] = "occluded"
                 self.step(f"subject obscured at {label}. Recording paused.")
@@ -1896,7 +1969,11 @@ class Director:
                                          depth0, ratio, *((self.obj.x.tolist(), offset.tolist()) if moved else ()))
                 if moved and step["ok"]:
                     anchor = self.obj.x.copy()
+                elif moved:                   # cannot move with it from here: at least keep it centred
+                    self._note_once(f"follow: cannot move with the object ({step['reason'][:100]}); turning only")
+                    step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect())
                 if not step["ok"]:
+                    self._note_once(f"follow: cannot turn further ({step['reason'][:100]})")
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
                     continue
                 await self.move_path([step["pose"]], "follow", speed=FOLLOW_SPEED)

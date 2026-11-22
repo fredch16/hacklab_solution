@@ -89,8 +89,10 @@ def view_names(view: dict) -> list[str]:
 
 
 def match_view(phrase: str, views: list[dict]) -> dict | None:
+    phrase = re.sub(r"^(?:take|show me|show|give me) ", "", phrase)
     phrase = re.sub(r"^(?:the|a|your) ", "", phrase)
-    phrase = re.sub(r" (?:view|position|shot|pose)$", "", phrase)
+    phrase = re.sub(r" (?:view|position|shot|pose|angle)$", "", phrase)
+    phrase = re.sub(r" side$", "", phrase)          # "left side" = the left view
     for v in views:
         if phrase in view_names(v):
             return v

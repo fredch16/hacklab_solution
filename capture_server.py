@@ -1256,9 +1256,14 @@ def make_handler(state: State):
                     status, body = state.frame_preview(req)
                     return self._json(body, status)
                 if self.path == "/api/goto" and req.get("recover") is not True and state.director is not None \
-                        and state.director.trail and state.director.where().get("where") == "unknown":
+                        and not state.director.busy() and (
+                            (state.director.trail and state.director.where().get("where") == "unknown")
+                            or (req.get("frame_object") and state.director.ref is not None)):
+                    # a take left the arm off every view: the director drives back along its path; a view asked
+                    # for by voice/Claude (frame_object) ends framed on the marked object
                     # a take (follow, gimbal) left the arm off every view: the director drives back along its path
-                    status, body, _ = state.director.http("POST", "job", {"kind": "goto", "view": str(req.get("view", ""))})
+                    status, body, _ = state.director.http("POST", "job", {"kind": "goto", "view": str(req.get("view", "")),
+                                                                         "frame_object": req.get("frame_object") is True})
                     self._json({**body, "started": body.get("ok", False), "view": req.get("view"),
                                 "via": "back along the last take's path"}, status)
                 elif self.path == "/api/goto":

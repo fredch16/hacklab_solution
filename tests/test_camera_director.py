@@ -611,6 +611,9 @@ class SimDirector(unittest.TestCase):
         self.assertTrue(any(h.get("view") == "wave" and h.get("ok") for h in self.state.history))
         time.sleep(1.2)
         self.assertEqual(self.get()["arm"]["where"].get("view"), "top")
+        st = self.run_job({"kind": "wave", "speed": "fast"}, timeout=120)          # "wave fast": this motion only
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertEqual([h for h in self.state.history if h.get("view") == "wave"][-1]["speed"], motion.SPEED_FAST)
 
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")

@@ -87,6 +87,8 @@ class TooHeavy(Hold):
 FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
 SLIP_FRAC = 0.35         # framing: a tracker box this far (picture fraction) from where the object should be has slid
 UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
+# "slow" / "fast" in a command change that one motion's speed; Claude's custom takes default to first-run speed
+JOB_SPEEDS = {"slow": motion.SPEED_SLOW, "normal": motion.SPEED_NORMAL, "fast": motion.SPEED_FAST}
 WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
@@ -1181,6 +1183,7 @@ class Director:
             actions["show"] = "Cinematic show: establish wide, push in to top, arc, pull out, and hold wide"
             actions["gimbal"] = "Gimbal take: the base swings the camera around the object, the wrist keeps it centred"
             actions["follow"] = "Follow the object: keep turning the camera so it stays centred, until STOP"
+            actions["wave"] = "Wave hello: the base sways and the wrist rolls three times, then back"
             if self._shots({}):
                 actions["cinematic"] = "Play this object's verified shots using checked glides or cuts"
         context.update(actions=actions, current_pose=where)
@@ -1201,9 +1204,10 @@ class Director:
                 raise Hold("the selected camera command is unavailable")
             summary = {"planner": "Claude", "plan_reason": plan["reason"][:400], "action": action}
             try:
-                if action in ("watch", "show", "cinematic", "gimbal", "follow"):
+                if action in ("watch", "show", "cinematic", "gimbal", "follow", "wave"):
                     await {"watch": self._watch, "show": self._show, "cinematic": self._cinematic,
-                           "gimbal": self._gimbal, "follow": self._follow}[action]({"hold": plan["hold"]}, gate)
+                           "gimbal": self._gimbal, "follow": self._follow, "wave": self._wave}[action](
+                        {"hold": plan["hold"], "speed": req.get("speed")}, gate)
                 else:
                     if action.startswith("view:"):
                         self.job["phase"] = "reposition"
@@ -1229,6 +1233,7 @@ class Director:
                 raise Hold("no locally feasible camera path for this brief")
             return
         retry = True
+        take_speed = JOB_SPEEDS.get(req.get("speed"), motion.SPEED_FIRST)
         i = 0
         while i < len(plan["shots"]):
             shot = plan["shots"][i]
@@ -1265,7 +1270,7 @@ class Director:
             self._save_trail(self.trail)
             self.job["phase"] = "reposition"
             try:
-                await self.move_path(path["stage"], f"set up {name}")
+                await self.move_path(path["stage"], f"set up {name}", speed=take_speed)
             except TooHeavy as e:
                 self._lock_at_limit(trail + path["stage"], name, str(e))
             joints, stamp = await self.settle()
@@ -1279,7 +1284,7 @@ class Director:
                 raise Hold("marked subject left the opening shot")
             self.step(name)
             try:
-                await self.move_path(path["path"][1:], name, sample=True, require_visible=True)
+                await self.move_path(path["path"][1:], name, sample=True, require_visible=True, speed=take_speed)
             except TooHeavy as e:
                 self._lock_at_limit(trail + path["stage"] + path["path"][1:], name, str(e))
             seen = round(len(self.samples) / self.looks, 2) if self.looks else None
@@ -1726,7 +1731,7 @@ class Director:
             raise Hold(f"no room to wave here: {problem}")
         self.job["phase"] = "cinematic"
         self.step(f"waving hello from {view}")
-        await self.move_path(sway, "wave", speed=motion.SPEED_NORMAL)
+        await self.move_path(sway, "wave", speed=JOB_SPEEDS.get(req.get("speed"), motion.SPEED_NORMAL))
         self.job["result"] = {"view": view}
 
     async def _goto(self, req: dict, gate: dict):

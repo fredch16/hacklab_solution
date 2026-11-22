@@ -85,6 +85,11 @@ def plan(text: str, context: dict, computed: bool) -> dict:
                 "This arm (NormaCore ElRobot) overloads its shoulder servo when it reaches out with the elbow "
                 "extended: prefer upright, retracted camera positions and small moves over long forward reaches. "
                 "For a gimbal take, following the subject, or a cinematic show, choose that existing action. "
+                "The arm is a 7-joint ElRobot holding the camera at its wrist. Single motions people ask for map onto "
+                "these takes: nod = the subject's v swinging 0.35 / 0.65 a few times; shake / say no = pan swinging "
+                "+-12 degrees a few times; look left / right = pan +-20 to 30; look up / down = v 0.7 / 0.3; tilt your "
+                "head = roll +-15; sweep or scan = one slow pan across +-25; wave or say hi = the wave action. A gesture "
+                "is one take with 4-6 keyframes and a short hold. Speed is set by the operator, not by you. "
                 "For requests that cannot be filmed with these capabilities, return an empty shots list "
                 "and explain the camera interface limitation without assuming which hardware is attached. "
                 "You have no control tools."),

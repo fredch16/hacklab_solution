@@ -132,7 +132,8 @@ def part_a_claude():
     ask = lambda reply: (setattr(client, "next", reply), it.interpret("yo show me da top", VIEWS, "wide"))[1]
     assert ask(answer('{"action": "go_to_view", "view": "top"}')) == {"action": "go_to_view", "view": "top"}
     kw = client.calls[-1]
-    assert kw["model"] == vb.LLM_MODEL and kw["thinking"] == {"type": "disabled"}, kw
+    # Sonnet (the default now) keeps its thinking and gets room for it; only Haiku has thinking switched off
+    assert kw["model"] == vb.LLM_MODEL and kw.get("thinking", {}).get("type") != "disabled" and kw["max_tokens"] >= 4000, kw
     fmt = kw["output_config"]["format"]
     assert fmt["type"] == "json_schema" and fmt["schema"]["properties"]["view"]["enum"] == ["top", "wide", "home", "side_low", ""]
     assert fmt["schema"]["properties"]["action"]["enum"] == list(vb.ACTIONS)

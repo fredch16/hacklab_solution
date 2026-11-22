@@ -409,8 +409,11 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
                            preset: Optional[str] = None, brief: Optional[str] = None,
                            planner: Literal["local", "claude"] = "local", verify: bool = True,
                            yaw: int = Field(default=500, ge=25, le=500),
-                           roll: float = Field(default=0, ge=-18, le=18)) -> dict[str, Any]:
+                           roll: float = Field(default=0, ge=-18, le=18),
+                           speed: Optional[Literal["slow", "normal", "fast"]] = None) -> dict[str, Any]:
         body = {"kind": kind, "planner": planner, "verify": verify, "yaw": yaw, "roll": roll}
+        if speed is not None:
+            body["speed"] = speed           # this one motion only ("wave fast"); the next job is back to normal
         if preset is not None:
             body["preset"] = preset
         if brief is not None:

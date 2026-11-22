@@ -120,8 +120,24 @@ FILM_BRIEF_RE = re.compile(r"^(?:(?:please|hey claude|claude|can you|could you)[
                            r"(?:film a shot|plan a shot|director shot)\b[\s:,.–-]+(.+)$", re.IGNORECASE)
 
 
+SPEED_RE = re.compile(r"\b(?:(slow(?:ly)?|gentl[ey]|careful(?:ly)?)|(fast|quick(?:ly)?|rapid(?:ly)?|faster))\b")
+
+
+def speed_of(text: str) -> str | None:
+    """'wave fast' -> 'fast' for that one motion; the next command is back at its normal speed."""
+    m = SPEED_RE.search(normalize(text))
+    return None if not m else "slow" if m.group(1) else "fast"
+
+
 def director_plan(text: str, views: list[dict]) -> dict | None:
-    request = normalize(text).removeprefix("claude ").removeprefix("start the ")
+    plan = _director_plan(text, views)
+    if plan and plan["tool"] == "director_job" and (speed := speed_of(text)):
+        plan["args"]["speed"] = speed
+    return plan
+
+
+def _director_plan(text: str, views: list[dict]) -> dict | None:
+    request = normalize(SPEED_RE.sub("", normalize(text))).removeprefix("claude ").removeprefix("start the ")
     if request in ("director status", "camera director status"):
         return {"tool": "director_status", "args": {}}
     if request in ("motor status", "motor telemetry", "telemetry"):
@@ -174,8 +190,8 @@ def _goto(view: dict) -> dict:
 
 
 # ---------- Claude step: for transcripts the grammar could not place ----------
-LLM_MODEL = "claude-haiku-5-5"       # one short classification per request; speed matters more than depth
-LLM_TIMEOUT_S = 6.0
+LLM_MODEL = "claude-sonnet-5-5"      # understands free phrasing of arm motions (owner: Sonnet or Opus, not Haiku)
+LLM_TIMEOUT_S = 15.0   # Sonnet thinks before it answers
 RECORD_ACTIONS = {
     "start_phone_recording": ("phone", "start"), "stop_phone_recording": ("phone", "stop"),
     "start_robot_recording": ("robot", "start"), "stop_robot_recording": ("robot", "stop"),
@@ -328,6 +344,8 @@ def plan_from_answer(answer: dict | None, views: list[dict], text: str = "") -> 
         if RECORD_NEGATION.search(normalize(text)) or STOP_RE.match(normalize(text)):
             return None
         args = {"kind": "watch"} if answer["action"] == "director_watch" else {"kind": "film", "brief": text.strip()}
+        if speed := speed_of(text):
+            args["speed"] = speed
         return {"tool": "director_job", "args": args}
     if answer["action"] != "go_to_view":
         return {"tool": answer["action"], "args": {}}

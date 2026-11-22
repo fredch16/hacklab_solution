@@ -1256,7 +1256,13 @@ def make_handler(state: State):
                 if self.path == "/api/frame":  # preview only, never moves; see State.frame_preview
                     status, body = state.frame_preview(req)
                     return self._json(body, status)
-                if self.path == "/api/goto":
+                if self.path == "/api/goto" and req.get("recover") is not True and state.director is not None \
+                        and state.director.trail and state.director.where().get("where") == "unknown":
+                    # a take (follow, gimbal) left the arm off every view: the director drives back along its path
+                    status, body, _ = state.director.http("POST", "job", {"kind": "goto", "view": str(req.get("view", ""))})
+                    self._json({**body, "started": body.get("ok", False), "view": req.get("view"),
+                                "via": "back along the last take's path"}, status)
+                elif self.path == "/api/goto":
                     self._json(state.call(state.start_move(str(req.get("view", "")), req.get("speed") or DEFAULT_SPEED,
                                                            recover=req.get("recover") is True, gen=gen,
                                                            click=self._click(req))))

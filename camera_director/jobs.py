@@ -628,7 +628,7 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal, "show": self._show, "film": self._film}
+                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto}
         if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
@@ -637,7 +637,7 @@ class Director:
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind not in ("tour", "return", "snap") and self.ref is None:
+        if kind not in ("tour", "return", "snap", "goto") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -1595,6 +1595,21 @@ class Director:
         self.step(f"snapping back onto {name} ({gap} steps)")
         await self.move_path(self._bridge(now, {m: views[name][m] for m in motion.MOVABLE}, step=100), f"snap to {name}")
         self.job["result"] = {"view": name, "gap_steps": gap}
+
+    async def _goto(self, req: dict, gate: dict):
+        """A view move from where a take left the arm (off every view): back along the take's path, then on."""
+        view = req.get("view")
+        if view not in motion.load_views():
+            raise Hold(f"unknown view {view!r}")
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "reposition"
+        await self.ensure_view()
+        if self.where().get("view") != view:
+            self.step(f"going to {view}")
+            if not await self.move(view):
+                raise Hold(f"the route to {view} was refused")
+        self.job["result"] = {"view": view}
 
     async def _return_job(self, req: dict, gate: dict):
         if not gate["moves"] or not gate.get("computed"):

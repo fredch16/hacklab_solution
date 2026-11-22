@@ -531,6 +531,23 @@ class SimDirector(unittest.TestCase):
         st = self.run_job({"kind": "gimbal", "yaw": 300}, timeout=300)
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
 
+    def test_9k2_a_plain_view_move_after_a_take_goes_back_along_its_path(self):
+        self.goto("top")
+        top = {m: motion.load_views()["top"][m] for m in motion.MOVABLE}
+        trail = [top, {**top, 1: top[1] - 130, 2: top[2] - 60}, {**top, 1: top[1] - 260, 2: top[2] - 120}]
+        self.state.call(self.state.start_path(trail[1:], "free take"))
+        wait(lambda: not self.state.moving, what="free take")
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("where"), "unknown")
+        self.state.director.trail = trail
+        gen = http(self.base, "/api/state")[1]["generation"]
+        status, body = http(self.base, "/api/goto", {"view": "wide", "generation": gen})   # what voice and MCP send
+        self.assertEqual((status, body.get("via")), (200, "back along the last take's path"), body)
+        wait(lambda: self.get()["job"]["status"] != "RUNNING", timeout=180, what="goto job")
+        self.assertEqual(self.get()["job"]["status"], "DONE", self.get()["job"])
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("view"), "wide")
+
     def test_9l_gimbal_skips_a_view_whose_approach_strains_the_shoulder(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

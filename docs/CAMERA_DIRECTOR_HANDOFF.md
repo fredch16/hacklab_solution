@@ -13,6 +13,12 @@
 - Physical sequence remains owner-operated. Run the director, motion and MCP simulator suites before each run. First run Self-calibrate and inspect `rms_after`, then move and reselect the target and verify localization with a prediction-only survey. Only then try one short free arc while monitoring motor 2. The existing approval still has `computed_paths: false`.
 - The updated capture and MCP services are running. Station, the voice bridge and laptop gateway kept running through the reload. The arm stayed at `wide`, and Auto-find restored the selected sticker.
 
+## Tracker, wake word, transit routes (`04d210d`, `ee0bbab`)
+
+- **Tracker.** OpenCV `TrackerVit` (`director_data/models/vittrack.onnx` from opencv_zoo object_tracking_vittrack_2023sep; git-ignored, so copy it onto a new machine) is started from the drawn box (`vision.target_init`). It runs every 0.25 s, also while the arm moves (`vision.track`). Below score 0.5, SIFT searches over a bank of up to 5 references, and a new reference is added when the object's size changes more than 1.6×. On the real clip it kept 122/149 frames against SIFT's 94, at 4 ms against 130 ms. Simulator tests pass. **Not yet verified on the real arm moving closer and further.** The target is in memory: redraw it after an arm server restart.
+- **Wake word** (phone `WakeDetector.kt`): `keywordsThreshold` lowered from 0.17/0.25 to 0.08/0.12 (phone/BPE model) and `keywordsScore` raised from 2.0/1.5 to 3.0/2.5. The owner prefers false wakes to missed ones. The app is installed. The owner has not tested it yet.
+- **Transit between views.** `motion_log.jsonl` shows that since `close` was checked (22 Nov 06:12), every move through transit started or ended at `home`, which is `"direct": false` by design (folded pose; the model has no self-collision check). The other checked pairs plan straight or as an arc at any gripper opening. `side_low` still goes through transit until it is checked.
+
 ## Previous handoff
 
 Branch **`beta/ai-camera-director`**, created from `main` at `8d06da1` (main untouched, nothing pushed). 20 commits, newest first in `git log --oneline main..HEAD`. One agent did all the work, no subagents. The owner was present for every real-arm move and gave full permission to test.

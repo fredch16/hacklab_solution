@@ -382,6 +382,8 @@ class RealArmGate(unittest.TestCase):
               "camera_queue": J.GRIPPER_CAMERA, "lines": ["top-wide"], "max_fraction": 0.12}
         g = self.director(ok).gate()
         self.assertEqual((g["mode"], g["moves"], g["lines"], g["max_fraction"]), ("PHYSICAL", True, ["top-wide"], 0.12))
+        self.assertFalse(g["computed"])                                    # computed poses need their own opt-in
+        self.assertTrue(self.director({**ok, "computed_paths": True}).gate()["computed"])
         for change in ({"camera_queue": "usbvideo/other"}, {"bus": "X"}, {"physical_motion": False}, {"approved_by": ""}):
             self.assertFalse(self.director({**ok, **change}).gate()["moves"], change)
 

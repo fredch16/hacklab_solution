@@ -108,7 +108,7 @@ class Director:
         self.samples: list = []              # frames scored during the last sampled move
         self.looks = 0                       # frames examined during the last sampled move (hits are in samples)
         self.reach: dict | None = None       # orbit.reach_map for the current localization
-        self.trail: list = []                # poses driven by the last scene, for "return"
+        self.trail: list = self._load_trail()   # poses driven by the last scene, for "return" (survives a restart)
         self.thumbs: dict[str, bytes] = {}
         self.events: deque = deque(maxlen=60)
         state.loop.call_soon_threadsafe(lambda: setattr(self, "_task", asyncio.ensure_future(self._run())))
@@ -188,7 +188,8 @@ class Director:
 
     def gate(self) -> dict:
         if self.state.sim:
-            return {"mode": "SIMULATED", "moves": True, "reasons": [], "lines": None, "max_fraction": motion.ALONG_MAX}
+            return {"mode": "SIMULATED", "moves": True, "reasons": [], "lines": None, "max_fraction": motion.ALONG_MAX,
+                    "computed": True}
         reasons, approval = [], {}
         try:
             approval = json.loads(self.safety_path.read_text())
@@ -211,7 +212,10 @@ class Director:
         lines = approval.get("lines") if isinstance(approval.get("lines"), list) else []
         frac = min(float(approval.get("max_fraction") or 0.0), motion.ALONG_MAX) if approval else 0.0
         return {"mode": "DRY RUN" if reasons else "PHYSICAL", "moves": not reasons, "reasons": reasons,
-                "lines": sorted(lines), "max_fraction": frac}
+                "lines": sorted(lines), "max_fraction": frac,
+                # moves to computed poses (scene, return): a separate opt-in; on the real arm the shoulder servo's
+                # overload protection tripped three times during them (22 Nov)
+                "computed": not reasons and approval.get("computed_paths") is True}
 
     # ------------------------------------------------------------ per-preset camera correction
 
@@ -982,6 +986,9 @@ class Director:
     async def _scene(self, req: dict, gate: dict):
         if not gate["moves"]:
             raise Hold("physical moves not approved")
+        if not gate.get("computed"):
+            raise Hold("moves to computed poses are not approved (computed_paths in director_safety.json): "
+                       "the shoulder servo's overload protection tripped during them on this arm")
         w = self.where()
         if w.get("where") not in ("view", "between"):
             raise Hold("start the scene from a saved view (or a stop on a checked line)")
@@ -1015,6 +1022,22 @@ class Director:
             self.step(f"back to {self._lifted_from}")
             await self.move(self._lifted_from)
 
+    def _trail_path(self) -> Path:
+        return self.data / "trail.json"
+
+    def _load_trail(self) -> list:
+        try:
+            return [{int(m): v for m, v in q.items()} for q in json.loads(self._trail_path().read_text())]
+        except (OSError, ValueError):
+            return []
+
+    def _save_trail(self, trail: list):
+        try:
+            self.data.mkdir(parents=True, exist_ok=True)
+            self._trail_path().write_text(json.dumps(trail))
+        except OSError:
+            pass
+
     async def _return(self, trail: list[dict]):
         """Retrace driven poses back to the start, beginning at the trail pose nearest to where the arm is."""
         now = self.state.arm.joints(max_age_s=motion.STALE_S)
@@ -1027,10 +1050,11 @@ class Director:
             self.step("returning to the start pose along the path it came")
             await self.move_path(back, "return")
         self.trail = []
+        self._save_trail([])
 
     async def _return_job(self, req: dict, gate: dict):
-        if not gate["moves"]:
-            raise Hold("physical moves not approved")
+        if not gate["moves"] or not gate.get("computed"):
+            raise Hold("moves to computed poses are not approved (computed_paths in director_safety.json)")
         if not self.trail:
             raise Hold("no scene path to retrace")
         await self._return(self.trail)
@@ -1057,6 +1081,7 @@ class Director:
                 trail[:] = [{m: now[m] for m in motion.MOVABLE}]
             self.step(f"move {i} of {len(moves)}: getting into position for {mv['name']}")
             approach = self._bridge(now, plan["poses"][0])
+            self._save_trail(trail + approach)        # saved before moving: a Stop midway still knows the way back
             await self.move_path(approach, f"approach {mv['name']}")
             trail.extend(approach)
             joints, t = await self.settle()
@@ -1072,6 +1097,7 @@ class Director:
             self.step(f"move {i} of {len(moves)}: {mv['name']}")
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
             path = self._bridge(now, plan["poses"][0]) + plan["poses"][1:]
+            self._save_trail(trail + path)
             await self.move_path(path, mv["name"], sample=True)
             trail.extend(path)
             await asyncio.sleep(1.0)            # a beat at the end of the move

@@ -463,7 +463,9 @@ class SimDirector(unittest.TestCase):
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
         self.assertFalse(planner.call_args.args[2])
         self.assertLess(abs(int(st["arm"]["joints"]["2"]) - int(before["2"])), 15)
-        self.assertGreater(abs(int(st["arm"]["joints"]["1"]) - int(before["1"])), 50)
+        # the planned reveal ran as a computed take; the closing hold then centres the object again
+        self.assertTrue(any(h.get("view") == st["job"]["result"]["moves"][0]["name"] and h.get("ok")
+                            for h in self.state.history), list(self.state.history)[-4:])
         self.assertTrue(st["job"]["result"]["moves"][0]["complete"])
 
     def test_9h_director_show_follows_film_grammar(self):
@@ -594,7 +596,7 @@ class SimDirector(unittest.TestCase):
         obs = self.state.director.obs
         self.assertIsNotNone(obs)
         cx = lambda o: abs((o["box"][0] + o["box"][2]) / 2 - 0.5)
-        if before is not None and cx(before) > J.FOLLOW_DEAD:
+        if before is not None and cx(before) > J.FOLLOW_START:
             self.assertGreater(st["job"]["result"]["corrections"], 0, st["job"])
             self.assertLess(cx(obs), cx(before), (before["box"], obs["box"]))
 

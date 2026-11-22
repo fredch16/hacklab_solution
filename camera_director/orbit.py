@@ -524,7 +524,8 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
     lim[1] = (max(lo, view[1] - FOLLOW_YAW_MAX), min(hi, view[1] + FOLLOW_YAW_MAX))
     q, err = aim({**now, motion.GRIPPER: grip}, ranges, point, aspect=aspect, bias=bias, joints=FOLLOW_JOINTS,
                  limits=lim, pitch_ref=view[4])
-    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) for m in motion.MOVABLE}
+    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in FOLLOW_JOINTS
+            else view[m] for m in motion.MOVABLE}    # shoulder and elbow exactly at the view: never a sagged reading
     goal = motion.clamp_pose(goal, env)
     problem = motion.path_problem([view, now, goal], ranges, env, grip)
     if problem is not None:

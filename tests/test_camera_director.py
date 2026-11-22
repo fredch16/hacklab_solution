@@ -572,6 +572,8 @@ class SimDirector(unittest.TestCase):
         after = self.state.arm.joints()
         for m in (2, 3):                                         # shoulder and elbow never move
             self.assertLessEqual(abs(after[m] - top[m]), 15, (m, after[m], top[m]))
+        for pose in self.state.director.trail:                   # every commanded pose holds them at the view
+            self.assertEqual((pose[2], pose[3]), (top[2], top[3]), pose)
         obs = self.state.director.obs
         self.assertIsNotNone(obs)
         cx = lambda o: abs((o["box"][0] + o["box"][2]) / 2 - 0.5)

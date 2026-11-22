@@ -82,6 +82,7 @@ class TooHeavy(Hold):
     """A computed move stopped on the shoulder-load guard (motion.LoadGuardError): lock at the last safe pose."""
 
 
+GRIPPER_ZONE = ((0.25, 0.80), 0.62)   # follow: the jaws fill the bottom middle of the gripper camera picture
 FOLLOW_DEAD = 0.08        # follow: the object's centre may be this far from the picture's centre before turning
 SNAP_MAX = 200            # steps: "snap" brings the arm onto a saved view only from this close
 
@@ -1791,6 +1792,7 @@ class Director:
         bias = predict.bias_for({"where": "view", "view": view}, self.calibration)
         ranges = self.state.arm.ranges()
         self.trail = [vpose]                  # the way back for the next take (ensure_view retraces it)
+        commanded = dict(vpose)
         self._save_trail(self.trail)
         end, corrections, since = time.monotonic() + float(req.get("seconds", 300)), 0, -1
         self.job["phase"] = "cinematic"
@@ -1801,16 +1803,22 @@ class Director:
                 f, obs = self.frame(), self.obs
                 if obs is None or f is None or obs["frame_id"] <= since or f[0] - obs["frame_id"] > 8:
                     continue                  # not seen (or not since the last correction): hold still
+                if obs.get("method") == "vit" and obs["confidence"] < V.VIT_MIN:
+                    continue                  # a weak box may have slid onto something else: never steer by it
                 b = obs["box"]
                 centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+                if centre[1] > GRIPPER_ZONE[1] and GRIPPER_ZONE[0][0] < centre[0] < GRIPPER_ZONE[0][1]:
+                    continue                  # on the jaws: they move with the camera, chasing them only tilts down
                 if abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD:
                     continue
-                now = (await self._joints())
+                # from the last commanded pose, not the measured one (that sags under load, step after step)
+                now = {**commanded, motion.GRIPPER: (await self._joints())[motion.GRIPPER]}
                 step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect())
                 if not step["ok"]:
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
                     continue
                 await self.move_path([step["pose"]], "follow")
+                commanded = dict(step["pose"])
                 self.trail.append(step["pose"])
                 since = (self.frame() or (obs["frame_id"],))[0]
                 corrections += 1

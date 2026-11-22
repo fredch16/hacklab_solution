@@ -592,6 +592,31 @@ class SimDirector(unittest.TestCase):
         self.assertLessEqual(max(abs(after[m] - before[m]) for m in motion.MOVABLE), 5)
 
 
+class FollowDistance(unittest.TestCase):
+    """Follow keeps the distance: bigger in the picture (closer) -> the camera backs off, smaller -> it comes in."""
+
+    def test_dolly_restores_the_distance(self):
+        from camera_director import orbit
+        raw = motion._read_views_file()
+        ranges = {int(k): tuple(r) for k, r in raw["transit"]["ranges"].items()}
+        top = {int(k): v for k, v in raw["top"]["joints"].items()}
+        view = {m: top[m] for m in motion.MOVABLE}
+        now = {**view, motion.GRIPPER: 1279}
+        depth0 = orbit.follow_depth(now, ranges, (0.5, 0.5))
+        self.assertIsNotNone(depth0)
+        cam0 = np.array(framing.camera_pose(now, ranges)[0])
+        point = cam0 + np.array(framing.ray(0.5, 0.5, framing.camera_pose(now, ranges), 16 / 9)) * depth0
+        for ratio, farther in ((1.4, True), (0.7, False)):
+            step = orbit.follow_step(view, now, ranges, (0.5, 0.5), depth0=depth0, size_ratio=ratio)
+            self.assertTrue(step["ok"] and step["dolly"], step)
+            # the object is where the picture says (depth0 / ratio away); the camera moves to restore depth0
+            seen = cam0 + (point - cam0) / ratio
+            cam = np.array(framing.camera_pose({**step["pose"], motion.GRIPPER: 1279}, ranges)[0])
+            self.assertEqual(np.linalg.norm(cam - seen) > np.linalg.norm(cam0 - seen), farther, (ratio, cam0, cam))
+        same = orbit.follow_step(view, now, ranges, (0.5, 0.5), depth0=depth0, size_ratio=1.05)
+        self.assertFalse(same["dolly"])                           # inside the dead band: turn only
+
+
 class RealArmGate(unittest.TestCase):
     """The gate on a real (non-sim) arm: no approval file -> DRY RUN, and an approval must match."""
 

@@ -1781,9 +1781,10 @@ class Director:
         return best
 
     async def _follow(self, req: dict, gate: dict):
-        """Follow the object (Keep in frame): from a saved view, base yaw and the wrist keep turning the camera onto
-        the tracked object in small checked steps (shoulder and elbow parked, like a gimbal take) until STOP or
-        `seconds`. When the object is not seen the arm holds still: it never searches."""
+        """Follow the object (Keep in frame): from a saved view the camera keeps the tracked object centred (base yaw
+        and wrist) and at the distance it had at the start (a short dolly along the line of sight when its size in
+        the picture changes), in small checked steps until STOP or `seconds`. When the object is not seen the arm
+        holds still: it never searches."""
         if not gate["moves"]:
             raise Hold("physical moves not approved")
         self.job["phase"] = "reposition"
@@ -1795,6 +1796,7 @@ class Director:
         ranges = self.state.arm.ranges()
         self.trail = [vpose]                  # the way back for the next take (ensure_view retraces it)
         commanded = dict(vpose)
+        size0 = depth0 = None
         self._save_trail(self.trail)
         end, corrections, since = time.monotonic() + float(req.get("seconds", 300)), 0, -1
         self.job["phase"] = "cinematic"
@@ -1809,11 +1811,19 @@ class Director:
                     continue                  # a weak box may have slid onto something else: never steer by it
                 b = obs["box"]
                 centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-                if abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD:
+                size = (b[2] - b[0] + b[3] - b[1]) / 2
+                if size0 is None:             # the distance to keep: as it is now (the object on the table)
+                    size0 = size
+                    depth0 = await self.vision(orbit.follow_depth, {**commanded, motion.GRIPPER: 1279}, ranges, centre,
+                                               bias, self._aspect())
+                ratio = size / size0
+                if (abs(centre[0] - 0.5) < FOLLOW_DEAD and abs(centre[1] - 0.5) < FOLLOW_DEAD
+                        and abs(ratio - 1) <= orbit.FOLLOW_DIST_DEAD):
                     continue
                 # from the last commanded pose, not the measured one (that sags under load, step after step)
                 now = {**commanded, motion.GRIPPER: (await self._joints())[motion.GRIPPER]}
-                step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect())
+                step = await self.vision(orbit.follow_step, vpose, now, ranges, centre, bias, self._aspect(),
+                                         depth0, ratio)
                 if not step["ok"]:
                     self.step(f"following (cannot turn further: {step['reason'][:80]})")
                     continue

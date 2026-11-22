@@ -506,28 +506,62 @@ FOLLOW_YAW_MAX = 600              # steps of base yaw the camera may turn away f
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
-def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 / 9) -> dict:
-    """One follow correction: turn the camera (base yaw + wrist) toward the object seen at image `centre` (u, v),
-    the shoulder and elbow parked at the view. Checked like a gimbal take: relative to the taught view."""
+FOLLOW_DIST_DEAD = 0.12          # keep the distance: re-dolly when the object's size is off by more than this
+FOLLOW_DOLLY_MAX = 500           # steps the shoulder and elbow may move away from the view while following
+
+
+def follow_depth(now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 / 9) -> float | None:
+    """Distance (m) from the camera to the object seen at `centre`, taking it to lie on the table (at the start)."""
+    ranges = {int(m): tuple(r) for m, r in ranges.items()}
+    pose = framing.camera_pose({int(m): int(v) for m, v in now.items()}, ranges)
+    d = framing.ray(centre[0] - bias[0], centre[1] - bias[1], pose, aspect)
+    return None if d[2] > -0.1 else float((framing.TABLE_Z - pose[0][2]) / d[2])
+
+
+def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: float = 16 / 9,
+                depth0: float | None = None, size_ratio: float = 1.0) -> dict:
+    """One follow correction from the commanded pose `now`: turn the camera (base yaw + wrist) toward the object at
+    image `centre` (u, v) and, when its size in the picture is off by more than FOLLOW_DIST_DEAD (`size_ratio` =
+    size now / size at the start), dolly along the line of sight back to the starting distance `depth0`.
+    Checked like a gimbal take: relative to the taught view, camera above MIN_CAMERA_HEIGHT_M."""
     ranges = {int(m): tuple(r) for m, r in ranges.items()}
     env, limits = motion.envelope(ranges), _limits(ranges)
     grip = int(now.get(motion.GRIPPER, 1279))
     now = {m: int(now[m]) for m in motion.MOVABLE}
     view = {m: int(view[m]) for m in motion.MOVABLE}
     pose = framing.camera_pose({**now, motion.GRIPPER: grip}, ranges)
-    d = framing.ray(centre[0] - bias[0], centre[1] - bias[1], pose, aspect)   # bias = real minus model
-    if d[2] > -0.1:
-        return {"ok": False, "reason": "the object does not lie on the table from here"}
-    point = np.array(pose[0]) + np.array(d) * (framing.TABLE_Z - pose[0][2]) / d[2]
+    d = np.array(framing.ray(centre[0] - bias[0], centre[1] - bias[1], pose, aspect))   # bias = real minus model
+    if depth0:
+        depth = depth0 / max(0.5, min(2.0, size_ratio))        # bigger in the picture = closer
+        point = np.array(pose[0]) + d * depth
+    else:
+        if d[2] > -0.1:
+            return {"ok": False, "reason": "the object does not lie on the table from here"}
+        depth = (framing.TABLE_Z - pose[0][2]) / d[2]
+        point = np.array(pose[0]) + d * depth
     lim = dict(limits)
-    lo, hi = lim[1]
-    lim[1] = (max(lo, view[1] - FOLLOW_YAW_MAX), min(hi, view[1] + FOLLOW_YAW_MAX))
-    q, err = aim({**now, motion.GRIPPER: grip}, ranges, point, aspect=aspect, bias=bias, joints=FOLLOW_JOINTS,
-                 limits=lim, pitch_ref=view[4])
-    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in FOLLOW_JOINTS
-            else view[m] for m in motion.MOVABLE}    # shoulder and elbow exactly at the view: never a sagged reading
+    lim[1] = (max(lim[1][0], view[1] - FOLLOW_YAW_MAX), min(lim[1][1], view[1] + FOLLOW_YAW_MAX))
+    if depth0 and abs(size_ratio - 1.0) > FOLLOW_DIST_DEAD:
+        for m in (2, 3):                                     # the dolly stays near the taught view
+            lim[m] = (max(lim[m][0], view[m] - FOLLOW_DOLLY_MAX), min(lim[m][1], view[m] + FOLLOW_DOLLY_MAX))
+        cam = point - d * depth0
+        cam[2] = max(cam[2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M)
+        axis = (point - cam) / np.linalg.norm(point - cam)
+        right = np.array(pose[2]) - axis * float(np.dot(pose[2], axis))
+        q, _, _ = framing.solve_pose({**now, motion.GRIPPER: grip}, tuple(cam), tuple(axis),
+                                     tuple(right / np.linalg.norm(right)), ranges, limits=lim)
+        joints, err = motion.MOVABLE, 0.0
+    else:                                                     # turn only: shoulder and elbow stay as commanded
+        q, err = aim({**now, motion.GRIPPER: grip}, ranges, point, aspect=aspect, bias=bias, joints=FOLLOW_JOINTS,
+                     limits=lim, pitch_ref=view[4])
+        joints = FOLLOW_JOINTS
+    goal = {m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX)) if m in joints else now[m]
+            for m in motion.MOVABLE}
     goal = motion.clamp_pose(goal, env)
+    if framing.camera_pose({**goal, motion.GRIPPER: grip}, ranges)[0][2] < min(
+            pose[0][2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M):           # never lower than now, below the minimum
+        return {"ok": False, "reason": "that would bring the camera too close to the table"}
     problem = motion.path_problem([view, now, goal], ranges, env, grip)
     if problem is not None:
         return {"ok": False, "reason": problem}
-    return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1)}
+    return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1), "dolly": joints is motion.MOVABLE}

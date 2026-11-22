@@ -69,5 +69,256 @@ class DirectorDisabled(unittest.TestCase):
             httpd.shutdown()
 
 
+# ------------------------------------------------------------------ vision (synthetic images only)
+
+import cv2
+import numpy as np
+from camera_director import vision as V
+
+
+def tag_image(text=("HACK", "LAB"), angle=0.0, scale=1.0, at=(320, 240), seed=1):
+    rng = np.random.default_rng(seed)
+    img = np.clip(140 + rng.normal(0, 12, (480, 640)), 0, 255).astype(np.uint8)
+    for _ in range(25):
+        cv2.line(img, tuple(int(v) for v in rng.integers(0, 640, 2)), tuple(int(v) for v in rng.integers(0, 480, 2)), 30, 3)
+    side = 120
+    tag = np.full((side, side), 245, np.uint8)
+    cv2.putText(tag, text[0], (12, 52), cv2.FONT_HERSHEY_DUPLEX, 1.2, 40, 2)
+    cv2.putText(tag, text[1], (28, 98), cv2.FONT_HERSHEY_DUPLEX, 1.2, 40, 2)
+    m = cv2.getRotationMatrix2D((side / 2, side / 2), angle, scale)
+    m[:, 2] += (at[0] - side / 2, at[1] - side / 2)
+    mask = cv2.warpAffine(np.full_like(tag, 255), m, (640, 480))
+    warped = cv2.warpAffine(tag, m, (640, 480))
+    img[mask > 0] = warped[mask > 0]
+    return img
+
+
+REF_BOX = [(320 - 60) / 640, (240 - 60) / 480, (320 + 60) / 640, (240 + 60) / 480]
+
+
+class Vision(unittest.TestCase):
+    def setUp(self):
+        self.ref = V.Reference.from_frame(tag_image(), REF_BOX, "tag", "manual")
+
+    def test_finds_the_reference_moved_rotated_and_scaled(self):
+        hit = V.detect(self.ref, tag_image(angle=30, scale=1.4, at=(420, 200), seed=2))
+        self.assertIsNotNone(hit)
+        cx, cy = (hit["box"][0] + hit["box"][2]) / 2, (hit["box"][1] + hit["box"][3]) / 2
+        self.assertAlmostEqual(cx, 420 / 640, delta=0.02)
+        self.assertAlmostEqual(cy, 200 / 480, delta=0.02)
+        self.assertEqual(hit["method"], "features")
+
+    def test_rejects_absent_target_and_a_similar_looking_label(self):
+        self.assertIsNone(V.detect(self.ref, tag_image(text=("", ""), seed=3)))
+        self.assertIsNone(V.detect(self.ref, tag_image(text=("MAKE", "BAR"), seed=4)))
+
+    def test_flat_crop_matches_nothing(self):
+        flat = V.Reference(np.full((40, 40), 200, np.uint8), "flat", "manual")
+        self.assertIsNone(V.detect(flat, tag_image(seed=5)))
+
+    def test_score_needs_the_target_in_enough_settled_frames(self):
+        g = tag_image()
+        hit = V.detect(self.ref, g)
+        bad = V.score_view([hit, None, None, None, hit], [g] * 5)
+        self.assertFalse(bad["valid"])
+        self.assertIsNone(bad["score"])
+        good = V.score_view([hit] * 5, [g] * 5)
+        self.assertTrue(good["valid"])
+        self.assertTrue(0 < good["score"] <= 1)
+        off = V.score_view([V.detect(self.ref, tag_image(at=(560, 400)))] * 5, [tag_image(at=(560, 400))] * 5)
+        self.assertLess(off["score"], good["score"])      # off-centre, near the edge: worse
+
+    def test_tracker_reports_lost_after_misses(self):
+        tr = V.Tracker(self.ref)
+        self.assertEqual(tr.status(), "SEARCHING")
+        self.assertIsNotNone(tr.update(tag_image(), 1, 0.0))
+        self.assertEqual(tr.status(), "TRACKING")
+        blank = tag_image(text=("", ""))
+        for i in range(V.LOST_AFTER):
+            self.assertIsNone(tr.update(blank, 2 + i, 0.0))
+        self.assertEqual(tr.status(), "TARGET_LOST")
+
+
+# ------------------------------------------------------------------ director on the simulated arm
+
+import tempfile
+import camera_director.jobs as J
+
+
+def white_box(jpeg: bytes):
+    g = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
+    _, m = cv2.threshold(g, 235, 255, cv2.THRESH_BINARY)
+    cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    x, y, w, h = cv2.boundingRect(max(cs, key=cv2.contourArea))
+    return [x / g.shape[1], y / g.shape[0], (x + w) / g.shape[1], (y + h) / g.shape[0]]
+
+
+class SimDirector(unittest.TestCase):
+    """One server for the class; tests run in name order and share the arm."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.state, cls.httpd, cls.base = start_server(director=True)
+        cls.state.director.data = Path(tempfile.mkdtemp())
+        wait(lambda: http(cls.base, "/api/director/state")[1]["camera"]["frame_id"], what="frames")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def get(self):
+        return http(self.base, "/api/director/state")[1]
+
+    def goto(self, view):
+        gen = http(self.base, "/api/state")[1]["generation"]
+        status, body = http(self.base, "/api/goto", {"view": view, "generation": gen})
+        self.assertEqual(status, 200, body)
+        wait(lambda: not self.state.moving, what="move")
+        self.assertTrue(self.state.move_outcome["ok"], self.state.move_outcome)
+        time.sleep(1.2)
+
+    def run_job(self, body, timeout=240):
+        status, out = http(self.base, "/api/director/job", body)
+        self.assertEqual(status, 200, out)
+        wait(lambda: self.get()["job"]["status"] != "RUNNING", timeout=timeout, what=f"{body} job")
+        return self.get()
+
+    def test_1_selection_validates_box_and_frame(self):
+        st = self.get()
+        self.assertEqual(st["gate"]["mode"], "SIMULATED")
+        self.assertTrue(st["camera"]["live"])
+        self.assertEqual(http(self.base, "/api/director/autofind", {})[1]["error"], "no_reference")
+        status, body = http(self.base, "/api/director/job", {"kind": "survey"})
+        self.assertEqual(status, 409)                                     # no target yet
+        fid = st["camera"]["frame_id"]
+        for box, code in [([0.5, 0.5, 0.4, 0.6], 400), ([0, 0, 1.2, 1], 400), ("x", 400), ([0.5, 0.5, 0.505, 0.505], 400)]:
+            self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": box})[0], code, box)
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": -5, "box": [0.1, 0.1, 0.5, 0.5]})[0], 409)
+        self.assertEqual(http(self.base, "/api/director/frame.jpg?id=-5")[0], 404)
+
+    def test_2_sticker_crop_then_autofind_and_tracking(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        status, body = http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg), "as_sticker": True})
+        self.assertEqual(status, 200, body)
+        wait(lambda: (self.get()["target"] or {}).get("status") == "TRACKING", timeout=10, what="tracking")
+        self.assertTrue(self.get()["sticker_reference"])
+        self.assertEqual(http(self.base, "/api/director/clear", {})[0], 200)
+        status, body = http(self.base, "/api/director/autofind", {})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.get()["target"]["kind"], "sticker")
+        self.assertGreater(self.get()["target"]["observation"]["confidence"], 0.5)
+
+    def test_3_autofind_where_the_sticker_is_not_visible(self):
+        self.goto("left")
+        status, body = http(self.base, "/api/director/autofind", {})
+        self.assertEqual((status, body["error"]), (404, "not_found"))
+        wait(lambda: self.get()["target"]["status"] == "TARGET_LOST", timeout=10, what="target lost")
+
+    def test_4_survey_reports_every_preset_honestly(self):
+        st = self.run_job({"kind": "survey"})
+        job, cat = st["job"], {p["preset"]: p for p in st["catalogue"]}
+        self.assertEqual(job["status"], "DONE", job)
+        self.assertEqual(set(cat), set(motion.view_names()))
+        for p in ("close", "side_low"):
+            self.assertEqual(cat[p]["status"], "BLOCKED")
+        self.assertEqual(cat["left"]["status"], "SKIPPED")
+        self.assertIsNone(cat["left"]["best"])
+        self.assertIn(cat["top"]["status"], ("VALID", "UNVERIFIED"))
+        valid = [p for p in cat.values() if p["status"] == "VALID"]
+        self.assertGreaterEqual(len(valid), 2)
+        for p in valid:
+            self.assertGreaterEqual(p["best"]["score"], p["baseline"]["score"])
+            self.assertEqual(set(p["best"]["measured_joints"]), {str(m) for m in range(1, 9)})
+            self.assertEqual(http(self.base, f"/api/director/thumb/{p['best']['thumb']}.jpg")[0], 200)
+            for c in p["candidates"]:
+                self.assertLessEqual(c["s"], motion.ALONG_MAX)
+                self.assertIn(c["route"], ("direct", "arc"))
+        self.assertEqual(st["arm"]["where"], {"where": "view", "view": job["result"]["best"]}
+                         if not cat[job["result"]["best"]]["best"]["toward"] else st["arm"]["where"])
+
+    def test_5_recall_rechecks_the_saved_view(self):
+        best = self.get()["job"]["result"]["best"]
+        self.goto("wide" if best != "wide" else "top")
+        st = self.run_job({"kind": "recall", "preset": best})
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertTrue(st["job"]["result"]["verified"])
+
+    def test_6_cinematic_visits_the_verified_shots(self):
+        st = self.run_job({"kind": "cinematic"})
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        shots = st["job"]["result"]["shots"]
+        self.assertEqual([s["preset"] for s in shots], [s["preset"] for s in st["job"]["result"]["storyboard"]])
+        self.assertGreaterEqual(len(shots), 2)
+
+    def test_7_stop_preempts_a_running_survey_and_later_moves_are_refused(self):
+        status, _ = http(self.base, "/api/director/job", {"kind": "survey"})
+        self.assertEqual(status, 200)
+        wait(lambda: self.state.moving, timeout=20, what="a director move")
+        status, body = http(self.base, "/api/stop", {})
+        self.assertEqual(status, 200, body)
+        self.assertIn(body["hold"], ("confirmed", "limp"))
+        job = self.get()["job"]
+        self.assertEqual((job["status"], job["reason"]), ("STOPPED", "STOP pressed"))
+        time.sleep(1.0)
+        self.assertFalse(self.state.moving)
+
+    def test_8_manual_command_takes_over_from_the_director(self):
+        self.goto("top")
+        status, _ = http(self.base, "/api/director/job", {"kind": "survey", "presets": ["top", "wide"]})
+        self.assertEqual(status, 200)
+        wait(lambda: self.state.moving, timeout=20, what="a director move")
+        gen = http(self.base, "/api/state")[1]["generation"]
+        http(self.base, "/api/goto", {"view": "wide", "generation": gen})   # a person clicks a view
+        wait(lambda: self.get()["job"]["status"] != "RUNNING", timeout=10, what="job end")
+        self.assertEqual(self.get()["job"]["reason"], "manual control took over")
+        wait(lambda: not self.state.moving and not self.state.stopping, timeout=10, what="arm idle")
+
+    def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
+        self.goto("top")
+        http(self.base, "/api/director/autofind", {})
+        before = self.state.arm.joints()
+        st = self.run_job({"kind": "center"}, timeout=30)
+        self.assertEqual(st["job"]["status"], "DRY_RUN", st["job"])
+        self.assertIn("center_error", st["job"]["result"])
+        after = self.state.arm.joints()
+        self.assertLessEqual(max(abs(after[m] - before[m]) for m in motion.MOVABLE), 5)
+
+
+class RealArmGate(unittest.TestCase):
+    """The gate on a real (non-sim) arm: no approval file -> DRY RUN, and an approval must match."""
+
+    def director(self, approval):
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        arm = type("Arm", (), {"bus_serial": "5B79016329"})()
+        state = type("S", (), {"sim": False, "loop": loop, "arm": arm, "cam_queue": J.GRIPPER_CAMERA, "gen": 0, "cams": {}})()
+        path = Path(tempfile.mkdtemp()) / "director_safety.json"
+        if approval is not None:
+            path.write_text(json.dumps(approval))
+        return J.Director(state, data_dir=Path(tempfile.mkdtemp()), safety_path=path)
+
+    def test_no_approval_means_dry_run(self):
+        g = self.director(None).gate()
+        self.assertEqual((g["mode"], g["moves"]), ("DRY RUN", False))
+        self.assertIn("director_safety.json", g["reasons"][0])
+
+    def test_approval_must_name_this_camera_and_arm(self):
+        ok = {"physical_motion": True, "approved_by": "owner", "approved_at": "2026-11-23", "bus": "5B79016329",
+              "camera_queue": J.GRIPPER_CAMERA, "lines": ["top-wide"], "max_fraction": 0.12}
+        g = self.director(ok).gate()
+        self.assertEqual((g["mode"], g["moves"], g["lines"], g["max_fraction"]), ("PHYSICAL", True, ["top-wide"], 0.12))
+        for change in ({"camera_queue": "usbvideo/other"}, {"bus": "X"}, {"physical_motion": False}, {"approved_by": ""}):
+            self.assertFalse(self.director({**ok, **change}).gate()["moves"], change)
+
+    def test_physical_candidates_only_on_approved_lines(self):
+        d = self.director(None)
+        gate = {"lines": ["top-wide"], "max_fraction": 0.12}
+        cands = d.candidates("top", gate)
+        self.assertTrue(all(c["line"] == "top-wide" and c["s"] <= 0.12 for c in cands), cands)
+        self.assertEqual(d.candidates("close", gate), [])
+
+
 if __name__ == "__main__":
     unittest.main()

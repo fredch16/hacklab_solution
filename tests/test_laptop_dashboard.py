@@ -186,6 +186,35 @@ class DashboardIntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await r.json(), {"state": "approved"})
         self.assertEqual(dashboard.phone_cookies["lvc_session"], "approved")
 
+    async def test_director_calls_are_relayed_to_the_arm_server_only(self):
+        seen = []
+
+        async def director(request):
+            seen.append((request.method, request.match_info["path"], request.query_string,
+                         await request.json() if request.method == "POST" else None))
+            if request.match_info["path"] == "frame.jpg":
+                return web.Response(body=b"\xff\xd8jpeg", content_type="image/jpeg")
+            return web.json_response({"ok": True}, status=201)
+
+        arm = web.Application()
+        arm.router.add_route("*", "/api/director/{path:.*}", director)
+        base = await self.dashboard(await self.serve(arm))
+        async with self.client.get(base + "/laptop/director/state") as response:
+            self.assertEqual((response.status, await response.json()), (201, {"ok": True}))
+        async with self.client.get(base + "/laptop/director/frame.jpg?id=7") as response:
+            self.assertEqual((response.content_type, await response.read()), ("image/jpeg", b"\xff\xd8jpeg"))
+        async with self.client.post(base + "/laptop/director/select", headers={"Origin": base},
+                                    json={"frame_id": 7, "box": [0, 0, 1, 1]}) as response:
+            self.assertEqual(response.status, 201)
+        for bad in ["../stop", "state%2F..%2F..%2Fapi%2Fstop", "STATE", "a/b/c/d"]:
+            async with self.client.get(base + "/laptop/director/" + bad) as response:
+                self.assertEqual(response.status, 404, bad)
+        async with self.client.post(base + "/laptop/director/select", headers={"Origin": "http://evil.example"},
+                                    json={}) as response:
+            self.assertEqual(response.status, 403)
+        self.assertEqual(seen, [("GET", "state", "", None), ("GET", "frame.jpg", "id=7", None),
+                                ("POST", "select", "", {"frame_id": 7, "box": [0, 0, 1, 1]})])
+
     async def test_robot_closes_and_finalizes_valid_clip_when_view_socket_closes(self):
         jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x48",
                                "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],

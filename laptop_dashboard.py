@@ -451,6 +451,25 @@ class Dashboard:
     async def arm_voice(self, request):
         return await self.local_post(self.bridge + "/api/v1/voice-command", request)
 
+    async def director(self, request):
+        """Camera director on the arm server (capture_server.py --director): state, frames, jobs."""
+        path = request.match_info["path"]
+        if not re.fullmatch(r"[a-z]+(?:/[a-z0-9_]+){0,2}(?:\.jpg)?", path):
+            raise web.HTTPNotFound()
+        url = f"{self.arm}/api/director/{path}" + (f"?{request.query_string}" if request.query_string else "")
+        try:
+            if request.method == "POST":
+                call = self.http.post(url, json=await request.json(), allow_redirects=False, timeout=ClientTimeout(total=25))
+            else:
+                call = self.http.get(url, allow_redirects=False, timeout=ClientTimeout(total=5))
+            async with call as response:
+                return web.Response(status=response.status, body=await response.read(),
+                                    content_type=response.content_type, headers={"Cache-Control": "no-store"})
+        except (ClientError, TimeoutError):
+            return web.json_response({"ok": False, "error": "ARM_UNREACHABLE"}, status=502)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "INVALID_JSON"}, status=400)
+
     async def claude_settings(self, request):
         raise web.HTTPFound(self.bridge + "/#claude-settings")
 
@@ -490,6 +509,7 @@ def create_app(dashboard):
         web.get("/laptop/clips/{name}", dashboard.download), web.post("/laptop/recording", dashboard.recording),
         web.post("/laptop/arm/stop", dashboard.arm_stop), web.post("/laptop/arm/voice", dashboard.arm_voice),
         web.get("/laptop/claude-settings", dashboard.claude_settings),
+        web.get("/laptop/director/{path:.+}", dashboard.director), web.post("/laptop/director/{path:.+}", dashboard.director),
         web.get("/", dashboard.assets), web.get("/{name}", dashboard.assets),
     ])
     return app

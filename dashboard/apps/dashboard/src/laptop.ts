@@ -1,4 +1,5 @@
 import { armResult, type VoiceCommandResult } from "./voice.js";
+import { directorPanel } from "./director.js";
 
 export const laptop = document.documentElement.dataset.host === "laptop";
 const tab = laptop ? crypto.randomUUID().replaceAll("-", "") : "";
@@ -157,5 +158,8 @@ export function robotCard(): HTMLElement {
     if (viewing() && !ws) connect();
     void poll();
   }, 1000);
+  // Camera director (capture_server.py --director). Its cinematic take uses this card's own robot recorder.
+  directorPanel(card, frame, image, () => laptopRecord("robot", "start").then(poll), () => laptopRecord("robot", "stop").then(poll),
+    () => !!robot?.recording);
   return card;
 }

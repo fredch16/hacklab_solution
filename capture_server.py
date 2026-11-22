@@ -1114,7 +1114,7 @@ def make_handler(state: State):
                     answer = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 self._json(answer, 200 if answer.get("ok") or path != "/api/pose" or answer.get("available") else 404)
             elif path.startswith("/api/director/"):
-                self._director("GET", path, {})
+                self._director("GET", self.path, {})   # with the query: frame.jpg?id=N
             elif path == "/stream":
                 self._stream()
             elif path == "/api/still.jpg":
@@ -1140,7 +1140,8 @@ def make_handler(state: State):
                 self.send_error(404)
 
         def _stream(self):
-            if not state.cams:  # --sim, or Station has no camera: one still picture instead of a stream
+            sim_frames = state.sim and state.director is not None   # --sim --director: the rendered SIMULATED camera
+            if not state.cams and not sim_frames:  # --sim, or Station has no camera: one still picture instead of a stream
                 return self._send(NO_CAMERA_SVG, "image/svg+xml")
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -1149,8 +1150,12 @@ def make_handler(state: State):
             last = None
             try:
                 while True:
-                    cam = state.cams.get(state.cam_queue)
-                    jpeg = cam.jpeg if cam else None
+                    if sim_frames:
+                        f = state.director.frame()
+                        jpeg = f[2] if f else None
+                    else:
+                        cam = state.cams.get(state.cam_queue)
+                        jpeg = cam.jpeg if cam else None
                     if jpeg and jpeg is not last:
                         last = jpeg
                         self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "

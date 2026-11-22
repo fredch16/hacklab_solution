@@ -71,6 +71,8 @@ Write it only after watching each listed line run on the real arm with the desk 
 
 Mark the subject, keep the camera card visible, and enter a brief such as “Ease left, move the subject from the right edge to the upper third, and hold.” Use **Film with Claude**. The same entry point is exposed as MCP `director_job(kind="film", brief="…")`. The existing named view controls remain available for exact preset moves.
 
+Claude receives the currently available views and jobs. It can reuse a checked preset, hold, watch, verified cinematic sequence, or Director Show when that fits the request. Custom takes aim from at least 45° above the subject and run through the desk-clearance and shoulder guards.
+
 The planner receives the brief, target label, normalized box and numeric camera context. Frames and servo commands stay local. With computed paths disabled, the shoulder and elbow stay parked and the shot can pan, roll or reframe. With computed paths approved, the shot may also change elevation and distance. The arm holds at the end for the next instruction. An unavailable camera path or sustained loss of the target ends the take and reports the reason.
 
 The design applies SayCan's split between language intent and physically feasible motion, and ReKep's use of visual constraints as inputs to local planning. The ElRobot continues to use its existing motion owner, model checks, telemetry and STOP path. [SayCan](https://arxiv.org/abs/2204.01691) · [ReKep](https://arxiv.org/abs/2409.01652) · [MoveIt Servo guard design](https://moveit.picknik.ai/humble/doc/examples/realtime_servo/realtime_servo_tutorial.html)

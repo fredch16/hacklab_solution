@@ -2,6 +2,10 @@
 
 ## Latest continuation
 
+- The first supervised calibration run latched motor 2. The owner cleared it and recovered to transit. The revised calibration used eight sightings on the approved `top`–`wide` line and reduced image RMS from 0.0457 to 0.0134. The monitor stopped the automatic return on load and confirmed the hold 16% from `top` toward `wide`, with no fault. The code now ends physical calibration at the final checked view.
+- The moved-sticker validation gave the wrong estimated direction within its uncertainty. The candidate fit was set aside and the previous calibration was restored. Keep computed paths off until calibration passes an independent moved-subject check. The revised calibration refuses transit, aborts on failed motion and applies the shoulder load guard. [Randomized test and physical fault record](evidence/camera-director-2026-11-22.md#randomized-claude-briefs-and-supervised-hardware-acceptance)
+- Claude now prefers a matching checked view or existing director action. Tests with the live API verified reuse of `wide`, `top` and a stationary hold as well as a custom 7° pan. MCP exposes all eight motors' live readings and guarded camera jobs. [MCP guide](MCP.md)
+
 - **Film with Claude** accepts a free-form brief in the laptop dashboard and as `director_job(kind="film", brief="…")`. Its measured scene context and local IK allow new pan, composition and roll paths with the heavy joints parked. The separate computed-path opt-in permits changes in elevation and distance. Physical validation is pending.
 - **Keep in view** pauses recording when the target is persistently obscured, attempts at most one checked cut per obstruction, and resumes after a clear observation streak. A clear fallback stays in use. With computed paths approved it can evaluate a new angle locally when a suitable preset is unavailable.
 - The shoulder guard now ends jobs at the confirmed HOLD. Scene, Show and filmed takes no longer automatically proceed after the guard fires. Small-object tracking tries a 2× region near the last position. [New test and hardware preflight evidence](evidence/camera-director-2026-11-22.md#agentic-filming-continuation)

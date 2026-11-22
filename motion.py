@@ -618,7 +618,7 @@ class LoadGuardError(MotionError):
     """A computed path stopped because a joint's load stayed near the servo's own overload threshold."""
 
 
-_trip_guard: dict = {}             # active only while go_through runs (one move at a time: _move_lock)
+_trip_guard: dict = {}             # active during guarded moves (one move at a time: _move_lock)
 
 
 def plan_along(present: dict[int, int], view: str, toward: str, s: float, views: dict, links) -> list:
@@ -1552,7 +1552,8 @@ async def describe(arm, name: str | None = None, allow_unknown_start: bool = Fal
 
 
 async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
-                     allow_unknown_start: bool = False, along: tuple[str, float] | None = None) -> dict:
+                     allow_unknown_start: bool = False, along: tuple[str, float] | None = None,
+                     load_guard: bool = False, direct_only: bool = False) -> dict:
     """Move to a saved view. The interface everyone codes against:
     {"ok", "view", "error", "duration", "route", "kind", "hold"}.
     `kind`: "direct" (one straight move of all joints), "arc" (the same, lifted) or "hub"; None if refused.
@@ -1579,14 +1580,14 @@ async def go_to_view(arm, name: str, max_speed: float = SPEED_SLOW,
             lock_file.close()
             return {**refused, "error": "another program is moving the arm"}
     try:
-        return await _go_to_view(arm, name, max_speed, allow_unknown_start, along)
+        return await _go_to_view(arm, name, max_speed, allow_unknown_start, along, load_guard, direct_only)
     finally:
         if lock_file:
             lock_file.close()
 
 
 async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: bool,
-                      along: tuple[str, float] | None = None) -> dict:
+                      along: tuple[str, float] | None, load_guard: bool, direct_only: bool) -> dict:
     async with _move_lock:
         t0 = time.time()
         stats = {"max_lag": {}, "max_current": {}, "max_load": {}}
@@ -1625,7 +1626,11 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             else:
                 route = plan_route(present, name, views, allow_unknown_start=allow_unknown_start, links=links,
                                    direct=not allow_unknown_start)
+            if direct_only and any(seg not in PATH_SEGMENTS for seg, _ in route):
+                raise MotionError("the move requires transit and would leave the checked camera line")
             await _fresh_again(arm)
+            if load_guard:
+                _trip_guard.update(PATH_TRIP_GUARD)
             result["route"] = [seg for seg, _ in route]
             result["kind"] = _kind(result["route"])
             status.update(route=result["route"], kind=result["kind"], phase_count=len(route))
@@ -1678,6 +1683,7 @@ async def _go_to_view(arm, name: str, max_speed: float, allow_unknown_start: boo
             logger.exception("move to %s failed", name)
             await abort(f"unexpected error: {e!r}")
         finally:
+            _trip_guard.clear()
             result["duration"] = round(result["duration"], 2)
             status.update(moving=False, phase=None, error=result["error"], hold=result["hold"],
                           last_result=dict(result),

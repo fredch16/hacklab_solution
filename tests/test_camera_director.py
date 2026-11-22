@@ -407,6 +407,20 @@ class SimDirector(unittest.TestCase):
         self.state.director.calibration.pop("model", None)  # leave the model uncalibrated for later tests
         framing.CAMERA_CAL = None
 
+    def test_9y_filming_brief_reuses_a_checked_named_view(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})[0], 200)
+        decision = {"action": "view:wide", "hold": 2, "shots": [], "reason": "An establishing view already exists."}
+        with patch.object(J.brief, "plan", return_value=decision) as planner:
+            st = self.run_job({"kind": "film", "brief": "Give me the existing wide shot."})
+        self.assertIn("view:wide", planner.call_args.args[1]["actions"])
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertEqual(st["job"]["result"]["action"], "view:wide")
+        self.assertEqual(st["arm"]["where"]["view"], "wide")
+        self.assertNotEqual(self.state.move_outcome["kind"], "path")
+
     def test_9z_filming_brief_uses_the_measured_view_and_parks_the_shoulder(self):
         self.goto("top")
         fid = self.get()["camera"]["frame_id"]
@@ -438,6 +452,24 @@ class SimDirector(unittest.TestCase):
         self.assertTrue(any(n.startswith("arc around the object") for n in names), names)
         self.assertEqual(names[-1], "closing wide (wide)")
         wait(lambda: self.get()["arm"]["where"] == {"where": "view", "view": "wide"}, timeout=10, what="ends wide")
+
+    def test_9j_physical_calibration_stays_on_one_line_and_aborts_the_first_refusal(self):
+        self.goto("top")
+        fid = self.get()["camera"]["frame_id"]
+        jpeg = http(self.base, f"/api/director/frame.jpg?id={fid}")[1]
+        self.assertEqual(http(self.base, "/api/director/select", {"frame_id": fid, "box": white_box(jpeg)})[0], 200)
+        director = self.state.director
+        gate = {**director.gate(), "mode": "PHYSICAL", "lines": ["top-wide", "right-top"], "max_fraction": .32}
+        attempted = []
+        async def refuse(view, toward, fraction, key):
+            attempted.append((view, toward, fraction))
+            if toward:
+                raise J.Hold("test move refusal")
+            return {"valid": False}
+        with patch.object(director, "gate", return_value=gate), patch.object(director, "go_shot", side_effect=refuse):
+            st = self.run_job({"kind": "selfcal"}, timeout=15)
+        self.assertEqual(st["job"]["status"], "HOLD")
+        self.assertEqual(attempted, [("top", None, 0.0), ("top", "wide", .08)])
 
     def test_9i_scene_without_computed_moves_films_a_show(self):
         self.goto("top")
@@ -598,6 +630,12 @@ class ComputedPaths(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 plan["shots"][0]["keyframes"][1] = {**frame, field: value}
                 brief.validate(plan, brief.PARKED)
+
+    def test_director_plan_cannot_select_an_unavailable_preset(self):
+        from camera_director import brief
+        plan = {"action": "view:close", "hold": 3, "reason": "use close", "shots": []}
+        with self.assertRaises(ValueError):
+            brief.validate(plan, brief.PARKED, {"view:wide": "whole desk"})
 
     def test_occlusion_fallback_finds_parallax_from_the_current_pose(self):
         from camera_director import orbit

@@ -1,6 +1,6 @@
 # MCP server camera-arm
 
-`mcp_server.py` gives Claude the tools to point the camera. It moves nothing itself: every move goes through the web server `capture_server.py` (`POST /api/goto`), so the motion layer's routes and guards apply ([MOTION.md](MOTION.md)), and STOP on the `/control` page also stops a move Claude started. Claude can only pick saved views; there are no free joint or Cartesian moves. Moves return at once, `get_status` tells how they went. The scene (objects Claude has seen in camera images) is stored here in `scene.json`. Design: [ARCHITECTURE.md](ARCHITECTURE.md).
+`mcp_server.py` gives Claude access to saved views, camera-director jobs, camera context and live telemetry for all eight motors. The arm server owns execution and checks every route. Use `go_to_view` when a saved view satisfies the request, an existing director job when its behavior fits, or `director_job(kind="film", brief=...)` for a new camera move. STOP on the arm control page preempts all three. [Motion guide](MOTION.md) · [Camera director](CAMERA_DIRECTOR.md)
 
 For the mobile voice integration, see [the dashboard-side handoff](../dashboard/docs/ARCHITECTURE.md#dashboard-command-routing-and-mcp-handoff). The browser dashboard handles recording requests itself and forwards other spoken requests to `voice_bridge.py`, the dashboard-side command service, which is a Streamable HTTP client of this server (stop, go to a checked view, status, list views). It calls those four tools only, also when Claude interprets a loosely worded request.
 
@@ -15,7 +15,7 @@ uv sync                                   # or: python3 -m venv .venv && .venv/b
 ## Run
 
 ```bash
-python3 capture_server.py --bus 5B79016329               # 1. the web server, the one program that moves the arm
+python3 capture_server.py --bus 5B79016329 --director    # 1. arm server with the camera director
 .venv/bin/python mcp_server.py                           # 2. MCP on http://127.0.0.1:8200/mcp
 claude mcp add --transport http camera-arm http://127.0.0.1:8200/mcp    # 3. once, in Claude Code
 ```
@@ -23,7 +23,7 @@ claude mcp add --transport http camera-arm http://127.0.0.1:8200/mcp    # 3. onc
 Without hardware:
 
 ```bash
-python3 capture_server.py --sim --port 8891
+python3 capture_server.py --sim --director --port 8891
 .venv/bin/python mcp_server.py --arm-url http://127.0.0.1:8891
 ```
 
@@ -44,6 +44,9 @@ The MCP server reads the view names from the web server at start; restart it aft
 | `list_views()` | saved views and where the camera is | `{views: [{name, description, aliases, checked, shows}], current_view, moving, can_move, blockers}` |
 | `go_to_view(view)` | starts a move; `view` is an enum of the saved views (not `transit`) | at once: `{started, view, speed, first_run_speed, eta_hint, hint}`; `started: false` if already there |
 | `get_status()` | how the current or last move is going | `{moving, target_view, phase, route, progress, current_view, can_move, blockers, stopping, hold, error, last_result: {ok, view, error, duration, route}}` |
+| `get_arm_telemetry()` | Reads motor 1–8 positions, goals, load, current, temperature, voltage and faults | Calibrated encoder ranges for all motors, guarded motion envelope for the seven camera arm joints, modelled geometry, live feed state and blockers |
+| `director_status()` | Reads the current target and camera-director job | Marked box, localization, shot scores, gate, current step and failure reason |
+| `director_job(kind, …)` | Starts a guarded job for the marked object | Job ID and mode. Read `director_status` for progress and `stop` to halt |
 | `stop()` | halts and holds, any time (`POST /api/stop`) | `{ok, hold: confirmed\|unconfirmed, was_moving, view, error}` |
 | `get_camera_image()` | current still, only while not moving (`GET /api/still.jpg`) | JPEG image + `{"still", "view", "image_size", "taken_at"}` |
 | `get_scene()` | recorded objects | `{objects: [{id, label, description, seen: [{view, camera, bbox, visible, at, age_s}]}], count}` |
@@ -53,6 +56,8 @@ The MCP server reads the view names from the web server at start; restart it aft
 | `preview_frame(object_id, framing="fill", margin=0.1)` | **preview only**: where the camera would go to frame the object ([FRAMING.md](FRAMING.md)) | `{ok, table_point_m, camera_distance_now_m, camera_distance_m, joint_travel, min_height_m, notes}` or a refusal |
 
 Resources: `camera-arm://guide` (operating guide for Claude: moving, images, scene, choosing views), `camera-arm://scene` (the scene as JSON).
+
+`director_job` accepts `survey` (`verify=false` to predict in place), `recall` (verified `preset`), `cinematic`, `tour`, `watch`, `show`, `gimbal` (bounded `yaw` in encoder steps and `roll` in degrees), `scene` (optional `planner="claude"`), `return`, `snap`, `selfcal`, `center` (preview), and `film` (natural-language `brief`). Computed free-camera moves require the separate local opt-in. Motor telemetry is read-only. Joint targets remain under the local motion controller.
 
 How a move is started: `go_to_view` reads `/api/state` and sends its `generation` with `POST /api/goto`, exactly like a click on the control page, so a move requested before a STOP can never start after it. Refusals from the web server come back as tool errors with its readable text, e.g. `{"status": 409, "error": "refused", "detail": "moving to top: press STOP first"}`. Codes: `busy` (checked before asking the server), `refused` (409), `not_found`, `invalid_request`, `unavailable` (503, e.g. no camera), `timeout`, `arm_server_unreachable`.
 

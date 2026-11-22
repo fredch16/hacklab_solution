@@ -75,12 +75,15 @@ async def main():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert set(tools) == {"list_views", "go_to_view", "get_status", "stop", "get_camera_image",
                               "get_scene", "update_scene", "remove_scene_object", "best_view",
-                              "preview_frame", "record_camera", "director_job", "director_status"}, set(tools)
+                              "preview_frame", "record_camera", "director_job", "director_status", "get_arm_telemetry"}, set(tools)
         schema = json.dumps(tools["go_to_view"].input_schema)
         assert "enum" in schema and all(n in schema for n in names) and "transit" not in names, schema
         print("ok  11 tools; go_to_view only accepts the saved views:", names)
 
         st = await wait_where(client)
+        telemetry = data(await client.call_tool("get_arm_telemetry", {}))
+        assert [m["id"] for m in telemetry["motors"]["joints"]] == list(range(1, 9)), telemetry
+        assert len(telemetry["motors"]["calibrated_ranges"]) == 8 and telemetry["geometry"]["ok"], telemetry
         start_view = st["current_view"]
         lv = data(await client.call_tool("list_views", {}))
         assert [v["name"] for v in lv["views"]] == names and lv["current_view"] == start_view

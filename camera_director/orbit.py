@@ -22,6 +22,12 @@ POS_TOL = 0.015     # m: a solved camera position must be this close to the aske
 AXIS_TOL = 4.0      # deg: and its viewing direction this close
 STEP_DEG = 10.0     # azimuth between solved poses
 MAX_JUMP = 250      # steps: neighbouring poses further apart get a pose solved half-way between
+MIN_FILM_ELEV = 45.0
+
+
+def viewing_elevation(point, pose):
+    x, y, z = np.asarray(pose[0]) - point
+    return math.degrees(math.atan2(z, math.hypot(x, y)))
 
 
 def camera_goal(point, theta: float, elev: float, dist: float, bias=(0.0, 0.0), aspect: float = 16 / 9,
@@ -243,7 +249,8 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
         grip = start.get(motion.GRIPPER, 1279)
         best = None
         for de, dd in ADJUST:
-            frames = [{**k, "elev": min(80.0, k["elev"] + de), "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
+            frames = [{**k, "elev": max(MIN_FILM_ELEV, min(80.0, k["elev"] + de)),
+                       "dist": min(0.3, k["dist"] + dd)} for k in keyframes]
             plan = plan_path(point, start, ranges, frames, bias, aspect, seeds)
             if not plan["ok"]:
                 first_reason = first_reason or plan["reason"]
@@ -262,6 +269,10 @@ def plan_shot(point, starts: list[dict], ranges, keyframes: list[dict], bias=(0.
                 if not plan["complete"] or any(not b["visible"] or b["components"]["edge_clearance"] < 0.35 for b in boxes):
                     first_reason = first_reason or "the requested move does not keep the whole object in frame"
                     continue
+            if any(viewing_elevation(point, framing.camera_pose({**q, motion.GRIPPER: grip}, ranges)) < MIN_FILM_ELEV
+                   for q in plan["poses"]):
+                first_reason = first_reason or "the planned viewing angle is too low"
+                continue
             reach = max(shoulder_reach(q, ranges, grip) for q in (approach if target is not None else []) + plan["poses"])
             if limit is not None and reach > limit:
                 first_reason = first_reason or (f"the arm would reach {reach * 100:.0f} cm from the shoulder, further than "
@@ -361,6 +372,7 @@ def composed_take(point, start: dict, ranges, keyframes: list[dict], bias, aspec
         pose = framing.camera_pose(q, ranges)
         uv = framing.project(point, pose, aspect)
         if (err > GIMBAL_AIM_TOL or uv is None
+                or viewing_elevation(point, pose) < MIN_FILM_ELEV
                 or any(not m <= p + b <= 1 - m for p, b, m in zip(uv, bias, margins))
                 or abs(float(np.dot(pose[2], roll_axis)) - math.sin(math.radians(s["roll"]))) > 0.08):
             return {"ok": False, "reason": "the wrist cannot deliver the requested composition within the frame"}
@@ -460,7 +472,8 @@ def gimbal_shot(point, start: dict, ranges, yaw: int = 500, roll: float = 0.0, b
         # relative to the taught view the take starts from (the motion layer's own rule for taught poses: the
         # model's absolute heights are 2-3 cm off, comparing a part with itself at a taught pose cancels that)
         problem = motion.path_problem([view] + [q for _, q in seq], ranges, env, grip)
-        if problem is None:
+        if problem is None and all(viewing_elevation(point, framing.camera_pose({**q, motion.GRIPPER: grip}, ranges))
+                                   >= MIN_FILM_ELEV for _, q in seq):
             break
         seq = seq[1:] if abs(seq[0][0]) >= abs(seq[-1][0]) else seq[:-1]    # trim the wider end
     else:

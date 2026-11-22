@@ -5,16 +5,15 @@
     .venv/bin/python mcp_server.py                 # then: MCP at http://127.0.0.1:8200/mcp (--arm-url for --sim)
     claude mcp add --transport http camera-arm http://127.0.0.1:8200/mcp
 
-The MCP server moves nothing itself: every move goes through the web server's /api/goto, so the
-motion layer's routes and guards apply, and STOP on the /control page also stops moves Claude
-started. Claude can only pick saved views (enum), never free joint or Cartesian targets.
-Moves return at once; get_status tells how they went.
+The arm server owns motion and STOP. MCP exposes saved views, guarded director jobs,
+and the live motor and camera data needed to choose between them.
 The scene (objects seen in the camera image) lives here, in scene.json.
 """
 
 import argparse
 import asyncio
 import base64
+import asyncio
 import json
 import logging
 import math
@@ -40,13 +39,14 @@ MAX_STILLS = 20   # image numbers remembered for update_scene / preview_frame
 
 GUIDE = """# camera-arm: operating guide for Claude
 
-A robot arm holds a camera above a desk where a person assembles and solders electronics.
-You choose where the camera looks. You cannot steer the arm freely: you pick one of the saved
-views (list_views), and the control service moves the arm there safely.
+A robot arm holds a camera above a desk. Use list_views and director_status to check the available
+shots and current target. Prefer an existing view or director job when it fits the operator's request.
+For a new camera move, pass the operator's brief to director_job(kind="film", brief=...).
+The local director plans camera-space motion and checks the route before execution.
 
 ## Moving
-- go_to_view(view) returns at once ("started"). It does not wait. Every move goes rise -> turn ->
-  descend through a safe transit pose. Views not yet checked on the real arm move at first-run speed
+- go_to_view(view) returns at once ("started"). The motion owner selects a checked glide, lift-over,
+  or transit route. Views not yet checked on the real arm move at first-run speed
   (30-60 s); checked views take several seconds.
 - To learn how it went, call get_status once after a while (use the "eta_hint"). moving=true means
   still on the way; otherwise current_view says where the camera is and last_result.ok whether the
@@ -57,6 +57,12 @@ views (list_views), and the control service moves the arm there safely.
 - stop() halts the arm where it is, at any time. Use it whenever the user says stop, wait, halt or
   similar, before anything else. A person can also press STOP on the /control page.
 - Never loop on moves or status. One call, then decide.
+- get_arm_telemetry reads all eight motors, including current and goal encoder steps, calibrated and
+  motion limits, load, temperature, voltage and fault status. It also reports camera geometry and blockers.
+- director_job exposes survey, recall, cinematic, tour, watch, show, gimbal, scene, film, center,
+  selfcal, snap and return. Use center for a dry-run framing preview. Scene and return require
+  computed-path approval for free-camera motion. Start selfcal only when the operator is ready and
+  the marked object can remain still through the calibration views.
 
 ## Recording video
 - record_camera(camera, action) starts or stops one recording on an explicit request.
@@ -84,9 +90,13 @@ offer the closest view instead of guessing.
 """
 
 INSTRUCTIONS = (
-    "You point a camera held by a robot arm. Pick saved views with go_to_view (returns at once; check "
-    "get_status later, moves take seconds up to a minute), stop() whenever the user says stop. get_camera_image shows the current "
-    "picture; record what you see with update_scene (bbox normalized 0..1). Read camera-arm://guide for the rules."
+    "You direct a camera held by a robot arm. Read list_views and director_status for available shots "
+    "and the marked target. Read get_arm_telemetry for all eight motors, camera geometry and blockers. "
+    "Prefer go_to_view or an existing director_job when it matches the request. Use director_job "
+    "with kind film and the user's brief when it calls for original motion. The local motion owner "
+    "checks and executes the camera move. An accepted command is asynchronous. Check get_status "
+    "or director_status for the outcome. Call stop immediately when the user asks to stop. "
+    "Read camera-arm://guide for capabilities and operating rules."
 )
 
 
@@ -351,6 +361,19 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
     async def get_status() -> dict[str, Any]:
         return status_from(await state())
 
+    @mcp.tool(description="Read the live state of all eight motors and the camera. Positions, goals and limits "
+                          "are encoder steps. Load is in tenths of a percent. Includes status bits, temperature, "
+                          "voltage, current, calibrated ranges, allowed motion envelope, modelled camera and arm "
+                          "geometry, telemetry freshness and movement blockers. This tool performs no movement.")
+    async def get_arm_telemetry() -> dict[str, Any]:
+        try:
+            st, motors, pose = await asyncio.gather(
+                state(), control.call("GET", "/api/telemetry"), control.call("GET", "/api/pose"))
+        except ControlError as e:
+            raise _tool_error(e)
+        return {"status": status_from(st), "freshness": st.get("data"), "camera": st.get("camera_state"),
+                "motors": motors, "geometry": pose}
+
     @mcp.tool(description="Stop the arm immediately and hold it where it is. Works at any time; use it first "
                           "whenever the user says stop, wait or halt.")
     async def stop() -> dict[str, Any]:
@@ -365,21 +388,31 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
         job = st.get("job") or {}
         return {"mode": (st.get("gate") or {}).get("mode"), "target": (st.get("target") or {}).get("label"),
                 "target_status": (st.get("target") or {}).get("status"),
+                "gate": st.get("gate"), "camera": st.get("camera"),
+                "observation": (st.get("target") or {}).get("observation"), "localization": st.get("localization"),
                 "job": {k: job.get(k) for k in ("id", "kind", "status", "phase", "step", "reason")} if job else None,
                 "views": [{"preset": c["preset"], "status": c["status"], "reason": c.get("reason"),
                            "score": (c.get("best") or {}).get("score"), "predicted": (c.get("predicted") or {}).get("score")}
                           for c in st.get("catalogue") or []]}
 
-    @mcp.tool(description="Camera director (local vision on the arm server): start one high-level job for the "
-                          "object the user marked in the dashboard. survey = localize it and verify the best view "
-                          "near every approved preset; cinematic = play the verified best views; tour = survey then "
-                          "cinematic; watch = keep it in view, cutting away when a hand covers it; recall = return "
-                          "to one preset's verified best view (give preset); film = plan and film a natural-language "
-                          "camera brief using Claude and checked local motion (give brief). Returns at once; poll director_status. "
-                          "Use stop to end any job.")
-    async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall", "film"],
-                           preset: Optional[str] = None, brief: Optional[str] = None) -> dict[str, Any]:
-        body = {"kind": kind, **({"preset": preset} if preset else {}), **({"brief": brief} if brief is not None else {})}
+    @mcp.tool(description="Start a guarded camera job for the marked object. Prefer the existing job when it fits. "
+                          "survey finds views (verify=false only predicts), recall rechecks a verified preset, "
+                          "cinematic plays verified shots, tour combines survey and cinematic, watch handles occlusion, "
+                          "show films a wide-to-close sequence, gimbal arcs with heavy joints parked, scene plans a free "
+                          "camera move when approved, film interprets a brief, center is a dry-run preview, selfcal fits "
+                          "the camera from a stationary target, snap returns to a nearby preset, and return retraces the "
+                          "last trail when computed paths are approved. Poll director_status. Call stop to halt.")
+    async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall", "film", "show", "gimbal",
+                                        "scene", "center", "selfcal", "snap", "return"],
+                           preset: Optional[str] = None, brief: Optional[str] = None,
+                           planner: Literal["local", "claude"] = "local", verify: bool = True,
+                           yaw: int = Field(default=500, ge=25, le=500),
+                           roll: float = Field(default=0, ge=-18, le=18)) -> dict[str, Any]:
+        body = {"kind": kind, "planner": planner, "verify": verify, "yaw": yaw, "roll": roll}
+        if preset is not None:
+            body["preset"] = preset
+        if brief is not None:
+            body["brief"] = brief
         try:
             r = await control.call("POST", "/api/director/job", body)
         except ControlError as e:

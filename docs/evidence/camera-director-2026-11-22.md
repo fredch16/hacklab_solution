@@ -69,3 +69,35 @@ Still to check: a tape-measured sticker position against 35 cm / 1 cm; verificat
 - The director suite passed all 41 tests, with socket and worker warnings during simulator cleanup. The final live hint wiring also passed the isolated tracking test and was verified on the stationary real feed. Motion simulator passed 129 checks, motion optimization 1,716, capture server simulator 1,543, framing 28, laptop gateway 7 and dashboard 34. MCP and voice bridge suites passed. The physical approval tests cover missing, empty and malformed files.
 - Reloaded capture and MCP after preflight. Joint readings were unchanged, the camera was live, and the same sticker was selected again. Live tracking reported the native 2× region with confidence **0.94 and 39 inliers**. The live MCP schema publishes the `film` job and its brief parameter.
 - Real self-calibration, a moved-subject localization check, live occlusion footage and a computed arc are pending owner-operated acceptance.
+
+## Randomized Claude briefs and supervised hardware acceptance
+
+The simulator used real Claude API responses, a synthetic marked label, and seed `20261122` for command order and angles. Each supported brief went through the same `film` job used by the dashboard.
+
+| Brief | Simulator result |
+|---|---|
+| Gentle 8° left pan, near-centred, five-second hold | Completed with 91 base encoder steps (8.0°). Final subject centre at (0.521, 0.500). |
+| Upper-right thirds with the base still | Completed with zero base motion. Final centre at (0.672, 0.329), within 0.6% of the frame width and height of the request. |
+| 6° counterclockwise roll, centred, base still | Completed with zero base motion and final centre at (0.499, 0.500). This test recorded the requested roll and joint travel. It did not measure image roll from the output frames. |
+| Right-edge reveal toward the upper middle | One take completed. Final centre at (0.500, 0.350). |
+| Very small movement with a five-second ending | Completed with 23 base encoder steps (2.0°) and the requested hold. |
+| Pick up and turn over the marked object | Refused without motor movement. The planner correctly rejected manipulation but incorrectly inferred that no gripper was attached. |
+| Short free arc near the overhead pose | HOLD. The IK checker rejected the first keyframe and the arm held its pose. Claude took 5.05 s, but the total job took about 143 s with the reach map. |
+
+The five completed custom takes kept the shoulder and elbow parked. The subject was detected in all ten sampled motion frames. This sample gives a visibility check and is too small to rate cinematic quality. API responses took 3.08–6.67 s for those takes.
+
+The reuse-first revision was tested with four more live Claude requests in the simulator. “Show the whole desk” used the saved `wide` view, “saved top view” reused `top`, and “keep this exact framing” held without joint movement. A 7° left pan combined with upper-left thirds correctly used custom keyframes and ended at (0.328, 0.328). All four jobs completed.
+
+### Real camera and arm
+
+- At `wide`, five idle telemetry samples showed fresh data, all status bits clear, motor 2 at load 60/1000, and a live 1280×720 gripper camera. A stationary prediction-only survey estimated the sticker at (0.0048, 0.2764, 0) m with 0.035 m estimated uncertainty. The motion history and joint readings were unchanged on the repeated check.
+- Claude generated a 6° left pan to centre, slight clockwise roll in place, and upper-left thirds from the real measured `wide` frame. The local path checker accepted all three. These plans were evaluated without commanding the arm.
+- A temporary laptop recorder session used the real Station feed. Closing its viewing socket finalized a downloadable 2.36 s Matroska clip with one 1280×720 MJPEG video stream. FFprobe verified the file. The arm's motion history was unchanged.
+- The supervised `selfcal` job `ca19e364` saw the target at `wide` and `top`. The move toward transit-only `home` timed out with an unconfirmed hold. The old calibration loop continued to `right`, where motor 2 latched `0x20`. Peak sampled load was 344/1000. The job ended in HOLD with two usable views and no new fit.
+- The owner cleared the latch. Motor 2 status returned to 0 and torque was confirmed holding. At that check the arm was at an unknown pose and the motion interlock refused attempts to continue. Computed paths stayed off.
+- The revision restricts real calibration to the checked `top`–`wide` line, refuses transit in calibration, and ends on the first refused or incomplete move. The director's preset moves now also run the timed shoulder-load guard. Custom filming and gimbal paths reject viewing angles below 45°.
+- The monitored Recover command toward `transit` reached 320/1000 shoulder load. STOP confirmed the hold before a latch. The owner then recovered to transit successfully. The subsequent guarded direct move to `wide` completed with peak load 84/1000 and no faults.
+- Revised physical `selfcal` job `1bab028c` used eight usable sightings out of ten on the approved `top`–`wide` line. Image RMS improved from 0.0457 to 0.0134. The independent load monitor stopped the automatic return at a peak of 284/1000. The confirmed hold was 16% of the way from `top` to `wide`, with no faults. The revision now ends calibration at its final checked view.
+- Moved-subject validation failed. At the same held arm pose the owner moved the sticker farther from the base. The model estimated its forward coordinate decreasing from 0.2158 to 0.2009 m, a 1.49 cm change in the opposite direction and within the 3.1 cm estimated uncertainty. The candidate fit was backed up outside Git and removed from the active calibration. The previous preset corrections and shoulder limit were preserved. Capture reloaded idle and reacquired the sticker. Computed paths stayed off.
+- The real `center` framing preview reported DRY RUN and left the motion history unchanged. On the reloaded stack, live MCP returned all eight motors, all eight calibrated ranges, modelled geometry and all thirteen director job names.
+- The updated director suite passed 44 tests, with a simulator socket cleanup warning. Motion simulator passed 131 checks, motion optimization 1,716, and MCP integration passed. The physical computed arc and automatic occlusion cut remain pending.

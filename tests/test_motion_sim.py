@@ -117,6 +117,14 @@ async def main():
     print(f"tour of 8 moves ok in {virtual_time.now() - t0:.1f}s; last route {r['route']}")
     check(8 not in arm.written_ids, "the gripper was never written")
     check(arm.joints()[8] == motion.load_views()["home"][8], "the gripper did not move")
+    restricted = SimArm()
+    r = await go_to_view(restricted, "top", direct_only=True)
+    check(not r["ok"] and "requires transit" in r["error"] and not restricted.written_ids,
+          "calibration refuses a transit route before writing to the motors")
+    restricted.load[2] = 265
+    r = await go_to_view(restricted, "top", load_guard=True)
+    check(not r["ok"] and "stayed above" in r["error"] and r["hold"] == "confirmed",
+          f"director preset move locks on high shoulder load: {r}")
     j = arm.joints()
     check(all(ENV[m][0] - 5 <= j[m] <= ENV[m][1] + 5 for m in MOVABLE), "home was clamped inside the envelope")
 

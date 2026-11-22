@@ -449,7 +449,8 @@ class Director:
         self._own_move, self.samples, self.looks = True, [], 0
         try:
             try:
-                await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along)
+                await self.state.start_move(view, MOVE_SPEED, gen=self.job_gen, along=along, load_guard=True,
+                                            direct_only=self.job["kind"] == "selfcal" and not self.state.sim)
             except asyncio.CancelledError:
                 raise
             except Exception as e:     # refused by the command owner (STOP since the job began, busy, no data)
@@ -1075,8 +1076,16 @@ class Director:
                               "elev": round(math.degrees(math.atan2(z, math.hypot(x, y))), 1),
                               "dist": round(math.sqrt(x*x + y*y + z*z), 3)}}
         computed = gate["computed"]
-        if computed:
-            context["reachable"] = (await self.ensure_reach())["ok"]
+        where = self.where()
+        actions = {"hold": "Record the current framing without moving",
+                   "watch": "Keep the object visible until STOP, cutting only on sustained occlusion"}
+        if where.get("where") in ("view", "between"):
+            actions.update({f"view:{v['name']}": v["description"] for v in self.state.snapshot()["guided"]
+                            if motion.view_checked(v["name"])})
+            actions["show"] = "Establish wide, push in to top, arc, pull out, and hold wide"
+            if self._shots({}):
+                actions["cinematic"] = "Play this object's verified shots using checked glides or cuts"
+        context.update(actions=actions, current_pose=where)
 
         async def ask():
             self.step("Claude is planning the shot")
@@ -1088,6 +1097,27 @@ class Director:
                 raise Hold(f"Claude planning failed ({type(e).__name__})") from e
 
         plan = await ask()
+        action = plan.get("action", "custom")
+        if action != "custom":
+            if action not in actions:
+                raise Hold("the selected camera command is unavailable")
+            summary = {"planner": "Claude", "plan_reason": plan["reason"][:400], "action": action}
+            try:
+                if action in ("watch", "show", "cinematic"):
+                    await {"watch": self._watch, "show": self._show, "cinematic": self._cinematic}[action](
+                        {"hold": plan["hold"]}, gate)
+                else:
+                    if action.startswith("view:"):
+                        self.job["phase"] = "reposition"
+                        view = action.removeprefix("view:")
+                        self.step(f"moving to the checked {view} view")
+                        await self.go_shot(view, None, 0, "film/checked-view")
+                    self.job["phase"] = "cinematic"
+                    if not await self._hold_shot(plan["hold"], action.removeprefix("view:")):
+                        raise Hold("marked subject left the shot")
+            finally:
+                self.job["result"] = {**(self.job["result"] or {}), **summary}
+            return
         if not plan["shots"]:
             raise Hold(plan["reason"][:400])
         self.job["result"] = {"planner": "Claude", "plan_reason": plan["reason"][:400], "moves": []}
@@ -1124,6 +1154,7 @@ class Director:
                 if i == 0 and retry:
                     retry = False
                     context["local_rejection"] = path["reason"]
+                    context["actions"] = {}
                     plan = await ask()
                     if not plan["shots"]:
                         raise Hold(plan["reason"][:400])
@@ -1333,14 +1364,21 @@ class Director:
             raise Hold("start self-calibration from a saved view")
         views = motion.load_views()
         plan = [(start_view, None, 0.0)]
-        for name in ("top", "wide", "home"):
-            if name in views and name != start_view and motion.view_checked(name):
-                plan.append((name, None, 0.0))
-        for line in (gate["lines"] or []) if gate["lines"] is not None else []:
-            a, b = line.split("-")
-            for s in (0.16, 0.32):
-                plan += [(a, b, s), (b, a, s)]
-        if gate["lines"] is None:            # simulator: every checked line
+        if gate["mode"] == "PHYSICAL":
+            if start_view not in ("top", "wide") or "top-wide" not in gate["lines"] or gate["max_fraction"] < 0.16:
+                raise Hold("start at top or wide with the top-wide line approved for calibration")
+            other = "wide" if start_view == "top" else "top"
+            if not all(n in views and motion.view_checked(n) for n in (start_view, other)):
+                raise Hold("self-calibration needs checked top and wide views")
+            end = min(0.32, gate["max_fraction"])
+            fractions = [round(end * i / 4, 4) for i in range(1, 5)]
+            plan += [(start_view, other, s) for s in fractions]
+            plan += [(other, start_view, s) for s in reversed(fractions)]
+            plan.append((other, None, 0.0))
+        else:                                # simulator: more viewing angles for fit validation
+            for name in ("top", "wide", "home"):
+                if name in views and name != start_view and motion.view_checked(name):
+                    plan.append((name, None, 0.0))
             for a, b in (("top", "wide"), ("right", "wide"), ("right", "top")):
                 for s in (0.16, 0.32):
                     plan += [(a, b, s), (b, a, s)]
@@ -1353,7 +1391,8 @@ class Director:
                 look = await self.go_shot(p, toward, s, "selfcal/last")
             except Hold as e:
                 skipped.append(f"{p}{'→' + toward if toward else ''}: {e}")
-                continue
+                self.job["result"] = {"ok": False, "views": len(obs), "skipped": skipped}
+                raise Hold(f"self-calibration stopped after {len(obs)} usable views: {e}") from e
             if look["valid"]:
                 c = ((look["box"][0] + look["box"][2]) / 2, (look["box"][1] + look["box"][3]) / 2)
                 obs.append(({int(m): v for m, v in look["measured_joints"].items()}, c))
@@ -1378,7 +1417,7 @@ class Director:
         self._calibration_path().write_text(json.dumps(self.calibration, indent=1))
         self.sightings, self.loc = [], None       # re-localize with the calibrated model
         self.note(f"self-calibrated from {fit['views']} views: image error {fit['rms_before']:.3f} -> {fit['rms_after']:.3f}")
-        if start_view:
+        if gate["mode"] != "PHYSICAL":
             self.step(f"back to {start_view}")
             await self.move(start_view)
 
@@ -1410,7 +1449,8 @@ class Director:
         for i, mv in enumerate(moves, 1):
             self.step(f"move {i} of {len(moves)}: planning {mv['name']}", shot_index=i, shot_count=len(moves))
             now = self.state.arm.joints(max_age_s=motion.STALE_S)
-            starts = [now] + ([transit] if len(trail) == 1 and self.where().get("where") == "view" else [])
+            can_lift = not filming and len(trail) == 1 and self.where().get("where") == "view"
+            starts = [now, transit] if can_lift else [now]
             plan = await self.vision(orbit.plan_shot, self.loc["point_m"], starts, self.state.arm.ranges(),
                                      mv["keyframes"], bias, self._aspect(), seeds,
                                      self.calibration.get("shoulder_reach_limit_m"), self.loc if filming else None)

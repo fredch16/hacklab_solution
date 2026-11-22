@@ -633,6 +633,7 @@ class State:
         """The per-joint table: position, goal error, load, current, temperature, voltage, holding or not."""
         try:
             tel = self.arm.telemetry()
+            ranges = self.arm.ranges() or {}
         except Exception as e:
             return {"ok": False, "error": str(e) or type(e).__name__, "joints": [], "warn_at": WARN_AT}
         rows = []
@@ -644,7 +645,12 @@ class State:
                          "current_a": round(t["current"] * 0.0065, 2) if t.get("current") is not None else None,
                          "temp": t.get("temp"), "voltage": t.get("voltage"), "holding": bool(t.get("torque")),
                          "status": t.get("status", 0), "read_error": t.get("read_error") or "", "warn": warn})
-        return {"ok": True, "t": time.time(), "joints": rows, "warn_at": WARN_AT}
+        try:
+            envelope, limit_error = motion.envelope(ranges), None
+        except motion.MotionError as e:
+            envelope, limit_error = None, str(e)
+        return {"ok": True, "t": time.time(), "joints": rows, "warn_at": WARN_AT,
+                "calibrated_ranges": ranges, "motion_envelope": envelope, "limit_error": limit_error}
 
     def pose(self) -> dict:
         """Points of the stick figure from the geometry model (fk.py): metres, z up, z = 0 is the desk."""
@@ -871,7 +877,8 @@ class State:
     # ---- moving ----
 
     async def start_move(self, view: str, speed: str, recover: bool = False, gen: int | None = None,
-                         click: int | None = None, along: tuple[str, float] | None = None) -> dict:
+                         click: int | None = None, along: tuple[str, float] | None = None,
+                         load_guard: bool = False, direct_only: bool = False) -> dict:
         """Start go_to_view as a task and return at once; progress, refusals and errors show up in state."""
         gen = self.gen if gen is None else gen
         if speed not in SPEEDS:
@@ -893,7 +900,8 @@ class State:
             self.move_view, self.move_outcome = view, None
             self.move_started, self.move_speed = time.time(), (speed, SPEEDS[speed])
             self._forget_where()
-            self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover, along))
+            self.move_task = asyncio.create_task(self._run_move(view, SPEEDS[speed], recover, along,
+                                                                load_guard=load_guard, direct_only=direct_only))
             self.move_task.add_done_callback(lambda _: self.refresh_where())
             return {"ok": True, "started": True, "view": view, "speed": speed, "recover": recover, "generation": gen}
         return await self.command(body, gen=gen, click=click)
@@ -919,13 +927,13 @@ class State:
         return await self.command(body, gen=gen)
 
     async def _run_move(self, view: str, max_speed: float, recover: bool, along: tuple[str, float] | None = None,
-                        path: list | None = None, load_guard: bool = True):
+                        path: list | None = None, load_guard: bool = True, direct_only: bool = False):
         try:
             if path is not None:
                 result = await motion.go_through(self.arm, path, max_speed=max_speed, label=view, load_guard=load_guard)
             else:
                 result = await motion.go_to_view(self.arm, view, max_speed=max_speed, allow_unknown_start=recover,
-                                                 along=along)
+                                                 along=along, load_guard=load_guard, direct_only=direct_only)
             self._finish({"view": view, **result})
             if result.get("hold") or result.get("ok"):  # a refusal commanded nothing and says nothing about holding
                 self.hold_state = result.get("hold") or "confirmed"

@@ -697,6 +697,24 @@ class FollowDistance(unittest.TestCase):
             uv = framing.project(tuple(target), framing.camera_pose({**step["pose"], motion.GRIPPER: 1279}, ranges), 16 / 9)
             self.assertLess(np.hypot(uv[0] - 0.5, uv[1] - 0.5), np.hypot(corner[0] - 0.5, corner[1] - 0.5) - 0.05, name)
 
+    def test_too_low_to_tilt_down_it_rises_and_turns_instead(self):
+        """At the left view the camera is below the 12 cm minimum: a marker low in the picture is framed by rising
+        while the wrist turns and rolls, never by lowering the camera."""
+        from camera_director import orbit
+        raw = motion._read_views_file()
+        ranges = {int(k): tuple(r) for k, r in raw["transit"]["ranges"].items()}
+        env = motion.envelope(ranges)
+        view = {m: int(raw["left"]["joints"][str(m)]) for m in motion.MOVABLE}
+        pose0 = framing.camera_pose({**motion.clamp_pose(view, env), motion.GRIPPER: 1279}, ranges)
+        low = (0.2, 0.7)
+        step = orbit.follow_step(view, {**view, motion.GRIPPER: 1279}, ranges, low)
+        self.assertTrue(step["ok"], step)
+        p1 = framing.camera_pose({**step["pose"], motion.GRIPPER: 1279}, ranges)
+        self.assertGreaterEqual(p1[0][2], pose0[0][2] - 0.002)                 # never lower
+        target = np.array(pose0[0]) + np.array(framing.ray(*low, pose0, 16 / 9)) * 0.35
+        uv = framing.project(tuple(target), p1, 16 / 9)
+        self.assertLess(np.hypot(uv[0] - 0.5, uv[1] - 0.5), 0.2)
+
     def test_3d_follow_moves_the_camera_with_the_object(self):
         from camera_director import orbit
         raw = motion._read_views_file()

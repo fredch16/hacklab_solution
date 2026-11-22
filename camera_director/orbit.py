@@ -508,6 +508,7 @@ FOLLOW_GAIN = 0.7                 # proportional gain below 1 (visual servoing):
 FOLLOW_STEP_MAX = 150             # steps any joint moves per correction (small, smooth corrections)
 
 
+FOLLOW_LIFT_M = 0.04             # m: how much the camera rises when it is too low to tilt down further
 FOLLOW_AIM_DIST = 0.35           # m: where to aim along a ray that does not meet the table
 FOLLOW_DIST_DEAD = 0.25          # keep the distance: re-dolly when it is off by more than this (box sizes jitter ~15 %)
 FOLLOW_DOLLY_MAX = 500           # steps the shoulder and elbow may move away from the view while following
@@ -591,4 +592,22 @@ def follow_step(view: dict, now: dict, ranges, centre, bias=(0.0, 0.0), aspect: 
         if problem is None:
             return {"ok": True, "pose": goal, "aim_error_deg": round(err, 1), "dolly": joints is motion.MOVABLE,
                     "share": share}
+    if problem and "too close to the table" in problem and not (joints is motion.MOVABLE):
+        # too low to tilt down any more (the left view): rise a little while the wrist turns and rolls onto the
+        # object; the whole arm solves for a camera FOLLOW_LIFT_M higher aimed at it
+        for m in (2, 3):
+            lim[m] = (max(lim[m][0], view[m] - FOLLOW_DOLLY_MAX), min(lim[m][1], view[m] + FOLLOW_DOLLY_MAX))
+        cam = np.array(pose[0]) + np.array([0.0, 0.0, FOLLOW_LIFT_M])
+        cam[2] = max(cam[2], framing.TABLE_Z + MIN_CAMERA_HEIGHT_M)
+        axis = (point - cam) / np.linalg.norm(point - cam)
+        right = np.array(pose[2]) - axis * float(np.dot(pose[2], axis))
+        q, _, _ = framing.solve_pose({**now, motion.GRIPPER: grip}, tuple(cam), tuple(axis),
+                                     tuple(right / np.linalg.norm(right)), ranges, limits=lim, roll_weight=0.0)
+        goal = motion.clamp_pose({m: now[m] + int(np.clip(q[m] - now[m], -FOLLOW_STEP_MAX, FOLLOW_STEP_MAX))
+                                  for m in motion.MOVABLE}, env)
+        if framing.camera_pose({**goal, motion.GRIPPER: grip}, ranges)[0][2] >= pose[0][2] - 0.002:
+            lifted = motion.path_problem([view, now, goal], ranges, env, grip)
+            if lifted is None:
+                return {"ok": True, "pose": goal, "aim_error_deg": 0.0, "dolly": True, "share": 1.0, "lifted": True}
+            problem = lifted
     return {"ok": False, "reason": problem or "already as close as the joints allow"}

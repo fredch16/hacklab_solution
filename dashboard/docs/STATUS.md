@@ -34,7 +34,7 @@ Voice now starts on the authenticated dashboard connection before video. [Lifecy
 
 ## Architecture (as built)
 - **Phone (Flutter + Kotlin)**: `apps/mobile`. Dart: session controller, embedded `dart:io` HTTPS/WSS server (`lib/features/connectivity/`), signaling relay, UI tabs Capture/Voice/Files/Link. Kotlin (`android/app/src/main/kotlin/dev/localvision/local_vision/`): `CameraSession` (Camera2 single owner: preview texture + 640×360 YUV for WebRTC/QR + encoder surface), `VisionStream` (native libwebrtc `io.github.webrtc-sdk:android`, network monitor disabled so the hotspot interface is used, SDP filtered to private IPv4), `MasterRecorder`/`VideoEncoder`/`AacEncoder`, `AudioCaptureBus` (only mic owner, fan-out), `VoiceEngine` (sherpa-onnx, models in assets), `QrScanner` (ZXing), `RecordingStore` (MediaStore).
-- **Dashboard**: `apps/dashboard` (TypeScript, no framework, no runtime deps; vendored MIT qrcode-generator. Owns spoken recording intent and command results). `npm run build` writes flat files into `apps/mobile/assets/dashboard/`, served by the phone.
+- **Dashboard**: `apps/dashboard` (TypeScript, no framework, no runtime deps; vendored MIT qrcode-generator. Owns spoken recording intent and command results). `npm run build` writes laptop assets to `dist/`. Run `node build.mjs --phone` only when updating the compatibility assets served by the phone.
 - **Contract**: `packages/protocol/README.md` (locked; later sections supersede earlier ones where stated).
 - **ADRs**: `docs/adr/0001` self-signed HTTPS · `0002` single camera owner + native WebRTC (+ hotspot notes) · `0003` recording pipeline (Camera2 spike result) · `0004` voice pipeline.
 - **Evidence**: `docs/evidence/slice-0{0,1,2}-2026-11-21.md`.
@@ -42,7 +42,7 @@ Voice now starts on the authenticated dashboard connection before video. [Lifecy
 ## Build & run (Linux dev machine)
 Toolchain lives in `~/Android` (no root): JDK 21 `~/Android/jdk`, SDK `~/Android/Sdk`, Flutter 3.50.1 `~/Android/flutter`; env vars in `~/.bashrc`.
 ```bash
-cd apps/dashboard && npm install && npm run build && npm test     # dashboard → phone assets
+(cd apps/dashboard && npm ci && npm run build && npm test)       # laptop assets in dist/
 cd apps/mobile && flutter analyze && flutter test
 flutter build apk --debug --target-platform android-arm64
 adb install -r build/app/outputs/flutter-apk/app-debug.apk        # never uninstall / clear data (owner data)

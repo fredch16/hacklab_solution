@@ -9,7 +9,7 @@ PC voice page (Chrome/Safari) ──text─────────────�
                                                             └── Claude Haiku 5.5, only for loose phrasing
 ```
 
-Everything goes through `voice_bridge.py` on the PC that runs the arm. It only ever calls four MCP tools: stop, go to a view, status, list views.
+The laptop dashboard handles exact recording phrases locally. Other eligible requests go through `voice_bridge.py` on the PC running the arm. Its arm tools are stop, go to a view, status, and list views. The laptop recording path can also call `record_camera`. [Routing and acceptance](AGENT_HANDOFF.md#recording-voice-routing-and-lift-over)
 
 The laptop dashboard also routes [phone and robot recording requests](LAPTOP_DASHBOARD.md#recording-and-speech) via the local gateway and MCP. This path requires a paired phone for speech and phone recording. For robot recording it additionally requires a visible dashboard tab and live robot feed.
 
@@ -52,7 +52,7 @@ The chips at the top show whether the arm's MCP server answers, whether free phr
 
 ## What you can say
 
-Handled on the PC without any network call, in this order:
+The PC voice page sends requests directly to the bridge. Its fixed arm grammar handles these without a Claude API call:
 
 | Said | Does |
 |---|---|

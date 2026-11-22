@@ -10,6 +10,10 @@ you / voice ──► Claude (director.py) ──► go_to_view() ──► moti
                     └──────────────────────── camera frames (camera.py) ◄───────────────────┘
 ```
 
+## Agent handoff
+
+Start with the current setup, boundaries, and acceptance evidence. [Agent instructions](AGENTS.md) · [HackLab handoff](docs/AGENT_HANDOFF.md)
+
 ## Local Vision mobile app and dashboard
 
 The HackLab operator page now runs on the laptop. See the [laptop dashboard guide](docs/LAPTOP_DASHBOARD.md) for the phone and robot feeds, pairing, independent recording, and spoken commands.

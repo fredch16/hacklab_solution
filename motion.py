@@ -1088,7 +1088,11 @@ async def _run_segment(arm, name: str, goal: dict[int, int], peak_speed: float,
         return all(abs(goal[m] - t[m]["pos"]) <= SKIP_TOL and abs(t[m]["goal"] - goal[m]) <= HELD_GOAL_TOL
                    for m in ids)
 
-    if resting_at_goal(tel):
+    def leaves(t):   # a computed path that comes back to where it started (a wave) still has to be driven
+        poly = getattr(goal, "poly", None)
+        return bool(poly) and any(abs(p[m] - t[m]["pos"]) > SKIP_TOL for p in poly for m in ids)
+
+    if resting_at_goal(tel) and not leaves(tel):
         # Nothing to do, but only if the joints are really resting there: guard both looks,
         # and the second must be a newer read that has not moved.
         _guard(tel, watch, _now(), stats, held_pos, held_goal)

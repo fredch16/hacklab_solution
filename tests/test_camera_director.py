@@ -634,7 +634,8 @@ class SimDirector(unittest.TestCase):
         self.goto("top")
         st = self.run_job({"kind": "wave"}, timeout=120)
         self.assertEqual(st["job"]["status"], "DONE", st["job"])
-        self.assertTrue(any(h.get("view") == "wave" and h.get("ok") for h in self.state.history))
+        waves = [h for h in self.state.history if h.get("view") == "wave" and h.get("ok")]
+        self.assertTrue(waves and waves[-1]["duration"] > 1.0, waves)   # it really moved (a round trip is not skipped)
         time.sleep(1.2)
         self.assertEqual(self.get()["arm"]["where"].get("view"), "top")
         st = self.run_job({"kind": "wave", "speed": "fast"}, timeout=120)          # "wave fast": this motion only

@@ -121,7 +121,7 @@ async def main():
     r = await go_to_view(restricted, "top", direct_only=True)
     check(not r["ok"] and "requires transit" in r["error"] and not restricted.written_ids,
           "calibration refuses a transit route before writing to the motors")
-    restricted.load[2] = 265
+    restricted.load[2] = motion.PATH_TRIP_GUARD[2][0] + 35   # just over the guard (55 % since the 60 % servo threshold)
     r = await go_to_view(restricted, "top", load_guard=True)
     check(not r["ok"] and "stayed above" in r["error"] and r["hold"] == "confirmed",
           f"director preset move locks on high shoulder load: {r}")

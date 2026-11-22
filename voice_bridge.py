@@ -101,7 +101,7 @@ def match_view(phrase: str, views: list[dict]) -> dict | None:
 
 JOB_NAMES = {"show": "Cinematic show", "gimbal": "Gimbal take", "film": "Claude-planned shot", "tour": "Director tour",
              "watch": "Keep in view", "follow": "Follow object", "selfcal": "Self-calibration", "snap": "Snap to view",
-             "cinematic": "Cinematic shots", "survey": "Survey"}
+             "cinematic": "Cinematic shots", "survey": "Survey", "wave": "Wave"}
 DIRECTOR_PHRASES = {
     "find the best view": "survey", "find best view": "survey", "optimize all views": "survey",
     "keep in view": "watch", "keep it in view": "watch", "keep the object in view": "watch",
@@ -112,6 +112,7 @@ DIRECTOR_PHRASES = {
     "cinematic": "show", "play the cinematic": "show", "cinematic view": "show", "cinematic shot": "show",
     "cinematic take": "show", "cinematic show": "show", "gimbal shot": "gimbal", "gimbal": "gimbal",
     "gimbal take": "gimbal", "start a scene": "scene", "director scene": "scene",
+    "wave": "wave", "wave hello": "wave", "say hi": "wave", "say hello": "wave", "wave at me": "wave",
     "return along the last shot": "return", "snap to view": "snap",
     "self calibrate the camera": "selfcal", "self calibrate": "selfcal",
 }
@@ -232,15 +233,17 @@ table" mean the widest view).
 "that's enough", "careful").
 - get_status: the speaker asks where the camera is or what it is doing.
 - list_views: the speaker asks which views exist or what the camera can show.
-- director_film: the speaker requests a distinct camera move, a reveal, a pan, a roll or artistic framing
-  of the marked object that is beyond a saved view. Use go_to_view when a saved angle fits.
+- director_film: any other request to move, aim or position the camera, or to film something in a
+  particular way, that no saved view or other action covers: a reveal, a pan, a roll, a closer or lower
+  look, "look at me", "show it from the side", a little dance or gesture, artistic framing. Claude's shot
+  planner turns it into a checked camera move. Use go_to_view when a saved angle fits.
 - director_watch: the speaker asks the director to keep the marked object visible or find another view
   when it gets covered.
 - start_phone_recording / stop_phone_recording: explicitly asks to start/stop recording with the phone, or asks for a recording without naming a camera.
 - start_robot_recording / stop_robot_recording: explicitly asks to start/stop recording with the robot USB camera. Use these only when the robot is named as the camera.
 Do not interpret questions, hypotheticals, negation, prior events, or ambiguous/multiple requests as recording actions. A request to stop the arm is distinct from stopping a recording.
 - none: everything else. Small talk, questions that are not about the camera, things it cannot do \
-(physical manipulation), a view that is not in the list, a \
+(physical manipulation: picking things up, gripping, pushing), a \
 request not to move ("don't go to the top"), or speech that was clearly not meant for the camera.
 
 go_to_view makes a real arm move near people, so use it only when the speaker clearly asks for a \

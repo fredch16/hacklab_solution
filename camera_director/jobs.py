@@ -87,6 +87,7 @@ class TooHeavy(Hold):
 FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
 SLIP_FRAC = 0.35         # framing: a tracker box this far (picture fraction) from where the object should be has slid
 UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
+WAVE_YAW, WAVE_ROLL = 220, 350   # steps of base sway and wrist roll for a wave
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
 WATCH_FRAME_S = 1.5       # keep in view re-frames on the object at most this often
@@ -643,7 +644,7 @@ class Director:
         runners = {"survey": self._survey, "recall": self._recall, "cinematic": self._cinematic,
                    "tour": self._tour, "center": self._center, "follow": self._follow, "watch": self._watch, "calibrate": self._calibrate_tour,
                    "scene": self._scene, "return": self._return_job, "snap": self._snap, "gimbal": self._gimbal,
-                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto}
+                   "selfcal": self._selfcal, "show": self._show, "film": self._film, "goto": self._goto, "wave": self._wave}
         if not isinstance(kind, str) or kind not in runners:
             return 400, {"ok": False, "error": f"kind must be one of {sorted(runners)}"}
         if kind == "film" and (not isinstance(req.get("brief"), str) or not 1 <= len(req["brief"].strip()) <= 500):
@@ -652,7 +653,7 @@ class Director:
             return 409, {"ok": False, "error": f"a {self.job['kind']} job is already running"}
         if self.state.stopping:
             return 409, {"ok": False, "error": "STOP is still being handled"}
-        if kind not in ("tour", "return", "snap", "goto") and self.ref is None:
+        if kind not in ("tour", "return", "snap", "goto", "wave") and self.ref is None:
             return 409, {"ok": False, "error": "no target: select an object (or auto-find the saved sticker) first"}
         gate = self.gate()
         self.job_gen = self.state.gen
@@ -1702,6 +1703,31 @@ class Director:
         self.step(f"snapping back onto {name} ({gap} steps)")
         await self.move_path(self._bridge(now, {m: views[name][m] for m in motion.MOVABLE}, step=100), f"snap to {name}")
         self.job["result"] = {"view": name, "gap_steps": gap}
+
+    async def _wave(self, req: dict, gate: dict):
+        """Wave hello: from a view, the base sways and the wrist rolls, three times, then back. Shoulder and elbow
+        stay on the view; the whole gesture is checked like a gimbal take before it starts."""
+        if not gate["moves"]:
+            raise Hold("physical moves not approved")
+        self.job["phase"] = "reposition"
+        view = await self.ensure_view()
+        if not view or view == motion.TRANSIT:
+            raise Hold("wave starts from a saved view")
+        ranges = self.state.arm.ranges()
+        env = motion.envelope(ranges)
+        vpose = motion.clamp_pose({m: motion.load_views()[view][m] for m in motion.MOVABLE}, env)
+        # side, centre, other side, centre: each swing stays under the path's per-waypoint step limit
+        sway = [p for _ in range(3) for s in (1, -1)
+                for p in (motion.clamp_pose({**vpose, 1: vpose[1] + s * WAVE_YAW, 7: vpose[7] + s * WAVE_ROLL}, env),
+                          vpose)]
+        grip = (await self._joints())[motion.GRIPPER]
+        problem = motion.path_problem([vpose] + sway, ranges, env, grip)
+        if problem:
+            raise Hold(f"no room to wave here: {problem}")
+        self.job["phase"] = "cinematic"
+        self.step(f"waving hello from {view}")
+        await self.move_path(sway, "wave", speed=motion.SPEED_NORMAL)
+        self.job["result"] = {"view": view}
 
     async def _goto(self, req: dict, gate: dict):
         """A view move from where a take left the arm (off every view): back along the take's path, then on."""

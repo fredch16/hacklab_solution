@@ -401,11 +401,11 @@ def build_server(control: Control, scene: SceneStore, views: list[dict], dashboa
                           "survey finds views (verify=false only predicts), recall rechecks a verified preset, "
                           "cinematic plays verified shots, tour combines survey and cinematic, watch handles occlusion, "
                           "show films a wide-to-close sequence, gimbal arcs with heavy joints parked, scene plans a free "
-                          "camera move when approved, film interprets a brief, follow turns the camera to keep the object in frame until stop, center is a dry-run preview, selfcal fits "
+                          "camera move when approved, film interprets a brief, follow turns the camera to keep the object in frame until stop, wave waves the camera hello, center is a dry-run preview, selfcal fits "
                           "the camera from a stationary target, snap returns to a nearby preset, and return retraces the "
                           "last trail when computed paths are approved. Poll director_status. Call stop to halt.")
     async def director_job(kind: Literal["survey", "cinematic", "tour", "watch", "recall", "film", "show", "gimbal",
-                                        "scene", "center", "follow", "selfcal", "snap", "return"],
+                                        "scene", "center", "follow", "wave", "selfcal", "snap", "return"],
                            preset: Optional[str] = None, brief: Optional[str] = None,
                            planner: Literal["local", "claude"] = "local", verify: bool = True,
                            yaw: int = Field(default=500, ge=25, le=500),

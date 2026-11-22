@@ -604,6 +604,14 @@ class SimDirector(unittest.TestCase):
             self.assertGreater(st["job"]["result"]["corrections"], 0, st["job"])
             self.assertLess(cx(obs), cx(before), (before["box"], obs["box"]))
 
+    def test_9w_wave_hello_ends_back_on_its_view(self):
+        self.goto("top")
+        st = self.run_job({"kind": "wave"}, timeout=120)
+        self.assertEqual(st["job"]["status"], "DONE", st["job"])
+        self.assertTrue(any(h.get("view") == "wave" and h.get("ok") for h in self.state.history))
+        time.sleep(1.2)
+        self.assertEqual(self.get()["arm"]["where"].get("view"), "top")
+
     def test_9_keep_in_frame_is_a_preview_and_never_moves(self):
         self.goto("top")
         http(self.base, "/api/director/autofind", {})

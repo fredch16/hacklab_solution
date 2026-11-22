@@ -121,7 +121,7 @@ class Dashboard:
 
     async def assets(self, request):
         name = request.match_info.get("name") or "index.html"
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+\.(?:html|css|js|png)", name) or not (ASSETS / name).is_file():
+        if not re.fullmatch(r"[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.(?:html|css|js|png)", name) or ".." in name or not (ASSETS / name).is_file():
             raise web.HTTPNotFound()
         if name == "index.html":
             body = (ASSETS / name).read_text().replace('<html lang="en">', '<html lang="en" data-host="laptop">')

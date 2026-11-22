@@ -1,6 +1,6 @@
-:root{--ink950:#080D14;--ink900:#101824;--ink800:#172334;--ink700:#253549;--t1:#EAF2F9;--t2:#A2B4C5;--t3:#71859B;--teal:#5EDBC8;--blue:#79B9F2;--rec:#FF6873;--warn:#F4BD6A;--danger:#F27B7B;--ok:#73DCB0;color-scheme:dark}
+:root{--ink950:#070B18;--ink900:#0E1630;--ink800:#16213F;--ink700:#253256;--t1:#EEF2FB;--t2:#A9B6D3;--t3:#7484A8;--teal:#5EEAD4;--blue:#7AB8FF;--orange:#FF8A3D;--rec:#FF4D5E;--warn:#FFC35A;--danger:#FF6B6B;--ok:#6EE7B7;--glass:rgba(22,33,63,.62);--line:rgba(148,170,230,.16);--radius:20px;color-scheme:dark}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--ink950);color:var(--t1);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Inter,sans-serif;overflow-x:hidden}
+html,body{margin:0;background:radial-gradient(1200px 700px at 12% -10%,#1b2a5c 0%,transparent 60%),radial-gradient(900px 600px at 110% 10%,#3a1e2e 0%,transparent 55%),var(--ink950);background-attachment:fixed;color:var(--t1);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Inter,sans-serif;overflow-x:hidden}
 .boot{padding:32px;color:var(--t2)}
 .page,.pair-wrap{max-width:1440px;margin:0 auto;padding:24px 32px}
 .top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;padding-bottom:16px;border-bottom:1px solid var(--ink700);margin-bottom:24px}
@@ -135,3 +135,106 @@ input.txt{flex:1 1 160px;min-width:0;min-height:44px;background:var(--ink950);co
 .director-frame>img{position:absolute;inset:0;width:100%;height:100%}
 .badge.predicted{color:var(--blue);border-color:var(--blue)}
 .badge.not_confirmed{color:var(--warn);border-color:var(--warn)}
+
+/* ================= Peter studio (laptop home screen) ================= */
+body.studio{min-height:100vh}
+body.studio #app>.page,body.studio .phone-setup-wrap{padding:0;max-width:none}
+.s-app{display:grid;grid-template-rows:auto 1fr auto;gap:14px;height:100vh;padding:14px 18px;box-sizing:border-box}
+.s-top{display:flex;align-items:center;gap:14px;min-width:0}
+.s-brand{display:flex;align-items:center;gap:10px;flex:none}
+.s-brand b{display:block;font-size:20px;letter-spacing:.02em;background:linear-gradient(90deg,#fff,#ffd2b0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.s-brand small{display:block;color:var(--t3);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+.s-logo{width:44px;height:44px;border-radius:12px;box-shadow:0 0 0 1px rgba(255,255,255,.14),0 6px 20px rgba(255,138,61,.25)}
+.s-chips{display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0}
+.s-mode{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid var(--line);background:var(--glass);color:var(--t3);backdrop-filter:blur(10px)}
+.s-mode i{font-style:normal;font-size:10px}
+.s-mode.on{color:var(--teal);border-color:rgba(94,234,212,.45);box-shadow:0 0 18px rgba(94,234,212,.18) inset,0 0 12px rgba(94,234,212,.12)}
+.s-mode.warn{color:var(--warn);border-color:rgba(255,195,90,.5)}
+.s-mode.rec{color:#fff;background:linear-gradient(90deg,#ff4d5e,#ff7a59);border-color:transparent;animation:s-recpulse 1.4s ease-in-out infinite}
+/* the current task: a capsule that glows while the director works */
+.s-task{display:flex;align-items:center;gap:10px;min-width:220px;max-width:420px;padding:8px 16px;border-radius:999px;background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(12px);position:relative;overflow:hidden}
+.s-task-text{display:grid;min-width:0}.s-task-text strong{font-size:14px}
+.s-task-step{font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-task-dot{width:10px;height:10px;border-radius:50%;background:var(--t3);flex:none}
+.s-task[data-status=running]{border-color:rgba(94,234,212,.6);box-shadow:0 0 0 1px rgba(94,234,212,.25),0 0 28px rgba(94,234,212,.22)}
+.s-task[data-status=running] .s-task-dot{background:var(--teal);box-shadow:0 0 0 0 rgba(94,234,212,.7);animation:s-ping 1.2s infinite}
+.s-task[data-status=running]::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,rgba(94,234,212,.14) 50%,transparent 70%);animation:s-sheen 2.2s linear infinite}
+.s-task[data-status=hold]{border-color:rgba(255,195,90,.6)}.s-task[data-status=hold] .s-task-dot{background:var(--warn)}
+.s-task[data-status=done] .s-task-dot{background:var(--ok)}
+.s-stop{min-height:44px;padding:0 20px;border-radius:12px;border:0;font:inherit;font-weight:800;letter-spacing:.08em;color:#fff;background:linear-gradient(180deg,#ff5a67,#d92d43);box-shadow:0 6px 18px rgba(217,45,67,.35);cursor:pointer}
+.s-stop.hit{transform:scale(.96)}
+.s-menu-btn{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:var(--glass);color:var(--t1);font:inherit;font-weight:600;cursor:pointer}
+.s-burger{width:16px;height:2px;background:currentColor;box-shadow:0 -5px currentColor,0 5px currentColor}
+.s-hero{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:0}
+.s-panel{position:relative;display:flex;flex-direction:column;min-height:0;border-radius:var(--radius);background:linear-gradient(160deg,rgba(28,40,78,.72),rgba(12,18,40,.72));border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.35);backdrop-filter:blur(14px);overflow:hidden}
+.s-panel-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 0}
+.s-panel-head h2{margin:0;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--t2)}
+.s-live{font-size:11px;color:var(--teal);display:inline-flex;align-items:center;gap:6px}
+.s-live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--teal);animation:s-ping 1.6s infinite}
+.s-twin-canvas{flex:1;min-height:0;position:relative}
+.s-twin-canvas canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.s-twin-canvas[data-state=offline]::after,.s-twin-canvas[data-state=unavailable]::after{content:"Arm data unavailable";position:absolute;inset:0;display:grid;place-items:center;color:var(--t3)}
+.s-readout{position:absolute;left:14px;bottom:12px;display:flex;gap:10px;align-items:baseline;padding:6px 12px;border-radius:12px;background:rgba(7,11,24,.6);border:1px solid var(--line);font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums}
+.s-readout b{color:var(--orange);font-size:14px}
+.s-cam .robot-frame{flex:1;min-height:0;margin:10px 14px 0;border-radius:14px;overflow:hidden;background:#000;position:relative;display:grid;place-items:center}
+.s-cam .robot-frame img{width:100%;height:100%;object-fit:contain}
+.s-cam [data-role=actions]{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px 4px}
+.s-cam [data-role=actions] .link{align-self:center}
+.s-cam [data-role=rec-status]{margin:0 16px 12px;color:var(--t2);font-size:12px;min-height:16px}
+.s-recbadge{display:none;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.12em;color:#fff;padding:3px 10px;border-radius:999px;background:var(--rec)}
+.s-recbadge.on{display:inline-flex;animation:s-recpulse 1.4s ease-in-out infinite}
+.s-recdot{width:7px;height:7px;border-radius:50%;background:#fff}
+/* the agent dock */
+.s-dock{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;padding:14px 20px;border-radius:var(--radius);background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(16px)}
+.s-dock-main{display:grid;gap:8px;min-width:0}
+.s-say{margin:0;font-size:16px;font-weight:500;min-height:22px;overflow-wrap:anywhere}
+.s-ask{display:flex;gap:8px}
+.s-input{flex:1;min-width:0;min-height:48px;padding:0 16px;border-radius:14px;border:1px solid var(--line);background:rgba(7,11,24,.55);color:var(--t1);font:inherit;font-size:15px}
+.s-input:focus{outline:2px solid var(--teal);outline-offset:1px}
+.s-send{min-height:48px;padding:0 22px;border:0;border-radius:14px;font:inherit;font-weight:700;color:#1a0d04;background:linear-gradient(180deg,#ffb07a,#ff8a3d);cursor:pointer}
+.s-send:disabled{opacity:.6}
+.s-dock-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.s-hint{margin:0 6px 0 0;color:var(--t3);font-size:12px}
+.s-sugg{display:flex;flex-wrap:wrap;gap:6px}
+.s-chip-btn{padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--t2);font:inherit;font-size:12px;cursor:pointer}
+.s-chip-btn:hover{color:var(--t1);border-color:rgba(255,138,61,.6)}
+/* the orb: its colour and motion say what Peter is doing */
+.s-orb{--c1:#5eead4;--c2:#7ab8ff;position:relative;width:72px;height:72px;flex:none}
+.s-orb-core{position:absolute;inset:14px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff 0%,var(--c1) 35%,var(--c2) 70%,transparent 72%);box-shadow:0 0 30px var(--c1);animation:s-breathe 4s ease-in-out infinite}
+.s-orb-ring{position:absolute;inset:4px;border-radius:50%;border:2px solid var(--c1);opacity:.35}
+.s-orb[data-state=listening]{--c1:#ff8a3d;--c2:#ffd166}.s-orb[data-state=listening] .s-orb-ring{animation:s-wave 1.2s ease-out infinite}.s-orb[data-state=listening] .r2{animation-delay:.6s}
+.s-orb[data-state=thinking]{--c1:#b388ff;--c2:#7ab8ff}.s-orb[data-state=thinking] .s-orb-ring{border-style:dashed;opacity:.8;animation:s-spin 1.4s linear infinite}.s-orb[data-state=thinking] .r2{animation-direction:reverse;inset:-2px}
+.s-orb[data-state=working]{--c1:#5eead4;--c2:#3b82f6}.s-orb[data-state=working] .s-orb-ring{animation:s-spin 3s linear infinite;border-top-color:transparent;opacity:.9}
+.s-orb[data-state=done]{--c1:#6ee7b7;--c2:#34d399}.s-orb[data-state=error]{--c1:#ff6b6b;--c2:#f97316}
+.s-dock[data-state=listening]{border-color:rgba(255,138,61,.5);box-shadow:0 0 40px rgba(255,138,61,.15)}
+/* the menu drawer */
+.s-scrim{position:fixed;inset:0;background:rgba(3,6,15,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:40}
+.s-drawer{position:fixed;top:0;right:0;bottom:0;width:min(760px,96vw);overflow:auto;padding:16px 20px 40px;background:linear-gradient(180deg,#101a38,#0a1128);border-left:1px solid var(--line);transform:translateX(102%);transition:transform .3s cubic-bezier(.2,.8,.2,1);z-index:50;box-shadow:-30px 0 80px rgba(0,0,0,.45)}
+body.s-open .s-drawer{transform:none}body.s-open .s-scrim{opacity:1;pointer-events:auto}
+.s-drawer-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.s-close{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--t1);font-size:22px;cursor:pointer}
+.s-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:-16px;padding:8px 0;background:#0f1936;z-index:1}
+.s-tab{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--t2);font:inherit;font-weight:600;cursor:pointer}
+.s-tab.on{color:#1a0d04;background:linear-gradient(180deg,#ffb07a,#ff8a3d);border-color:transparent}
+.s-pane{display:grid;gap:12px}
+.s-link{display:grid;gap:2px;padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--glass);color:var(--t1);text-decoration:none}
+.s-link small{color:var(--t3)}.s-link:hover{border-color:rgba(255,138,61,.55)}
+.s-note{color:var(--t3);margin:0}
+.s-pane .robot-camera>h2.mod{display:none}
+:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+@keyframes s-ping{0%{box-shadow:0 0 0 0 rgba(94,234,212,.7)}100%{box-shadow:0 0 0 10px rgba(94,234,212,0)}}
+@keyframes s-sheen{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+@keyframes s-recpulse{50%{box-shadow:0 0 0 6px rgba(255,77,94,.25)}}
+@keyframes s-breathe{50%{transform:scale(1.08);filter:brightness(1.15)}}
+@keyframes s-wave{from{transform:scale(.9);opacity:.8}to{transform:scale(1.5);opacity:0}}
+@keyframes s-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+@media (max-width:1000px){.s-app{height:auto}.s-hero{grid-template-columns:1fr}.s-twin{min-height:360px}.s-cam .robot-frame{min-height:240px}.s-top{flex-wrap:wrap}.s-task{order:5;max-width:none;flex:1 1 100%}}
+/* the camera panel keeps record (and the last clip); STOP is in the top bar, the links are in the menu */
+.s-cam [data-role=actions] .btn.danger,.s-cam [data-role=actions] a[href*="/control"],.s-cam [data-role=actions] a[href*="claude-settings"]{display:none}
+.s-twin-canvas[data-state=offline]~.s-readout,.s-twin-canvas[data-state=unavailable]~.s-readout{display:none}
+.s-pane[hidden]{display:none}
+.s-drawer{overflow-x:hidden}.s-drawer *{overflow-wrap:anywhere}
+.s-full{min-height:44px;width:44px;border-radius:12px;border:1px solid var(--line);background:var(--glass);color:var(--t1);font-size:20px;cursor:pointer}
+.s-full.on{color:var(--teal);border-color:rgba(94,234,212,.5)}
+html:has(body.studio){min-height:100%;background-color:var(--ink950)}

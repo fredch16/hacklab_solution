@@ -38,15 +38,18 @@ export function robotCard(): HTMLElement {
   image.hidden = true;
   const frame = element("div");
   frame.className = "robot-frame";
+  frame.dataset.role = "feed";
   const feed = element("p", "Waiting for the robot camera…");
   feed.className = "muted";
   frame.append(feed, image);
   const status = element("p");
   status.setAttribute("role", "status");
+  status.dataset.role = "rec-status";
   const note = element("p");
   note.setAttribute("role", "status");
   const buttons = element("div");
   buttons.className = "controls";
+  buttons.dataset.role = "actions";
   const record = element("button", "Record robot camera");
   record.className = "btn primary";
   record.disabled = true;

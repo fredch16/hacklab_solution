@@ -1,4 +1,5 @@
 import { laptop, laptopRecord, robotCard, robotTab, socketUrl } from "./laptop.js";
+import { mountConsole } from "./console.js";
 import { qrCanvas } from "./qr.js";
 import { armBridgeUrl, forwardToArm } from "./arm.js";
 import { armRequest, popupReduce, popupView, type Popup, applyVoiceEvent, commandBadge, endReasonLabel, initialLive, mergeSnapshotVoice, planVoiceCommand, validateWakeName, voiceStatus, wakeName, type LiveVoice } from "./voice.js";
@@ -417,6 +418,7 @@ const ov = (() => {
 function setPopup(p: Popup | null) {
   const changed = p !== popup;
   popup = p;
+  document.dispatchEvent(new CustomEvent("peter-voice", { detail: popup ? popupView(popup) : null }));   // the studio's orb
   if (changed) ov.arm();
   ov.scrim.hidden = ov.sheet.hidden = ov.bar.hidden = !popup;
   if (!popup) return;
@@ -553,6 +555,7 @@ function updateDash() {
   const model = dev?.model ? [dev.manufacturer, dev.model].filter(Boolean).join(" ") : "Waiting for phone\u2026";
   const un = h("button", "btn", "Unpair this browser"); un.dataset.focus = "unpair"; un.onclick = () => void unpair();
   patch(d.hdr, [h("div", "brand", logo(), " LOCAL VISION"), h("div", "device", model), badge(), h("span", "pill neutral", icon("\u2302"), "LAN only"), un]);
+  document.dispatchEvent(new CustomEvent("peter-phone", { detail: { conn, voice: snap?.voice.state ?? "" } }));
   patch(d.stale, live ? [h("div", "stale-bar", icon("\u23F8"), `Showing last known values \u2014 not live. Last updated ${formatClock(state.receivedAt)}.`)] : []);
   d.grid.classList.toggle("stale", live);
 
@@ -637,8 +640,12 @@ async function startLaptop() {
   again.hidden = true;
   const form = h("form", "controls", h("div", null, urlLabel, address), h("div", null, pinLabel, pin), save);
   const manual = h("details", "phone-manual", h("summary", null, "Connect manually"), form);
-  root.before(h("div", "page phone-setup-wrap",
-    h("section", "card phone-setup", h("h2", "mod", "Phone connection"), note, devices, again, manual)));
+  const setup = h("div", "page phone-setup-wrap",
+    h("section", "card phone-setup", h("h2", "mod", "Phone connection"), note, devices, again, manual));
+  root.before(setup);
+  // the studio home screen takes the robot card; the phone dashboard (pairing, video, recording, voice) goes in its menu
+  mountConsole(robot!, [setup, root]);
+  robot = null;
 
   let selecting = false;
   let scanning = false;

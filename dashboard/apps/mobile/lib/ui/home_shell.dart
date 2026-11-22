@@ -29,18 +29,28 @@ class _HomeShellState extends State<HomeShell> {
       LinkPage(controller: c),
     ];
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            ListenableBuilder(
-              listenable: c,
-              builder: (context, child) => StatusLine(controller: c),
-            ),
-            Expanded(
-              child: IndexedStack(index: _tab, children: pages),
-            ),
-          ],
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(-0.8, -1.1),
+            radius: 1.4,
+            colors: [Color(0xFF1B2A5C), Tok.ink950],
+          ),
+        ),
+        child: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              const _Brand(),
+              ListenableBuilder(
+                listenable: c,
+                builder: (context, child) => StatusLine(controller: c),
+              ),
+              Expanded(
+                child: IndexedStack(index: _tab, children: pages),
+              ),
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: NavigationBar(
@@ -164,4 +174,44 @@ class StatusLine extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The Peter brand bar: the app icon and name.
+class _Brand extends StatelessWidget {
+  const _Brand();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+    child: Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.asset('assets/peter_icon.png', width: 36, height: 36),
+        ),
+        const SizedBox(width: 10),
+        const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Peter',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: Tok.textPrimary,
+              ),
+            ),
+            Text(
+              'CAMERA ROBOT STUDIO',
+              style: TextStyle(
+                fontSize: 10,
+                letterSpacing: 1.6,
+                color: Tok.textTertiary,
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 }

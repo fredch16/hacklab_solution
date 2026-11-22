@@ -14,6 +14,8 @@ MOVE_SPEED = 0.15          # m/s: how fast the object may be moved by hand (rand
 BEARING_STILL = 0.02       # rad: ray direction noise with the arm still (model + image error)
 BEARING_MOVING = 0.08      # rad: ...while it moves (the frame and the joint reading are not from the same instant)
 RANGE_REL = 0.3            # range from apparent size: relative noise
+GATE_DEG = 10.0            # a ray this far from the estimate is an outlier (another object, a tracker slip)...
+GATE_RESET = 6             # ...unless that many arrive in a row: then the object really moved there
 
 
 class ObjectFilter:
@@ -22,6 +24,7 @@ class ObjectFilter:
         self.P = np.eye(3)
         self.t = 0.0
         self.size_m: float | None = None      # apparent size x distance: the object's size, learned once
+        self.outliers = 0
 
     def reset(self):
         self.__init__()
@@ -36,6 +39,16 @@ class ObjectFilter:
     def update(self, cam, direction, size: float, t: float, moving: bool = False):
         """One detection: `direction` the unit ray from camera position `cam`, `size` the box size (0..1)."""
         cam, d = np.asarray(cam, float), np.asarray(direction, float)
+        to_x = self.x - cam
+        off = np.degrees(np.arccos(np.clip(np.dot(d, to_x / np.linalg.norm(to_x)), -1.0, 1.0)))
+        if off > GATE_DEG:                    # innovation gate: does not fit where the object is
+            self.outliers += 1
+            if self.outliers < GATE_RESET:
+                return False
+            rng = self.size_m / max(size, 1e-3)
+            self.x, self.P, self.t, self.outliers = cam + d * rng, np.eye(3) * 0.05 ** 2, t, 0
+            return True
+        self.outliers = 0
         dt = max(0.0, t - self.t)
         self.t = t
         self.P = self.P + np.eye(3) * (MOVE_SPEED * dt) ** 2
@@ -48,6 +61,7 @@ class ObjectFilter:
         self.x = self.x + K @ (z - self.x)
         self.x[2] = max(self.x[2], 0.0)       # never below the table (fk frame: the desk is z = 0)
         self.P = (np.eye(3) - K) @ self.P
+        return True
 
     def state(self) -> dict | None:
         if self.x is None:

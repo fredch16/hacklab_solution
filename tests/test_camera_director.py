@@ -628,6 +628,18 @@ class ObjectFusion(unittest.TestCase):
             f.update(cam, d / np.linalg.norm(d), size, 0.1 * k)
         self.assertLess(np.linalg.norm(f.x - obj), 0.015, f.x)
 
+    def test_a_random_detection_is_gated_out_unless_it_persists(self):
+        from camera_director import fuse
+        f = fuse.ObjectFilter()
+        cam, obj, other = np.array([0.0, -0.1, 0.3]), np.array([0.0, -0.3, 0.0]), np.array([0.15, -0.3, 0.0])
+        f.start(obj, cam, 0.1, 0.0)
+        ray = lambda p: (p - cam) / np.linalg.norm(p - cam)
+        for k in range(1, fuse.GATE_RESET):                 # a few odd detections (another object): ignored
+            self.assertFalse(f.update(cam, ray(other), f.size_m / np.linalg.norm(other - cam), 0.1 * k))
+        self.assertLess(np.linalg.norm(f.x - obj), 0.005)
+        self.assertTrue(f.update(cam, ray(other), f.size_m / np.linalg.norm(other - cam), 1.0))   # it persists: moved
+        self.assertLess(np.linalg.norm(f.x - other), 0.03)
+
     def test_follows_a_moved_object(self):
         from camera_director import fuse
         f = fuse.ObjectFilter()

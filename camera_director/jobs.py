@@ -84,6 +84,7 @@ class TooHeavy(Hold):
 
 
 FOLLOW_MOVE_M = 0.03      # follow: the object moved this far (fused, 3-D) -> the camera moves with it
+PLAUSIBLE_FRAC = 0.22    # a detection this far (picture fraction) from the fused object's projection is not it
 UNFRAMED_VIEWS: tuple = ()          # views never turned onto the object (none: every view centres it, owner 22 Nov)
 CENTER_STEPS = 8          # framing on the object at a view: at most this many follow-sized corrections
 WATCH_STUCK_S = 8.0       # ...or this much later when the last attempt could not turn any further
@@ -1526,6 +1527,18 @@ class Director:
         shots.append({"shot": f"closing wide ({wide})", "steady": await self._hold_shot(hold, f"closing, {wide}")})
         self.job["result"] = {"shots": shots}
 
+    def _plausible(self, obs: dict, joints: dict) -> bool:
+        """Is this detection where the fused estimate says the object is (seen from `joints`)? A tracker that slid
+        onto something else at the edge of a view is not. True while there is no confident estimate yet."""
+        st = self.obj.state()
+        if st is None or st["sigma_m"] > 0.06:
+            return True
+        uv = framing.project(tuple(self.obj.x), framing.camera_pose(joints, self.state.arm.ranges()), self._aspect())
+        if uv is None:
+            return False
+        b, bias = obs["box"], self._fuse_bias
+        return math.hypot((b[0] + b[2]) / 2 - (uv[0] + bias[0]), (b[1] + b[3]) / 2 - (uv[1] + bias[1])) < PLAUSIBLE_FRAC
+
     def _note_once(self, text: str):
         if getattr(self, "_last_note", None) != text:
             self._last_note = text
@@ -1551,7 +1564,8 @@ class Director:
             return 0
         bias = predict.bias_for({"where": "view", "view": view}, self.calibration)
         ranges, since = self.state.arm.ranges(), (self.frame() or (-1,))[0]
-        misses = 0
+        misses, good = 0, dict(commanded)     # good: the last pose that saw the object where it should be
+        grip = (await self._joints())[motion.GRIPPER]
         for _ in range(CENTER_STEPS):
             obs = None
             for _ in range(30):               # a confident detection from after the last step
@@ -1560,17 +1574,28 @@ class Director:
                 if o is not None and o["frame_id"] > since and not (o.get("method") == "vit" and o["confidence"] < V.VIT_MIN):
                     obs = o
                     break
+            if obs is not None and not self._plausible(obs, {**commanded, motion.GRIPPER: grip}):
+                self._note_once(f"framing at {view}: ignoring a detection away from the object")
+                obs = None
             if obs is None:
                 misses += 1
+                if misses >= 2 and good != commanded:
+                    # lost it (or the tracker slid onto something else): back to where it was last seen, then retry
+                    self.step(f"lost the object: back to where it was last seen at {view}")
+                    await self.move_path([good], f"back to the object at {view}", speed=FOLLOW_SPEED)
+                    commanded, misses = dict(good), 0
+                    steps.append(commanded)
+                    since = (self.frame() or (since,))[0]
+                    continue
                 if misses >= 2:
                     self._note_once(f"framing at {view}: the object is not seen")
                     break
                 continue
+            misses, good = 0, dict(commanded)
             b = obs["box"]
             centre = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
             if abs(centre[0] - 0.5) < CENTER_DEAD and abs(centre[1] - 0.5) < CENTER_DEAD:
                 break
-            grip = (await self._joints())[motion.GRIPPER]
             step = await self.vision(orbit.follow_step, vpose, {**commanded, motion.GRIPPER: grip}, ranges, centre,
                                      bias, self._aspect())
             if not step["ok"]:
@@ -1956,6 +1981,8 @@ class Director:
                     continue                  # not seen (or not since the last correction): hold still
                 if obs.get("method") == "vit" and obs["confidence"] < V.VIT_MIN:
                     continue                  # a weak box may have slid onto something else: never steer by it
+                if obs.get("method") == "vit" and not self._plausible(obs, {**commanded, motion.GRIPPER: 1279}):
+                    continue                  # the tracker slid off the object (YOLOE, which recognises it, is trusted)
                 b = obs["box"]
                 raw = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
                 # low-pass the measured centre (box jitter), but jump straight to a real move

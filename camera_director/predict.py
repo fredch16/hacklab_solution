@@ -24,7 +24,9 @@ import motion
 MIN_BASELINE_DEG = 8.0          # views closer in direction than this do not triangulate usefully
 JAW_ZONE = (0.18, 0.88, 0.62)   # x1, x2, y1 of the gripper jaws in the real camera image (views/top.jpg)
 PREDICT_FRACTIONS = (0.08, 0.16, 0.24, 0.32)
-MAX_TILT_DEG = 55.0             # flatter than this from straight down, a flat target is too foreshortened to recognise
+MAX_TILT_DEG = 75.0             # flatter than this from straight down, a flat target is too foreshortened to recognise
+                                # (the real gripper camera tracked the sticker at 69 deg, 22 Nov)
+TILT_UNCERTAINTY_DEG = 5.0      # fk.py's camera tilt estimate; drives the stated single-view distance uncertainty
 MIN_BOX_PX = 40                 # smaller than this on its long side, too few features to recognise
 IMAGE_W = 960                   # default pixels across a frame (for MIN_BOX_PX); callers pass the real width
 W_PRED = {"composition": 0.30, "edge_clearance": 0.25, "target_size": 0.20, "legibility": 0.15, "stability": 0.10}
@@ -63,6 +65,13 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
             return {"ok": False, "reason": "the sighting does not look down onto the desk"}
         point = np.mean(hits, axis=0)
         method = "desk plane, one view" if len(rays) == 1 else f"desk plane, {len(rays)} similar views"
+        # how far the desk point moves if the camera tilt is off by TILT_UNCERTAINTY_DEG: large for grazing views
+        c, d = rays[0][0], rays[0][1]
+        theta = math.acos(min(1.0, -d[2]))
+        height = max(0.0, c[2] - framing.TABLE_Z)
+        lo = height * math.tan(max(0.0, theta - math.radians(TILT_UNCERTAINTY_DEG)))
+        hi = height * math.tan(min(math.radians(89), theta + math.radians(TILT_UNCERTAINTY_DEG)))
+        uncertainty = round((hi - lo) / 2, 3)
     miss = [float(np.linalg.norm((np.eye(3) - np.outer(d, d)) @ (point - c))) for c, d, *_ in rays]
     th, tv = framing._tans(aspect)
     sizes = []
@@ -71,6 +80,11 @@ def localize(sightings: list[tuple[dict, list]], ranges, aspect: float) -> dict:
         sizes.append(max((box[2] - box[0]) * 2 * th * depth, (box[3] - box[1]) * 2 * tv * depth))
     out = {"ok": True, "point_m": [round(float(v), 4) for v in point], "size_m": round(float(np.median(sizes)), 4),
            "method": method, "views": len(rays), "residual_m": round(max(miss), 4)}
+    if not method.startswith("triangulated"):
+        out["uncertainty_m"] = uncertainty
+        if uncertainty > 0.05:
+            out["warning"] = (f"one grazing view: distance uncertain by about {uncertainty * 100:.0f} cm; "
+                              "a second view from another direction (e.g. top) triangulates it")
     if not -0.05 <= point[2] <= 0.25:
         out["warning"] = f"estimated height {point[2] * 100:.0f} cm above the desk plane: check the calibration"
     return out

@@ -45,6 +45,7 @@ import motion
 from camera import Camera, list_camera_queues
 from capture_view import GUIDED_VIEWS, NAME_RE, SNAPSHOT_DIR, VIEWS_PATH, capture, load_views, save_views
 from station_arm import Arm, format_joints, logger
+import servo_limits
 
 ROOT = Path(__file__).parent
 PAGES = {"/": ROOT / "capture_ui.html", "/index.html": ROOT / "capture_ui.html", "/control": ROOT / "control_ui.html"}
@@ -64,6 +65,7 @@ WHERE_TTL_S = 1.0   # motion.describe() is asked at most this often, and never w
 FRAME_POSE_TOL = 20    # /api/frame: steps a joint may differ from the image's pose before the image counts as stale
 STILL_MAX_AGE_S = 1.0  # /api/still.jpg: a camera frame older than this counts as no picture
 CAMERA_LIVE_S = 2.0    # the status strip calls the camera live while its newest frame is younger than this
+SERVO_CHECK_S = 10.0   # how often the arm motors' overload threshold is checked (a calibration resets it)
 WATCH_S = 0.5          # how often the server itself checks whether arm data is still arriving
 BACK_NOTE_S = 120      # "the arm is back" is said for this long after its data returned
 HISTORY_ROWS = 15
@@ -402,9 +404,21 @@ class State:
         return joints, None
 
     async def watch(self):
-        """Keeps the freshness times right while no page is polling (local data only, no Station traffic)."""
+        """Keeps the freshness times right while no page is polling (local data only, no Station traffic).
+        Also puts the owner's servo overload threshold back after a calibration reset it (servo_limits.py)."""
+        checked = 0.0
         while not self.closing:
             self.note_data()
+            if not self.sim and not self.moving and time.monotonic() - checked > SERVO_CHECK_S:
+                checked = time.monotonic()
+                try:
+                    ids = servo_limits.needs_apply(self.arm)
+                    if ids:
+                        await servo_limits.apply(self.arm, ids=ids)
+                        logger.info("servo overload threshold set to %d%% on motors %s (Station had reset it)",
+                                 servo_limits.OVERLOAD_PERCENT, ids)
+                except Exception as e:      # stale data, Station busy: try again next time
+                    logger.debug("servo threshold check: %s", e)
             await asyncio.sleep(WATCH_S)
 
     def data_state(self) -> dict:

@@ -2023,6 +2023,7 @@ class Director:
                     moved = float(np.linalg.norm(shift - ray * float(np.dot(shift, ray)))) > FOLLOW_MOVE_M
                     moved_count = moved_count + 1 if moved else 0
                     moved = moved_count >= 3          # a real move holds; one odd fused reading does not
+                    moved = moved and correcting      # ...and shows in the picture: the object left the centre
                     if moved:
                         self.note(f"follow: object moved {np.round(shift, 3).tolist()} m (sigma {self.obj.state()['sigma_m']})")
                 if not moved and not correcting and abs(ratio - 1) <= orbit.FOLLOW_DIST_DEAD:
